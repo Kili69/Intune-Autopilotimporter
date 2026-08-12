@@ -1,5 +1,6 @@
 @description('Globally unique name of the Azure Function App.')
-@minLength(3)
+@minLength(2)
+@maxLength(60)
 param functionAppName string
 
 @description('Azure region for all resources.')

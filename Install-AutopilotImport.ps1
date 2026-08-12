@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260811.2
+# Project-Version: 1.0.20260812.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -44,8 +44,9 @@ Name of the Azure resource group to create or update.
 Azure region for the resource group and Function resources, such as westus2.
 
 .PARAMETER FunctionAppName
-Globally unique Azure Function App name. It must contain 3-60 letters, digits,
-or hyphens.
+Globally unique Azure Function App name. It must contain 2-60 letters, digits,
+or hyphens and must start and end with a letter or digit. When omitted, the
+installer proposes a name derived from the Tenant ID.
 
 .PARAMETER EntraClientId
 Optional Application (client) ID of an existing Entra API app registration.
@@ -79,7 +80,6 @@ EntraClientId must be supplied when this switch is used.
 .PARAMETER SkipGraphPermission
 Skips assignment of DeviceManagementServiceConfig.ReadWrite.All to the
 Function managed identity.
-
 .PARAMETER SkipPublish
 Deploys infrastructure without publishing the Function source package.
 
@@ -129,6 +129,8 @@ and delegated Graph permissions for application management. End
 users receive no Intune or Microsoft Graph permissions from this installer.
 #>
 
+#region Parameters
+
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
     [string] $SubscriptionId,
@@ -162,6 +164,10 @@ param(
     [switch] $SkipSmokeTest
 )
 
+#endregion Parameters
+
+#region Initialization
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -172,7 +178,35 @@ $ensureEntraAppScriptPath = Join-Path $projectRoot 'scripts\Ensure-EntraApiAppli
 $autopilotImportModulePath = Join-Path $projectRoot 'src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $autopilotImportModulePath -Force
 
+#endregion Initialization
+
+#region Helper functions
+
 function Read-DeploymentValue {
+    <#
+    .SYNOPSIS
+    Resolves a required deployment value from a parameter or interactive input.
+
+    .DESCRIPTION
+    Returns CurrentValue without prompting when it contains a non-whitespace
+    value. Otherwise, prompts the user and displays DefaultValue as the
+    suggested value when one is available. Pressing Enter accepts DefaultValue.
+    The function throws a terminating error when no parameter value, entered
+    value, or default value is available.
+
+    .PARAMETER CurrentValue
+    Optional value already supplied through an installer parameter.
+
+    .PARAMETER Prompt
+    Label displayed by Read-Host when interactive input is required.
+
+    .PARAMETER DefaultValue
+    Optional suggested value used when the user submits an empty response.
+
+    .OUTPUTS
+    System.String. The resolved value with leading and trailing whitespace
+    removed.
+    #>
     param(
         [string] $CurrentValue,
         [Parameter(Mandatory)]
@@ -203,7 +237,104 @@ function Read-DeploymentValue {
     return $enteredValue.Trim()
 }
 
+function Test-FunctionAppName {
+    <#
+    .SYNOPSIS
+    Tests whether a name satisfies the Azure Function App naming rules.
+
+    .DESCRIPTION
+    Accepts the ASCII subset used by this installer for Microsoft.Web/sites:
+    2-60 letters, digits, or hyphens, starting and ending with a letter or
+    digit. Global name availability is evaluated by Azure during deployment.
+
+    .PARAMETER Name
+    Function App name to validate.
+
+    .OUTPUTS
+    System.Boolean. True when Name satisfies the supported naming rules.
+
+    .LINK
+    https://learn.microsoft.com/azure/azure-resource-manager/management/resource-name-rules#microsoftweb
+    #>
+    param(
+        [AllowEmptyString()]
+        [string] $Name
+    )
+
+    return -not [string]::IsNullOrWhiteSpace($Name) -and
+        $Name.Length -ge 2 -and
+        $Name.Length -le 60 -and
+        $Name -match '^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$'
+}
+
+function Read-FunctionAppName {
+    <#
+    .SYNOPSIS
+    Resolves and validates the Function App name used by the deployment.
+
+    .DESCRIPTION
+    Returns CurrentValue when it was supplied and valid. Otherwise, prompts
+    interactively and offers DefaultValue as the generated suggestion. Invalid
+    parameter values cause a terminating error; invalid interactive entries
+    display a warning and are requested again.
+
+    .PARAMETER CurrentValue
+    Optional name supplied through the FunctionAppName installer parameter.
+
+    .PARAMETER DefaultValue
+    Generated name shown as the default in the interactive prompt.
+
+    .OUTPUTS
+    System.String. The trimmed, validated Function App name.
+    #>
+    param(
+        [string] $CurrentValue,
+        [Parameter(Mandatory)]
+        [string] $DefaultValue
+    )
+
+    $parameterWasSupplied = -not [string]::IsNullOrWhiteSpace($CurrentValue)
+    while ($true) {
+        $candidate = Read-DeploymentValue `
+            -CurrentValue $CurrentValue `
+            -Prompt 'Globally unique Function App name' `
+            -DefaultValue $DefaultValue
+
+        if (Test-FunctionAppName -Name $candidate) {
+            return $candidate
+        }
+
+        $message = 'Function App name must contain 2-60 letters, digits, or hyphens and must start and end with a letter or digit.'
+        if ($parameterWasSupplied) {
+            throw $message
+        }
+
+        Write-Warning $message
+        $CurrentValue = $null
+    }
+}
+
 function ConvertTo-TagAuthorizationPolicy {
+    <#
+    .SYNOPSIS
+    Resolves and validates the group-to-tag authorization policy.
+
+    .DESCRIPTION
+    Uses the supplied Rules when at least one non-whitespace rule is present.
+    Otherwise, interactively requests Entra group object IDs and their allowed
+    Device Tags until the user finishes the input. At least one rule is
+    required. Parsing, consolidation, and validation are delegated to the
+    AutopilotImport module.
+
+    .PARAMETER Rules
+    Optional authorization rules in the format
+    <Entra-group-object-ID>=<tag1>,<tag2>. Multiple entries for the same group
+    are consolidated by the AutopilotImport module.
+
+    .OUTPUTS
+    System.Object[]. Authorization policy entries containing a groupId and the
+    corresponding collection of allowed tags.
+    #>
     param(
         [string[]] $Rules
     )
@@ -232,6 +363,23 @@ function ConvertTo-TagAuthorizationPolicy {
 }
 
 function Import-DeploymentModule {
+    <#
+    .SYNOPSIS
+    Ensures that a required PowerShell module is available and imports it.
+
+    .DESCRIPTION
+    Checks whether Name is installed locally. When the module is missing and
+    the installer was started with InstallMissingModules, installs it from the
+    PowerShell Gallery for the current user. Otherwise, throws a terminating
+    error that instructs the user to enable dependency installation. The
+    resolved module is imported with terminating error handling.
+
+    .PARAMETER Name
+    Name of the PowerShell module to locate, optionally install, and import.
+
+    .OUTPUTS
+    None.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $Name
@@ -250,6 +398,25 @@ function Import-DeploymentModule {
 }
 
 function Initialize-BicepCli {
+    <#
+    .SYNOPSIS
+    Ensures that the Bicep CLI is available to the installer.
+
+    .DESCRIPTION
+    Returns immediately when bicep can already be resolved as a command.
+    Otherwise, searches the standard per-user and system-wide installation
+    paths. When Bicep is missing and the installer was started with
+    InstallMissingModules, installs the Microsoft.Bicep winget package and
+    checks the known paths again. The resolved installation directory is added
+    to PATH for the current process. A terminating error is thrown when Bicep
+    or winget is unavailable, or when the winget installation fails.
+
+    .OUTPUTS
+    None.
+
+    .LINK
+    https://learn.microsoft.com/azure/azure-resource-manager/bicep/install
+    #>
     $bicepCommand = Get-Command bicep -ErrorAction SilentlyContinue
     if ($bicepCommand) {
         return
@@ -291,6 +458,10 @@ function Initialize-BicepCli {
     $env:Path = "$(Split-Path $bicepPath -Parent);$env:Path"
 }
 
+#endregion Helper functions
+
+#region Prerequisites
+
 if (-not (Test-Path $templatePath -PathType Leaf)) {
     throw "Bicep template not found: $templatePath"
 }
@@ -300,6 +471,10 @@ Import-DeploymentModule -Name 'Az.Resources'
 Import-DeploymentModule -Name 'Az.Storage'
 Import-DeploymentModule -Name 'Az.Websites'
 Initialize-BicepCli
+
+#endregion Prerequisites
+
+#region Deployment input and validation
 
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
 $defaultSubscriptionId = if ($currentContext) { $currentContext.Subscription.Id } else { $null }
@@ -312,6 +487,14 @@ $TenantId = Read-DeploymentValue `
     -CurrentValue $TenantId `
     -Prompt 'Entra Tenant ID' `
     -DefaultValue $defaultTenantId
+$parsedGuid = [guid]::Empty
+if (-not [guid]::TryParse($SubscriptionId, [ref] $parsedGuid)) {
+    throw 'Azure Subscription ID must be a GUID.'
+}
+$parsedGuid = [guid]::Empty
+if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
+    throw 'Entra Tenant ID must be a GUID.'
+}
 $ResourceGroupName = Read-DeploymentValue `
     -CurrentValue $ResourceGroupName `
     -Prompt 'Azure Resource Group' `
@@ -322,28 +505,21 @@ $Location = Read-DeploymentValue `
     -DefaultValue 'westeurope'
 
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
-$FunctionAppName = Read-DeploymentValue `
+$FunctionAppName = Read-FunctionAppName `
     -CurrentValue $FunctionAppName `
-    -Prompt 'Globally unique Function App name' `
     -DefaultValue $defaultFunctionName
 $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
 $parsedGuid = [guid]::Empty
-if (-not [guid]::TryParse($SubscriptionId, [ref] $parsedGuid)) {
-    throw 'Azure Subscription ID must be a GUID.'
-}
-$parsedGuid = [guid]::Empty
-if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
-    throw 'Entra Tenant ID must be a GUID.'
-}
-$parsedGuid = [guid]::Empty
 if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)) {
     throw 'Entra API application Client ID must be a GUID.'
 }
-if ($FunctionAppName -notmatch '^[a-zA-Z0-9-]{2,60}$') {
-    throw 'Function App name must contain 2-60 letters, digits, or hyphens.'
-}
+
+#endregion Deployment input and validation
+
+#region Azure context and confirmation
+
 $contextMatches = $currentContext -and
     $currentContext.Subscription.Id -eq $SubscriptionId -and
     $currentContext.Tenant.Id -eq $TenantId
@@ -392,6 +568,10 @@ if (-not $PSCmdlet.ShouldProcess(
     return
 }
 
+#endregion Azure context and confirmation
+
+#region Resource group and Entra application
+
 $resourceGroup = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
 if (-not $resourceGroup) {
     $resourceGroup = New-AzResourceGroup -Name $ResourceGroupName -Location $Location
@@ -423,6 +603,10 @@ else {
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
     $ApiAudience = "api://$EntraClientId"
 }
+
+#endregion Resource group and Entra application
+
+#region Infrastructure deployment
 
 Write-Host "`nDeployment configuration" -ForegroundColor Cyan
 Write-Host "  Subscription : $($subscription.Name) ($SubscriptionId)"
@@ -474,6 +658,10 @@ if ($deployment.ProvisioningState -ne 'Succeeded') {
     throw "Azure deployment ended with state '$($deployment.ProvisioningState)'."
 }
 
+#endregion Infrastructure deployment
+
+#region Client configuration
+
 $functionUrl = [string] $deployment.Outputs.functionUrl.Value
 $managementUrl = [string] $deployment.Outputs.managementUrl.Value
 $managedIdentityObjectId = [guid] $deployment.Outputs.managedIdentityObjectId.Value
@@ -518,6 +706,10 @@ Move-Item `
     -Force
 Write-Host "Wrote client defaults to '$clientSettingsPath'."
 
+#endregion Client configuration
+
+#region Permissions and Function publishing
+
 if (-not $SkipGraphPermission) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
     & $grantScriptPath -ManagedIdentityObjectId $managedIdentityObjectId
@@ -551,6 +743,10 @@ if (-not $SkipPublish) {
     }
 }
 
+#endregion Permissions and Function publishing
+
+#region Smoke test
+
 if (-not $SkipSmokeTest -and -not $SkipPublish) {
     Write-Host 'Running Easy Auth smoke test...'
     $smokeResponse = Invoke-WebRequest `
@@ -564,6 +760,10 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
         throw "Smoke test expected HTTP 401 without a token, but received $($smokeResponse.StatusCode)."
     }
 }
+
+#endregion Smoke test
+
+#region Result
 
 $result = [pscustomobject]@{
     SubscriptionId          = $SubscriptionId
@@ -582,3 +782,5 @@ $result = [pscustomobject]@{
 Write-Host "`nInstallation completed." -ForegroundColor Green
 $result | Format-List
 $result
+
+#endregion Result

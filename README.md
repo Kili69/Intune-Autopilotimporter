@@ -110,9 +110,13 @@ The installer prompts for:
 - Entra Tenant ID
 - Azure Resource Group
 - Azure region
-- Globally unique Function App name
+- Globally unique Function App name, with a generated name proposed by default
 - Entra group object IDs
 - Allowed Device Tags for each group
+
+Function App names must contain 2-60 letters, digits, or hyphens and must start
+and end with a letter or digit. The installer rejects an invalid
+`-FunctionAppName`; in interactive mode it asks again until the name is valid.
 
 The Client ID is taken automatically from the existing or newly created app registration.
 

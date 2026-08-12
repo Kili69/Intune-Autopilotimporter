@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260811.2
+# Project-Version: 1.0.20260812.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -162,6 +162,42 @@ Describe 'Installer tag authorization rules' {
     It 'rejects a non-GUID group identifier' {
         { ConvertTo-TagAuthorizationPolicy -Rules @('Not-A-Group=Standard') } |
             Should -Throw
+    }
+}
+
+Describe 'Installer Function App naming' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Test-FunctionAppName'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'accepts Azure Function App names at the supported boundaries' {
+        Test-FunctionAppName -Name 'a1' | Should -Be $true
+        Test-FunctionAppName -Name ('a' * 60) | Should -Be $true
+        Test-FunctionAppName -Name 'func-autopilot-contoso' | Should -Be $true
+    }
+
+    It 'rejects invalid Azure Function App names' -ForEach @(
+        @{ Name = 'a' }
+        @{ Name = 'a' * 61 }
+        @{ Name = '-func-autopilot' }
+        @{ Name = 'func-autopilot-' }
+        @{ Name = 'func_autopilot' }
+        @{ Name = 'func autopilot' }
+    ) {
+        Test-FunctionAppName -Name $Name | Should -Be $false
     }
 }
 
