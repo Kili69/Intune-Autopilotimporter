@@ -1,0 +1,5 @@
+{
+  "functionUrl": "https://<function-app>.azurewebsites.net/api/devices/import",
+  "apiApplicationIdUri": "api://<application-client-id>",
+  "tenantId": "<tenant-id>"
+}

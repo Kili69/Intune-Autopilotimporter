@@ -1,0 +1,238 @@
+# Project-Version: 1.0.20260811.2
+# Author: andreas.lucas@microsoft.com (aka Kili)
+
+<#
+DISCLAIMER:
+This sample script is not supported under any Microsoft standard support program or service.
+The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims
+all implied warranties including, without limitation, any implied warranties of merchantability
+or of fitness for a particular purpose. The entire risk arising out of the use or performance of
+the sample scripts and documentation remains with you. In no event shall Microsoft, its authors,
+or anyone else involved in the creation, production, or delivery of the scripts be liable for any
+damages whatsoever (including, without limitation, damages for loss of business profits, business
+interruption, loss of business information, or other pecuniary loss) arising out of the use of or
+inability to use the sample scripts or documentation, even if Microsoft has been advised of the
+possibility of such damages.
+#>
+
+<#
+.SYNOPSIS
+Provides validation and authorization helpers for the Autopilot import API.
+
+.DESCRIPTION
+Contains the testable core used by the Azure Function HTTP trigger to decode
+Easy Auth principals, enforce app roles and group-to-tag policy, and construct
+a validated Microsoft Graph Autopilot import payload.
+#>
+
+Set-StrictMode -Version Latest
+
+function ConvertFrom-ClientPrincipalHeader {
+    <#
+    .SYNOPSIS
+    Decodes an Azure App Service Easy Auth client-principal header.
+
+    .PARAMETER HeaderValue
+    Base64-encoded UTF-8 JSON value from the x-ms-client-principal header.
+
+    .OUTPUTS
+    PSCustomObject containing the decoded Easy Auth principal and claims.
+
+    .NOTES
+    Throws ArgumentException when Base64, JSON, or claims are invalid.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $HeaderValue
+    )
+
+    try {
+        $json = [System.Text.Encoding]::UTF8.GetString(
+            [System.Convert]::FromBase64String($HeaderValue)
+        )
+        $principal = $json | ConvertFrom-Json
+    }
+    catch {
+        throw [System.ArgumentException]::new('The client principal header is invalid.')
+    }
+
+    if (-not $principal.claims) {
+        throw [System.ArgumentException]::new('The client principal does not contain claims.')
+    }
+
+    return $principal
+}
+
+function Test-ClientPrincipalRole {
+    <#
+    .SYNOPSIS
+    Tests whether an Easy Auth principal has a required app role.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing a claims collection.
+
+    .PARAMETER RequiredRole
+    Exact app-role value required for authorization.
+
+    .OUTPUTS
+    System.Boolean. True when a matching role claim exists; otherwise false.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [Parameter(Mandatory)]
+        [string] $RequiredRole
+    )
+
+    $roleClaimTypes = @(
+        'roles',
+        'http://schemas.microsoft.com/ws/2008/06/identity/claims/role'
+    )
+
+    if ($Principal.role_typ) {
+        $roleClaimTypes += [string] $Principal.role_typ
+    }
+
+    return @($Principal.claims | Where-Object {
+        $_.typ -in $roleClaimTypes -and $_.val -eq $RequiredRole
+    }).Count -gt 0
+}
+
+function Resolve-AuthorizedGroupTag {
+    <#
+    .SYNOPSIS
+    Resolves a requested Group Tag authorized for the caller's groups.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing Entra security-group claims.
+
+    .PARAMETER Policy
+    Collection of rules with groupId and tags properties.
+
+    .PARAMETER RequestedGroupTag
+    Group Tag requested by the API caller. Matching is case-insensitive.
+
+    .OUTPUTS
+    System.String. Returns the configured Group Tag with its canonical casing.
+
+    .NOTES
+    Throws UnauthorizedAccessException when no caller group permits the tag.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [Parameter(Mandatory)]
+        [object[]] $Policy,
+
+        [Parameter(Mandatory)]
+        [string] $RequestedGroupTag
+    )
+
+    $requestedTag = $RequestedGroupTag.Trim()
+    if ([string]::IsNullOrWhiteSpace($requestedTag) -or $requestedTag.Length -gt 128) {
+        throw [System.ArgumentException]::new('groupTag is invalid.')
+    }
+
+    $groupClaimTypes = @(
+        'groups',
+        'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+    )
+    $callerGroupIds = @($Principal.claims | Where-Object {
+        $_.typ -in $groupClaimTypes
+    } | ForEach-Object {
+        [string] $_.val
+    })
+
+    foreach ($rule in $Policy) {
+        $configuredTag = @($rule.tags | Where-Object {
+            [string] $_ -ieq $requestedTag
+        } | Select-Object -First 1)
+        if ([string] $rule.groupId -in $callerGroupIds -and $configuredTag.Count -gt 0) {
+            return [string] $configuredTag[0]
+        }
+    }
+
+    throw [System.UnauthorizedAccessException]::new(
+        'The requested groupTag is not allowed for the caller groups.'
+    )
+}
+
+function ConvertTo-AutopilotImportPayload {
+    <#
+    .SYNOPSIS
+    Creates a validated Microsoft Graph Autopilot import payload.
+
+    .PARAMETER RequestBody
+    Request object containing serialNumber and Base64 hardwareIdentifier.
+
+    .PARAMETER GroupTag
+    Server-authorized Group Tag. Any Group Tag in RequestBody is ignored.
+
+    .OUTPUTS
+    OrderedDictionary suitable for the importedWindowsAutopilotDeviceIdentities
+    Microsoft Graph endpoint.
+
+    .NOTES
+    Validates required fields, size limits, and Base64 encoding before returning
+    the payload.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $RequestBody,
+
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 128)]
+        [string] $GroupTag
+    )
+
+    $serialNumber = [string] $RequestBody.serialNumber
+    $hardwareIdentifier = [string] $RequestBody.hardwareIdentifier
+
+    if ([string]::IsNullOrWhiteSpace($serialNumber)) {
+        throw [System.ArgumentException]::new('serialNumber is required.')
+    }
+
+    $serialNumber = $serialNumber.Trim()
+    if ($serialNumber.Length -gt 128) {
+        throw [System.ArgumentException]::new('serialNumber must not exceed 128 characters.')
+    }
+
+    if ([string]::IsNullOrWhiteSpace($hardwareIdentifier)) {
+        throw [System.ArgumentException]::new('hardwareIdentifier is required.')
+    }
+
+    if ($hardwareIdentifier.Length -gt 65536) {
+        throw [System.ArgumentException]::new('hardwareIdentifier is too large.')
+    }
+
+    try {
+        $decodedHash = [System.Convert]::FromBase64String($hardwareIdentifier)
+    }
+    catch {
+        throw [System.ArgumentException]::new('hardwareIdentifier must be valid Base64.')
+    }
+
+    if ($decodedHash.Length -eq 0) {
+        throw [System.ArgumentException]::new('hardwareIdentifier must not be empty.')
+    }
+
+    return [ordered]@{
+        '@odata.type'      = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
+        groupTag          = $GroupTag
+        serialNumber      = $serialNumber
+        hardwareIdentifier = $hardwareIdentifier
+    }
+}
+
+Export-ModuleMember -Function @(
+    'ConvertFrom-ClientPrincipalHeader',
+    'Test-ClientPrincipalRole',
+    'Resolve-AuthorizedGroupTag',
+    'ConvertTo-AutopilotImportPayload'
+)
