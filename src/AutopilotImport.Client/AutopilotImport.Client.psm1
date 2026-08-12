@@ -304,6 +304,56 @@ function Import-AutopilotDevice {
     }
 }
 
+function Get-AutopilotImportStatus {
+    <# .SYNOPSIS Returns the current Intune processing status of an Autopilot import. #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][guid] $ImportId,
+        [ValidatePattern('^https://')][string] $FunctionUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        functionUrl = $FunctionUrl
+        apiApplicationIdUri = $ApiApplicationIdUri
+        tenantId = $TenantId
+    }
+    $url = Get-ConfigurationValue $configuration functionUrl 'FunctionUrl'
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $token = Get-ClientAccessToken $resolvedTenantId $audience
+    $statusUrl = "$($url.TrimEnd('/'))?importId=$ImportId"
+
+    try {
+        Invoke-RestMethod `
+            -Method Get `
+            -Uri $statusUrl `
+            -Authentication Bearer `
+            -Token $token `
+            -ErrorAction Stop
+    }
+    catch {
+        $response = $null
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try { $response = $_.ErrorDetails.Message | ConvertFrom-Json }
+            catch { $response = $null }
+        }
+        $message = "Could not retrieve Autopilot import '$ImportId'."
+        if ($response -and $response.PSObject.Properties['error']) {
+            $message += " Service error: $($response.error)."
+        }
+        else {
+            $message += " $($_.Exception.Message)"
+        }
+        if ($response -and $response.PSObject.Properties['correlationId']) {
+            $message += " Correlation ID: $($response.correlationId)."
+        }
+        throw $message
+    }
+}
+
 function Get-AutopilotTagPolicy {
     <# .SYNOPSIS Returns the current group-to-tag policy. #>
     [CmdletBinding()]
@@ -482,6 +532,7 @@ function Remove-AutopilotTagPolicyManager {
 
 Export-ModuleMember -Function @(
     'Import-AutopilotDevice',
+    'Get-AutopilotImportStatus',
     'Get-AutopilotTagPolicy',
     'Set-AutopilotTagPolicy',
     'Update-AutopilotTagPolicyManager',

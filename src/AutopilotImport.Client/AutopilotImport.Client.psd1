@@ -10,6 +10,7 @@
     PowerShellVersion = '7.2'
     FunctionsToExport = @(
         'Import-AutopilotDevice'
+        'Get-AutopilotImportStatus'
         'Get-AutopilotTagPolicy'
         'Set-AutopilotTagPolicy'
         'Update-AutopilotTagPolicyManager'

@@ -147,7 +147,8 @@ $module = Get-ChildItem `
 Import-Module $module.FullName
 ```
 
-The module exports `Import-AutopilotDevice`, `Get-AutopilotTagPolicy`,
+The module exports `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
+`Get-AutopilotTagPolicy`,
 `Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
 `Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
 
@@ -355,6 +356,17 @@ initial Intune import status, local import time in `importedAt`, and an
 `intuneAvailabilityNote`. Intune processes imports asynchronously, so it may
 take several minutes before a device appears in the Intune admin center. A tag
 without a matching group rule returns HTTP 403.
+
+Use the returned `importId` to verify the asynchronous Intune processing result:
+
+```powershell
+Get-AutopilotImportStatus `
+    -ImportId '82d7266e-4213-4fa1-a5d5-b0ee10d009de'
+```
+
+Only `status: complete` confirms a successful import. `status: error` includes
+`deviceErrorCode` and `deviceErrorName`; synthetic hashes return
+`InvalidZtdHardwareHash` because they do not represent real devices.
 
 ## Dynamic Device Group
 

@@ -426,7 +426,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-        (Get-Command -Module AutopilotImport.Client).Count | Should -Be 6
+        (Get-Command -Module AutopilotImport.Client).Count | Should -Be 7
         Remove-Module AutopilotImport.Client
     }
 }

@@ -135,6 +135,66 @@ catch {
     return
 }
 
+if ([string] $Request.Method -eq 'GET') {
+    $importId = [string] $Request.Query.importId
+    $parsedImportId = [guid]::Empty
+    if (-not [guid]::TryParse($importId, [ref] $parsedImportId)) {
+        Send-JsonResponse -StatusCode BadRequest -Body @{
+            error         = 'invalidImportId'
+            correlationId = $correlationId
+        }
+        return
+    }
+
+    try {
+        $tokenResult = Get-AzAccessToken `
+            -ResourceUrl 'https://graph.microsoft.com/' `
+            -ErrorAction Stop
+        $accessToken = if ($tokenResult.Token -is [Security.SecureString]) {
+            ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
+        }
+        else {
+            [string] $tokenResult.Token
+        }
+        $graphResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$parsedImportId" `
+            -Authentication Bearer `
+            -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+            -ErrorAction Stop
+        $authorizedGroupTag = Resolve-AuthorizedGroupTag `
+            -Principal $principal `
+            -Policy $tagAuthorizationPolicy `
+            -RequestedGroupTag ([string] $graphResponse.groupTag)
+    }
+    catch [System.UnauthorizedAccessException] {
+        Send-JsonResponse -StatusCode Forbidden -Body @{
+            error         = 'importStatusNotAllowed'
+            correlationId = $correlationId
+        }
+        return
+    }
+    catch {
+        Write-Error "[$correlationId] Import status lookup failed for '$parsedImportId': $($_.Exception.Message)"
+        Send-JsonResponse -StatusCode BadGateway -Body @{
+            error         = 'importStatusLookupFailed'
+            correlationId = $correlationId
+        }
+        return
+    }
+
+    Send-JsonResponse -StatusCode OK -Body @{
+        importId       = $graphResponse.id
+        serialNumber   = $graphResponse.serialNumber
+        groupTag       = $authorizedGroupTag
+        status         = $graphResponse.state.deviceImportStatus
+        deviceErrorCode = $graphResponse.state.deviceErrorCode
+        deviceErrorName = $graphResponse.state.deviceErrorName
+        correlationId  = $correlationId
+    }
+    return
+}
+
 try {
     $requestBody = if ($Request.Body -is [string]) {
         $Request.Body | ConvertFrom-Json
