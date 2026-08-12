@@ -13,7 +13,7 @@ tag casing, installer authorization-rule parsing, and project metadata markers.
 .EXAMPLE
 Invoke-Pester -Script .\tests\AutopilotImport.Tests.ps1
 
-Runs the test suite with Pester 4 syntax.
+Runs the test suite with Pester 5 syntax.
 
 .INPUTS
 None.
@@ -35,8 +35,8 @@ Describe 'Autopilot import request validation' {
 
         $payload = ConvertTo-AutopilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate'
 
-        $payload.serialNumber | Should Be 'PC-001'
-        $payload.groupTag | Should Be 'Corporate'
+        $payload.serialNumber | Should -Be 'PC-001'
+        $payload.groupTag | Should -Be 'Corporate'
     }
 
     It 'rejects a malformed hardware hash' {
@@ -46,7 +46,7 @@ Describe 'Autopilot import request validation' {
         }
 
         { ConvertTo-AutopilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate' } |
-            Should Throw
+            Should -Throw
     }
 }
 
@@ -65,7 +65,7 @@ Describe 'Easy Auth authorization' {
         $principal = ConvertFrom-ClientPrincipalHeader -HeaderValue $header
 
         (Test-ClientPrincipalRole -Principal $principal -RequiredRole 'DeviceHash.Importer') |
-            Should Be $true
+            Should -Be $true
     }
 
     It 'rejects a principal without the importer role' {
@@ -75,7 +75,7 @@ Describe 'Easy Auth authorization' {
         }
 
         (Test-ClientPrincipalRole -Principal $principal -RequiredRole 'DeviceHash.Importer') |
-            Should Be $false
+            Should -Be $false
     }
 }
 
@@ -103,7 +103,7 @@ Describe 'Group-based tag authorization' {
             -Principal $principal `
             -Policy $policy `
             -RequestedGroupTag 'Autopilot-Kiosk' |
-            Should Be 'Autopilot-Kiosk'
+            Should -Be 'Autopilot-Kiosk'
     }
 
     It 'returns the configured tag casing' {
@@ -111,7 +111,7 @@ Describe 'Group-based tag authorization' {
             -Principal $principal `
             -Policy $policy `
             -RequestedGroupTag 'autopilot-kiosk' |
-            Should Be 'Autopilot-Kiosk'
+            Should -Be 'Autopilot-Kiosk'
     }
 
     It 'rejects a tag assigned only to another group' {
@@ -119,7 +119,7 @@ Describe 'Group-based tag authorization' {
                 -Principal $principal `
                 -Policy $policy `
                 -RequestedGroupTag 'Autopilot-Privileged' } |
-            Should Throw
+            Should -Throw
     }
 
     It 'rejects a tag that is not configured' {
@@ -127,7 +127,7 @@ Describe 'Group-based tag authorization' {
                 -Principal $principal `
                 -Policy $policy `
                 -RequestedGroupTag 'Untrusted-Tag' } |
-            Should Throw
+            Should -Throw
     }
 }
 
@@ -155,13 +155,202 @@ Describe 'Installer tag authorization rules' {
             '11111111-1111-1111-1111-111111111111=Kiosk,Privileged'
         )
 
-        $policy.Count | Should Be 1
-        $policy[0].tags.Count | Should Be 3
+        $policy.Count | Should -Be 1
+        $policy[0].tags.Count | Should -Be 3
     }
 
     It 'rejects a non-GUID group identifier' {
         { ConvertTo-TagAuthorizationPolicy -Rules @('Not-A-Group=Standard') } |
-            Should Throw
+            Should -Throw
+    }
+}
+
+Describe 'Tag authorization policy updates' {
+    It 'identifies added and removed groups without changing retained groups' {
+        $previousPolicy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            '11111111-1111-1111-1111-111111111111=Standard'
+            '22222222-2222-2222-2222-222222222222=Kiosk'
+        )
+        $updatedPolicy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            '22222222-2222-2222-2222-222222222222=Privileged'
+            '33333333-3333-3333-3333-333333333333=Standard'
+        )
+
+        $changes = Compare-TagAuthorizationPolicyGroups `
+            -PreviousPolicy $previousPolicy `
+            -UpdatedPolicy $updatedPolicy
+
+        $changes.AddedGroupIds | Should -Be '33333333-3333-3333-3333-333333333333'
+        $changes.RemovedGroupIds | Should -Be '11111111-1111-1111-1111-111111111111'
+    }
+
+    It 'does not change group assignments when only tags change' {
+        $previousPolicy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            '11111111-1111-1111-1111-111111111111=Standard'
+        )
+        $updatedPolicy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
+        )
+
+        $changes = Compare-TagAuthorizationPolicyGroups `
+            -PreviousPolicy $previousPolicy `
+            -UpdatedPolicy $updatedPolicy
+
+        $changes.AddedGroupIds.Count | Should -Be 0
+        $changes.RemovedGroupIds.Count | Should -Be 0
+    }
+}
+
+Describe 'Tag policy manager authorization' {
+    BeforeAll {
+        $managerPolicy = [pscustomobject]@{
+            principalIds = @(
+                '11111111-1111-1111-1111-111111111111'
+                '22222222-2222-2222-2222-222222222222'
+            )
+        }
+    }
+
+    It 'allows an explicitly configured user' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }
+            )
+        }
+
+        Test-TagPolicyManagerPrincipal `
+            -Principal $principal `
+            -ManagerPolicy $managerPolicy |
+            Should -Be $true
+    }
+
+    It 'allows membership in an explicitly configured group' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '33333333-3333-3333-3333-333333333333' }
+                @{ typ = 'groups'; val = '22222222-2222-2222-2222-222222222222' }
+            )
+        }
+
+        Test-TagPolicyManagerPrincipal `
+            -Principal $principal `
+            -ManagerPolicy $managerPolicy |
+            Should -Be $true
+    }
+
+    It 'rejects an unconfigured principal' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '33333333-3333-3333-3333-333333333333' }
+            )
+        }
+
+        Test-TagPolicyManagerPrincipal `
+            -Principal $principal `
+            -ManagerPolicy $managerPolicy |
+            Should -Be $false
+    }
+}
+
+Describe 'Tag manager policy Azure administration' {
+    BeforeAll {
+        $functionResourceId = '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
+    }
+
+    It 'allows Contributor inherited from the resource group' {
+        $assignments = @([pscustomobject]@{
+            RoleDefinitionName = 'Contributor'
+            Scope = '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-autopilot'
+        })
+
+        Test-TagManagerPolicyAdministratorRole `
+            -RoleAssignment $assignments `
+            -FunctionResourceId $functionResourceId |
+            Should -Be $true
+    }
+
+    It 'allows Owner assigned directly to the Function' {
+        $assignments = @([pscustomobject]@{
+            RoleDefinitionName = 'Owner'
+            Scope = $functionResourceId
+        })
+
+        Test-TagManagerPolicyAdministratorRole `
+            -RoleAssignment $assignments `
+            -FunctionResourceId $functionResourceId |
+            Should -Be $true
+    }
+
+    It 'rejects other write roles' {
+        $assignments = @([pscustomobject]@{
+            RoleDefinitionName = 'Website Contributor'
+            Scope = $functionResourceId
+        })
+
+        Test-TagManagerPolicyAdministratorRole `
+            -RoleAssignment $assignments `
+            -FunctionResourceId $functionResourceId |
+            Should -Be $false
+    }
+}
+
+Describe 'Intune Role Administrator authorization' {
+    It 'allows a caller object ID included in the built-in role assignment' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }
+            )
+        }
+        $assignments = @([pscustomobject]@{
+            roleDefinition = [pscustomobject]@{
+                displayName = 'Intune Role Administrator'
+            }
+            members = @('11111111-1111-1111-1111-111111111111')
+        })
+
+        Test-IntuneRoleAdministratorAssignment `
+            -Principal $principal `
+            -RoleAssignment $assignments |
+            Should -Be $true
+    }
+
+    It 'allows a caller group included in the built-in role assignment' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }
+                @{ typ = 'groups'; val = '22222222-2222-2222-2222-222222222222' }
+            )
+        }
+        $assignments = @([pscustomobject]@{
+            roleDefinition = [pscustomobject]@{
+                displayName = 'Intune Role Administrator'
+            }
+            members = @('22222222-2222-2222-2222-222222222222')
+        })
+
+        Test-IntuneRoleAdministratorAssignment `
+            -Principal $principal `
+            -RoleAssignment $assignments |
+            Should -Be $true
+    }
+
+    It 'rejects assignments for another Intune role' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }
+            )
+        }
+        $assignments = @([pscustomobject]@{
+            roleDefinition = [pscustomobject]@{
+                displayName = 'Read Only Operator'
+            }
+            members = @('11111111-1111-1111-1111-111111111111')
+        })
+
+        Test-IntuneRoleAdministratorAssignment `
+            -Principal $principal `
+            -RoleAssignment $assignments |
+            Should -Be $false
     }
 }
 
@@ -169,7 +358,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should Match '^1\.0\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^1\.0\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
@@ -181,8 +370,8 @@ Describe 'Project metadata entries' {
                 $content,
                 '(?m)^# Project-Version: (?<version>\d+\.\d+\.\d{8}\.\d+)\r?$'
             )
-            $markers.Count | Should Be 1
-            $markers[0].Groups['version'].Value | Should Be $projectVersion
+            $markers.Count | Should -Be 1
+            $markers[0].Groups['version'].Value | Should -Be $projectVersion
         }
     }
 
@@ -200,8 +389,8 @@ Describe 'Project metadata entries' {
                 $content,
                 '(?m)^# Author: (?<author>[^\r\n]+)\r?$'
             )
-            $markers.Count | Should Be 1
-            $markers[0].Groups['author'].Value | Should Be $projectAuthor
+            $markers.Count | Should -Be 1
+            $markers[0].Groups['author'].Value | Should -Be $projectAuthor
         }
     }
 }

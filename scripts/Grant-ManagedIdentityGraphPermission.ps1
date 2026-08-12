@@ -22,10 +22,10 @@ possibility of such damages.
 Grants the Autopilot Graph permission to a managed identity.
 
 .DESCRIPTION
-Connects to Microsoft Graph, resolves the application role named
-DeviceManagementServiceConfig.ReadWrite.All, and assigns it to the specified
-managed identity service principal. Existing assignments are detected, making
-the script safe to run repeatedly.
+Connects to Microsoft Graph, resolves the required Autopilot import and Intune
+RBAC read application roles, and assigns them to the specified managed identity
+service principal. Existing assignments are detected, making the script safe
+to run repeatedly.
 
 .PARAMETER ManagedIdentityObjectId
 Object ID of the Function App's system-assigned managed identity service
@@ -54,7 +54,10 @@ param(
 )
 
 $graphApplicationId = '00000003-0000-0000-c000-000000000000'
-$permissionName = 'DeviceManagementServiceConfig.ReadWrite.All'
+$permissionNames = @(
+    'DeviceManagementServiceConfig.ReadWrite.All'
+    'DeviceManagementRBAC.Read.All'
+)
 
 Connect-MgGraph `
     -Scopes 'Application.Read.All', 'AppRoleAssignment.ReadWrite.All' `
@@ -65,35 +68,39 @@ $graphResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=$filter&`$select=id,appRoles"
 $graphServicePrincipal = @($graphResponse['value']) | Select-Object -First 1
-$permission = $graphServicePrincipal.appRoles | Where-Object {
-    $_.value -eq $permissionName -and $_.allowedMemberTypes -contains 'Application'
-}
-
-if (-not $permission) {
-    throw "Microsoft Graph application permission '$permissionName' was not found."
-}
-
 $assignmentResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments?`$select=resourceId,appRoleId"
-$existingAssignment = @($assignmentResponse['value']) | Where-Object {
-        [string] $_.resourceId -eq [string] $graphServicePrincipal.id -and
-        [string] $_.appRoleId -eq [string] $permission.id
+$existingAssignments = @($assignmentResponse['value']) | Where-Object {
+        [string] $_.resourceId -eq [string] $graphServicePrincipal.id
     }
 
-if ($existingAssignment) {
-    Write-Output "Permission '$permissionName' is already assigned."
-    return
+foreach ($permissionName in $permissionNames) {
+    $permission = $graphServicePrincipal.appRoles | Where-Object {
+        $_.value -eq $permissionName -and $_.allowedMemberTypes -contains 'Application'
+    } | Select-Object -First 1
+
+    if (-not $permission) {
+        throw "Microsoft Graph application permission '$permissionName' was not found."
+    }
+
+    $existingAssignment = @($existingAssignments | Where-Object {
+        [string] $_.appRoleId -eq [string] $permission.id
+    }) | Select-Object -First 1
+    if ($existingAssignment) {
+        Write-Output "Permission '$permissionName' is already assigned."
+        continue
+    }
+
+    Invoke-MgGraphRequest `
+        -Method POST `
+        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `
+        -Body (@{
+            principalId = [string] $ManagedIdentityObjectId
+            resourceId  = [string] $graphServicePrincipal.id
+            appRoleId   = [string] $permission.id
+        } | ConvertTo-Json -Compress) `
+        -ContentType 'application/json' | Out-Null
+
+    Write-Output "Assigned Microsoft Graph permission '$permissionName'."
 }
-
-Invoke-MgGraphRequest `
-    -Method POST `
-    -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `
-    -Body (@{
-        principalId = [string] $ManagedIdentityObjectId
-        resourceId  = [string] $graphServicePrincipal.id
-        appRoleId   = [string] $permission.id
-    } | ConvertTo-Json -Compress) `
-    -ContentType 'application/json' | Out-Null
-
-Write-Output "Assigned Microsoft Graph permission '$permissionName'."

@@ -20,12 +20,222 @@ possibility of such damages.
 Provides validation and authorization helpers for the Autopilot import API.
 
 .DESCRIPTION
-Contains the testable core used by the Azure Function HTTP trigger to decode
-Easy Auth principals, enforce app roles and group-to-tag policy, and construct
+Contains the testable core used by the Azure Function HTTP triggers to decode
+Easy Auth principals, enforce group-to-tag and manager policies, and construct
 a validated Microsoft Graph Autopilot import payload.
 #>
 
 Set-StrictMode -Version Latest
+
+function ConvertTo-TagAuthorizationPolicy {
+    <#
+    .SYNOPSIS
+    Converts group-to-tag rules into a normalized authorization policy.
+
+    .PARAMETER Rules
+    Rules in the form <group-object-id>=<tag1>,<tag2>.
+
+    .OUTPUTS
+    PSCustomObject entries with groupId and tags properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]] $Rules
+    )
+
+    $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($enteredRules.Count -eq 0) {
+        throw 'At least one group and tag rule is required.'
+    }
+
+    $rulesByGroup = @{}
+    foreach ($rule in $enteredRules) {
+        $separatorIndex = $rule.IndexOf('=')
+        if ($separatorIndex -lt 1 -or $separatorIndex -eq $rule.Length - 1) {
+            throw "Invalid TagAuthorizationRule '$rule'. Expected '<group-object-id>=<tag1>,<tag2>'."
+        }
+
+        $groupId = $rule.Substring(0, $separatorIndex).Trim()
+        $parsedGroupId = [guid]::Empty
+        if (-not [guid]::TryParse($groupId, [ref] $parsedGroupId)) {
+            throw "Group Object ID '$groupId' must be a GUID."
+        }
+        $normalizedGroupId = $parsedGroupId.ToString()
+
+        $tags = @($rule.Substring($separatorIndex + 1).Split(',') | ForEach-Object {
+            $_.Trim()
+        } | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Select-Object -Unique)
+        if ($tags.Count -eq 0) {
+            throw "At least one Device Tag is required for group '$normalizedGroupId'."
+        }
+        foreach ($tag in $tags) {
+            if ($tag.Length -gt 128) {
+                throw "Device Tag '$tag' must not exceed 128 characters."
+            }
+        }
+
+        $rulesByGroup[$normalizedGroupId] = @(
+            @($rulesByGroup[$normalizedGroupId]) + $tags | Select-Object -Unique
+        )
+    }
+
+    return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
+        [pscustomobject]@{
+            groupId = $_
+            tags    = @($rulesByGroup[$_] | Sort-Object)
+        }
+    })
+}
+
+function Compare-TagAuthorizationPolicyGroups {
+    <#
+    .SYNOPSIS
+    Compares group membership between two tag authorization policies.
+
+    .OUTPUTS
+    PSCustomObject containing AddedGroupIds and RemovedGroupIds.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]] $PreviousPolicy = @(),
+
+        [object[]] $UpdatedPolicy = @()
+    )
+
+    $previousGroupIds = @($PreviousPolicy.groupId | ForEach-Object {
+        ([guid] $_).ToString()
+    })
+    $updatedGroupIds = @($UpdatedPolicy.groupId | ForEach-Object {
+        ([guid] $_).ToString()
+    })
+
+    return [pscustomobject]@{
+        AddedGroupIds = @($updatedGroupIds | Where-Object { $_ -notin $previousGroupIds })
+        RemovedGroupIds = @($previousGroupIds | Where-Object { $_ -notin $updatedGroupIds })
+    }
+}
+
+function Test-TagPolicyManagerPrincipal {
+    <#
+    .SYNOPSIS
+    Tests whether a caller is an explicitly configured tag-policy manager.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing object and group claims.
+
+    .PARAMETER ManagerPolicy
+    Policy containing a principalIds collection of user or group object IDs.
+
+    .OUTPUTS
+    System.Boolean. True when the caller or one of its claimed groups is listed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [Parameter(Mandatory)]
+        [object] $ManagerPolicy
+    )
+
+    $configuredPrincipalIds = @('principalIds', 'installerPrincipalId', 'additionalPrincipalIds' |
+        Where-Object { $ManagerPolicy.PSObject.Properties.Name -contains $_ } |
+        ForEach-Object { @($ManagerPolicy.$_) })
+    $allowedPrincipalIds = @($configuredPrincipalIds | ForEach-Object {
+        ([guid] $_).ToString()
+    } | Select-Object -Unique)
+    $callerPrincipalIds = @($Principal.claims | Where-Object {
+        $_.typ -in @(
+            'oid',
+            'groups',
+            'http://schemas.microsoft.com/identity/claims/objectidentifier',
+            'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+        )
+    } | ForEach-Object {
+        $parsedId = [guid]::Empty
+        if ([guid]::TryParse([string] $_.val, [ref] $parsedId)) {
+            $parsedId.ToString()
+        }
+    })
+
+    return @($callerPrincipalIds | Where-Object {
+        $_ -in $allowedPrincipalIds
+    }).Count -gt 0
+}
+
+function Test-TagManagerPolicyAdministratorRole {
+    <#
+    .SYNOPSIS
+    Tests whether Azure role assignments permit changing the manager policy.
+
+    .PARAMETER RoleAssignment
+    Effective Azure role assignments for the current principal and its groups.
+
+    .PARAMETER FunctionResourceId
+    Full Azure resource ID of the Function App.
+
+    .OUTPUTS
+    System.Boolean. True only for Owner or Contributor at the Function scope or
+    an ancestor scope.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]] $RoleAssignment = @(),
+
+        [Parameter(Mandatory)]
+        [string] $FunctionResourceId
+    )
+
+    $normalizedResourceId = $FunctionResourceId.TrimEnd('/')
+    return @($RoleAssignment | Where-Object {
+        $assignmentScope = ([string] $_.Scope).TrimEnd('/')
+        $_.RoleDefinitionName -in @('Owner', 'Contributor') -and
+        ($normalizedResourceId -eq $assignmentScope -or
+            $normalizedResourceId.StartsWith("$assignmentScope/", [StringComparison]::OrdinalIgnoreCase))
+    }).Count -gt 0
+}
+
+function Test-IntuneRoleAdministratorAssignment {
+    <#
+    .SYNOPSIS
+    Tests whether a caller is covered by an Intune Role Administrator assignment.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing object and group claims.
+
+    .PARAMETER RoleAssignment
+    Intune deviceAndAppManagementRoleAssignment objects with roleDefinition and
+    members properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [object[]] $RoleAssignment = @()
+    )
+
+    $callerPrincipalIds = @($Principal.claims | Where-Object {
+        $_.typ -in @(
+            'oid',
+            'groups',
+            'http://schemas.microsoft.com/identity/claims/objectidentifier',
+            'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+        )
+    } | ForEach-Object { [string] $_.val })
+    $assignedPrincipalIds = @($RoleAssignment | Where-Object {
+        $_.roleDefinition.displayName -eq 'Intune Role Administrator'
+    } | ForEach-Object {
+        @($_.members) | ForEach-Object { [string] $_ }
+    })
+
+    return @($callerPrincipalIds | Where-Object {
+        $_ -in $assignedPrincipalIds
+    }).Count -gt 0
+}
 
 function ConvertFrom-ClientPrincipalHeader {
     <#
@@ -231,6 +441,11 @@ function ConvertTo-AutopilotImportPayload {
 }
 
 Export-ModuleMember -Function @(
+    'ConvertTo-TagAuthorizationPolicy',
+    'Compare-TagAuthorizationPolicyGroups',
+    'Test-TagPolicyManagerPrincipal',
+    'Test-TagManagerPolicyAdministratorRole',
+    'Test-IntuneRoleAdministratorAssignment',
     'ConvertFrom-ClientPrincipalHeader',
     'Test-ClientPrincipalRole',
     'Resolve-AuthorizedGroupTag',

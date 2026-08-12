@@ -21,8 +21,8 @@ Processes an authenticated Autopilot device import HTTP request.
 
 .DESCRIPTION
 Azure Functions PowerShell HTTP-trigger entry point. It validates the Easy Auth
-client principal, required app role, and requested Group Tag against the
-configured Entra group policy. It then validates the device payload and uses
+client principal and requested Group Tag against the configured Entra group
+policy. It then validates the device payload and uses
 the Function managed identity to create an imported Windows Autopilot device
 identity through Microsoft Graph.
 
@@ -43,14 +43,15 @@ with importId, serialNumber, groupTag, status, and correlationId. Error
 responses include a stable error code and correlationId.
 
 .NOTES
-Requires AUTH_REQUIRED_ROLE and TAG_AUTHORIZATION_POLICY application settings.
-profile.ps1 must authenticate the system-assigned managed identity before this
-handler requests a Microsoft Graph token.
+Reads the group-to-tag policy from the private configuration blob. The legacy
+TAG_AUTHORIZATION_POLICY application setting is used only as an upgrade
+fallback. profile.ps1 must authenticate the system-assigned managed identity
+before this handler requests a Microsoft Graph token.
 #>
 
 using namespace System.Net
 
-param($Request, $TriggerMetadata)
+param($Request, $TriggerMetadata, $TagPolicyBlob)
 
 $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $modulePath -Force
@@ -77,11 +78,17 @@ function Send-JsonResponse {
     })
 }
 
-$requiredRole = $env:AUTH_REQUIRED_ROLE
-$tagAuthorizationPolicyJson = $env:TAG_AUTHORIZATION_POLICY
+$tagAuthorizationPolicyJson = if ($TagPolicyBlob -is [byte[]]) {
+    [Text.Encoding]::UTF8.GetString($TagPolicyBlob)
+}
+elseif ($null -ne $TagPolicyBlob) {
+    [string] $TagPolicyBlob
+}
+else {
+    $env:TAG_AUTHORIZATION_POLICY
+}
 
-if ([string]::IsNullOrWhiteSpace($requiredRole) -or
-    [string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
+if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
     Write-Error "[$correlationId] Required application settings are missing."
     Send-JsonResponse -StatusCode InternalServerError -Body @{
         error         = 'serviceNotConfigured'
@@ -120,14 +127,6 @@ try {
 catch {
     Send-JsonResponse -StatusCode Unauthorized -Body @{
         error         = 'invalidPrincipal'
-        correlationId = $correlationId
-    }
-    return
-}
-
-if (-not (Test-ClientPrincipalRole -Principal $principal -RequiredRole $requiredRole)) {
-    Send-JsonResponse -StatusCode Forbidden -Body @{
-        error         = 'insufficientRole'
         correlationId = $correlationId
     }
     return

@@ -24,7 +24,7 @@ Imports Windows Autopilot devices from a CSV file through the secured Function.
 .DESCRIPTION
 Validates a Microsoft Autopilot CSV, obtains a user token for the Function API,
 and submits each serial number and hardware hash with the requested Group Tag.
-The Function validates the caller's app role and Entra group membership before
+The Function validates the caller's Entra group membership before
 its managed identity performs the Microsoft Graph import.
 
 FunctionUrl, ApiApplicationIdUri, and TenantId default to values in
@@ -87,7 +87,7 @@ Tag, status, and correlation ID.
 
 .NOTES
 The signed-in user needs access only to the Function API through the configured
-Entra group and app role. The user does not require Intune permissions.
+Entra group-to-tag policy. The user does not require Intune permissions.
 #>
 
 [CmdletBinding()]

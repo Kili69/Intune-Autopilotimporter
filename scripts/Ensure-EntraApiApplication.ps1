@@ -24,8 +24,8 @@ Creates or updates the Entra application used by the Autopilot import API.
 .DESCRIPTION
 Ensures an Entra app registration and enterprise application exist for the
 Function API. Configures a delegated API scope, an application role, security
-group claims, assignment requirements, Azure PowerShell preauthorization, and
-optional group-to-app-role assignments.
+group claims, endpoint-level authorization, Azure PowerShell preauthorization, and
+the delegated API scope.
 
 The operation is idempotent and preserves unrelated scopes, roles, application
 ID URIs, and preauthorized clients.
@@ -42,36 +42,27 @@ creates it when no match exists.
 Display name used to find or create the app registration. The default is
 Autopilot Import API.
 
-.PARAMETER RequiredRole
-App-role value assigned to authorized groups and required by the Function. The
-default is DeviceHash.Importer.
-
-.PARAMETER AuthorizedGroupId
-One or more Entra security group object IDs that receive the required app role.
-
 .EXAMPLE
 .\scripts\Ensure-EntraApiApplication.ps1 `
-    -TenantId '11111111-1111-1111-1111-111111111111' `
-    -AuthorizedGroupId '22222222-2222-2222-2222-222222222222'
+    -TenantId '11111111-1111-1111-1111-111111111111'
 
-Creates or updates the default API application and authorizes one group.
+Creates or updates the default API application.
 
 .EXAMPLE
 .\scripts\Ensure-EntraApiApplication.ps1 `
     -TenantId '11111111-1111-1111-1111-111111111111' `
     -ClientId '33333333-3333-3333-3333-333333333333' `
-    -AuthorizedGroupId '22222222-2222-2222-2222-222222222222' `
     -WhatIf
 
 Previews changes to a specific existing application.
 
 .OUTPUTS
 PSCustomObject describing the app registration, enterprise application, API
-Application ID URI, delegated scope, and app role.
+Application ID URI and delegated scope.
 
 .NOTES
 Requires Microsoft.Graph.Authentication and delegated permissions
-Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All, and Group.Read.All.
+Application.ReadWrite.All and User.Read.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -81,11 +72,7 @@ param(
 
     [string] $ClientId,
 
-    [string] $DisplayName = 'Autopilot Import API',
-
-    [string] $RequiredRole = 'DeviceHash.Importer',
-
-    [guid[]] $AuthorizedGroupId
+    [string] $DisplayName = 'Autopilot Import API'
 )
 
 Set-StrictMode -Version Latest
@@ -113,8 +100,12 @@ function Get-GraphCollectionItems {
 
 Connect-MgGraph `
     -TenantId $TenantId `
-    -Scopes 'Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All', 'Group.Read.All' `
+    -Scopes 'Application.ReadWrite.All', 'User.Read' `
     -NoWelcome
+
+$installingUser = Invoke-MgGraphRequest `
+    -Method GET `
+    -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
 
 if ([string]::IsNullOrWhiteSpace($ClientId)) {
     $escapedDisplayName = $DisplayName.Replace("'", "''")
@@ -167,13 +158,9 @@ else {
 $scope = @($application.api.oauth2PermissionScopes | Where-Object value -eq $scopeValue) |
     Select-Object -First 1
 $scopeId = if ($scope) { [string] $scope.id } else { [guid]::NewGuid().ToString() }
-$role = @($application.appRoles | Where-Object value -eq $RequiredRole) | Select-Object -First 1
-$roleId = if ($role) { [string] $role.id } else { [guid]::NewGuid().ToString() }
 $applicationIdUri = "api://$($application.appId)"
 
 $otherScopes = @($application.api.oauth2PermissionScopes | Where-Object value -ne $scopeValue |
-    ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable })
-$otherRoles = @($application.appRoles | Where-Object value -ne $RequiredRole |
     ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable })
 $otherPreAuthorizedApplications = @(
     $application.api.preAuthorizedApplications |
@@ -200,19 +187,9 @@ $updateBody = @{
             }
         )
     }
-    appRoles = @($otherRoles) + @(
-        @{
-            id                 = $roleId
-            value              = $RequiredRole
-            displayName        = 'Import Autopilot devices'
-            description        = 'Allows importing devices through the Autopilot Function.'
-            allowedMemberTypes = @('User')
-            isEnabled          = $true
-        }
-    )
 }
 
-if ($PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope and app role')) {
+if ($PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope')) {
     $updateJson = $updateBody | ConvertTo-Json -Depth 20 -Compress
     Invoke-MgGraphRequest `
         -Method PATCH `
@@ -253,39 +230,12 @@ if (-not $servicePrincipal -and $PSCmdlet.ShouldProcess($DisplayName, 'Create en
         -Body @{ appId = [string] $application.appId }
 }
 
-if ($servicePrincipal -and -not $servicePrincipal.appRoleAssignmentRequired -and
-    $PSCmdlet.ShouldProcess($DisplayName, 'Require user or group assignment')) {
+if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
+    $PSCmdlet.ShouldProcess($DisplayName, 'Allow endpoint-level authorization')) {
     Invoke-MgGraphRequest `
         -Method PATCH `
         -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)" `
-        -Body @{ appRoleAssignmentRequired = $true } | Out-Null
-}
-
-foreach ($groupId in @($AuthorizedGroupId)) {
-    $group = Invoke-MgGraphRequest `
-        -Method GET `
-        -Uri "https://graph.microsoft.com/v1.0/groups/$groupId`?`$select=id,displayName"
-
-    $assignmentResponse = Invoke-MgGraphRequest `
-        -Method GET `
-        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)/appRoleAssignedTo?`$select=principalId,appRoleId"
-    $existingAssignment = @(Get-GraphCollectionItems -Response $assignmentResponse | Where-Object {
-        [string] $_.principalId -eq [string] $groupId -and
-        [string] $_.appRoleId -eq $roleId
-    }) | Select-Object -First 1
-
-    if (-not $existingAssignment -and
-        $PSCmdlet.ShouldProcess($group.displayName, "Assign app role $RequiredRole")) {
-        Invoke-MgGraphRequest `
-            -Method POST `
-            -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)/appRoleAssignedTo" `
-            -Body @{
-                principalId = [string] $group.id
-                resourceId  = [string] $servicePrincipal.id
-                appRoleId   = $roleId
-            } | Out-Null
-        Write-Host "Assigned group '$($group.displayName)' to app role '$RequiredRole'."
-    }
+        -Body @{ appRoleAssignmentRequired = $false } | Out-Null
 }
 
 [pscustomobject]@{
@@ -295,5 +245,5 @@ foreach ($groupId in @($AuthorizedGroupId)) {
     ServicePrincipalObjectId = if ($servicePrincipal) { [string] $servicePrincipal.id } else { $null }
     ApplicationIdUri         = $applicationIdUri
     Scope                    = $scopeValue
-    AppRole                  = $RequiredRole
+    InstallingUserObjectId   = [string] $installingUser.id
 }

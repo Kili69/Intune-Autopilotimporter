@@ -64,15 +64,16 @@ by the Entra application Client ID.
 One or more group-to-tag rules in the form
 <Entra-group-object-ID>=<tag1>,<tag2>. Missing rules are requested interactively.
 
-.PARAMETER RequiredRole
-App-role value required in caller tokens. The default is DeviceHash.Importer.
+.PARAMETER TagManagerPrincipalId
+Optional Entra user or group object IDs that may manage Group Tags in addition
+to the installing user and Intune Role Administrators.
 
 .PARAMETER InstallMissingModules
 Installs missing Az modules, Microsoft.Graph.Authentication, and the Bicep CLI
 for the current user where applicable.
 
 .PARAMETER SkipEntraAppConfiguration
-Skips app registration, API scope, app role, and group-assignment management.
+Skips app registration and API scope management.
 EntraClientId must be supplied when this switch is used.
 
 .PARAMETER SkipGraphPermission
@@ -124,7 +125,7 @@ client settings path.
 
 .NOTES
 The installing administrator requires Azure resource deployment permissions
-and delegated Graph permissions for application and app-role management. End
+and delegated Graph permissions for application management. End
 users receive no Intune or Microsoft Graph permissions from this installer.
 #>
 
@@ -148,7 +149,7 @@ param(
 
     [string[]] $TagAuthorizationRule,
 
-    [string] $RequiredRole = 'DeviceHash.Importer',
+    [guid[]] $TagManagerPrincipalId,
 
     [switch] $InstallMissingModules,
 
@@ -168,6 +169,8 @@ $projectRoot = $PSScriptRoot
 $templatePath = Join-Path $projectRoot 'infra\main.bicep'
 $grantScriptPath = Join-Path $projectRoot 'scripts\Grant-ManagedIdentityGraphPermission.ps1'
 $ensureEntraAppScriptPath = Join-Path $projectRoot 'scripts\Ensure-EntraApiApplication.ps1'
+$autopilotImportModulePath = Join-Path $projectRoot 'src\AutopilotImport\AutopilotImport.psm1'
+Import-Module $autopilotImportModulePath -Force
 
 function Read-DeploymentValue {
     param(
@@ -225,46 +228,7 @@ function ConvertTo-TagAuthorizationPolicy {
         }
     }
 
-    $rulesByGroup = @{}
-    foreach ($rule in $enteredRules) {
-        $separatorIndex = $rule.IndexOf('=')
-        if ($separatorIndex -lt 1 -or $separatorIndex -eq $rule.Length - 1) {
-            throw "Invalid TagAuthorizationRule '$rule'. Expected '<group-object-id>=<tag1>,<tag2>'."
-        }
-
-        $groupId = $rule.Substring(0, $separatorIndex).Trim()
-        $parsedGroupId = [guid]::Empty
-        if (-not [guid]::TryParse($groupId, [ref] $parsedGroupId)) {
-            throw "Group Object ID '$groupId' must be a GUID."
-        }
-        $normalizedGroupId = $parsedGroupId.ToString()
-
-        $tags = @($rule.Substring($separatorIndex + 1).Split(',') | ForEach-Object {
-            $_.Trim()
-        } | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-        } | Select-Object -Unique)
-        if ($tags.Count -eq 0) {
-            throw "At least one Device Tag is required for group '$normalizedGroupId'."
-        }
-        foreach ($tag in $tags) {
-            if ($tag.Length -gt 128) {
-                throw "Device Tag '$tag' must not exceed 128 characters."
-            }
-        }
-
-        $rulesByGroup[$normalizedGroupId] = @(
-            @($rulesByGroup[$normalizedGroupId]) + $tags | Select-Object -Unique
-        )
-    }
-
-    $policy = @($rulesByGroup.Keys | Sort-Object | ForEach-Object {
-        [pscustomobject]@{
-            groupId = $_
-            tags    = @($rulesByGroup[$_] | Sort-Object)
-        }
-    })
-    return ,$policy
+    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $enteredRules)
 }
 
 function Import-DeploymentModule {
@@ -333,6 +297,7 @@ if (-not (Test-Path $templatePath -PathType Leaf)) {
 
 Import-DeploymentModule -Name 'Az.Accounts'
 Import-DeploymentModule -Name 'Az.Resources'
+Import-DeploymentModule -Name 'Az.Storage'
 Import-DeploymentModule -Name 'Az.Websites'
 Initialize-BicepCli
 
@@ -438,14 +403,21 @@ if (-not $SkipEntraAppConfiguration) {
         -TenantId $TenantId `
         -ClientId $EntraClientId `
         -DisplayName $EntraApplicationName `
-        -RequiredRole $RequiredRole `
-        -AuthorizedGroupId $tagAuthorizationPolicy.groupId `
         -Confirm:$false
     $EntraClientId = $entraApplication.ClientId
     $ApiAudience = $entraApplication.ApplicationIdUri
+    $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
+}
+else {
+    Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
+    Connect-MgGraph -TenantId $TenantId -Scopes 'User.Read' -NoWelcome
+    $installingUser = Invoke-MgGraphRequest `
+        -Method GET `
+        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id'
+    $installingUserObjectId = [guid] $installingUser.id
 }
 
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
@@ -460,7 +432,21 @@ Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
-Write-Host "  Required role: $RequiredRole`n"
+$additionalManagerPrincipalIds = @($TagManagerPrincipalId | ForEach-Object {
+    ([guid] $_).ToString()
+} | Where-Object {
+    $_ -ne $installingUserObjectId.ToString()
+} | Select-Object -Unique)
+$managerAuthorizationPolicy = [ordered]@{
+    installerPrincipalId          = $installingUserObjectId.ToString()
+    additionalPrincipalIds        = $additionalManagerPrincipalIds
+    allowIntuneRoleAdministrators = $true
+}
+$managerAuthorizationPolicyJson = $managerAuthorizationPolicy |
+    ConvertTo-Json -Depth 4 -Compress
+Write-Host "  Installing manager: $installingUserObjectId"
+Write-Host "  Additional managers: $($additionalManagerPrincipalIds -join ', ')"
+Write-Host '  Intune Role Administrators: allowed'
 
 $deploymentParameters = @{
     ResourceGroupName = $ResourceGroupName
@@ -470,7 +456,7 @@ $deploymentParameters = @{
     entraClientId     = $EntraClientId
     apiAudience       = $ApiAudience
     tagAuthorizationPolicy = $tagAuthorizationPolicyJson
-    requiredRole      = $RequiredRole
+    managerAuthorizationPolicy = $managerAuthorizationPolicyJson
 }
 
 Write-Host 'Validating Bicep deployment...'
@@ -489,10 +475,35 @@ if ($deployment.ProvisioningState -ne 'Succeeded') {
 }
 
 $functionUrl = [string] $deployment.Outputs.functionUrl.Value
+$managementUrl = [string] $deployment.Outputs.managementUrl.Value
 $managedIdentityObjectId = [guid] $deployment.Outputs.managedIdentityObjectId.Value
+$storageAccountName = [string] $deployment.Outputs.storageAccountName.Value
+$storageAccountKey = Get-AzStorageAccountKey `
+    -ResourceGroupName $ResourceGroupName `
+    -Name $storageAccountName | Select-Object -First 1
+$storageContext = New-AzStorageContext `
+    -StorageAccountName $storageAccountName `
+    -StorageAccountKey $storageAccountKey.Value
+$policyTemporaryPath = Join-Path ([IO.Path]::GetTempPath()) "tag-policy-$([guid]::NewGuid()).json"
+try {
+    Set-Content `
+        -LiteralPath $policyTemporaryPath `
+        -Value $tagAuthorizationPolicyJson `
+        -Encoding utf8NoBOM
+    Set-AzStorageBlobContent `
+        -Context $storageContext `
+        -Container 'configuration' `
+        -File $policyTemporaryPath `
+        -Blob 'tag-authorization-policy.json' `
+        -Force | Out-Null
+}
+finally {
+    Remove-Item $policyTemporaryPath -Force -ErrorAction SilentlyContinue
+}
 $clientSettingsPath = Join-Path $projectRoot 'client.settings.json'
 $clientSettings = [ordered]@{
     functionUrl            = $functionUrl
+    managementUrl          = $managementUrl
     apiApplicationIdUri    = $ApiAudience
     tenantId               = $TenantId
 } | ConvertTo-Json
@@ -521,6 +532,7 @@ if (-not $SkipPublish) {
                 (Join-Path $projectRoot 'requirements.psd1'),
                 (Join-Path $projectRoot 'profile.ps1'),
                 (Join-Path $projectRoot 'ImportDevice'),
+                (Join-Path $projectRoot 'ManageTagPolicy'),
                 (Join-Path $projectRoot 'src')
             ) `
             -DestinationPath $packagePath `
@@ -559,9 +571,11 @@ $result = [pscustomobject]@{
     ResourceGroupName       = $ResourceGroupName
     FunctionAppName         = $FunctionAppName
     FunctionUrl             = $functionUrl
+    ManagementUrl           = $managementUrl
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
+    ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
 }
 

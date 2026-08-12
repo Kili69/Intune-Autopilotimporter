@@ -6,9 +6,10 @@
       "direction": "in",
       "name": "Request",
       "methods": [
-        "post"
+        "get",
+        "put"
       ],
-      "route": "devices/import"
+      "route": "management/tag-policy"
     },
     {
       "type": "http",
@@ -19,6 +20,13 @@
       "type": "blob",
       "direction": "in",
       "name": "TagPolicyBlob",
+      "path": "configuration/tag-authorization-policy.json",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "blob",
+      "direction": "out",
+      "name": "UpdatedTagPolicyBlob",
       "path": "configuration/tag-authorization-policy.json",
       "connection": "AzureWebJobsStorage"
     }
