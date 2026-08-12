@@ -30,23 +30,34 @@ one another implicitly.
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
-| Installing administrator | Azure subscription | `Contributor` | Creates the resource group and deploys the Storage Account, Application Insights, Consumption Plan, Function App, system-assigned managed identity, and Easy Auth configuration. |
-| Installing administrator | Existing Azure resource group | `Contributor` on that resource group | Sufficient when the resource group already exists. Subscription-level `Contributor` is then not required. |
-| Installing administrator | Entra ID | `Application Administrator` or `Cloud Application Administrator` | Creates or updates the app registration and enterprise application. |
+| Installing administrator | Azure subscription | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Creates the resource group and resources, then assigns the scoped Storage data roles required for keyless access. |
+| Installing administrator | Existing Azure resource group | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Sufficient when the resource group already exists. Equivalent subscription-level roles are then not required. |
+| Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
+| Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
 | Installing administrator | Microsoft Graph, delegated | `Application.ReadWrite.All`, `User.Read` | Configures the API application and records the installing user as a permanent Group Tag manager. |
 | Permission administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. This privileged step can be performed by a different administrator. |
 | Permission administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer does not create Azure role assignments. Its Azure
-identity therefore needs `Contributor`, but not `Owner` or `User Access
-Administrator`. If organizational policy uses a custom Azure role, it must
-allow resource-group deployment and Function ZIP publishing for the resource
-types defined in `infra/main.bicep`.
+The standard installer creates two role assignments scoped to the deployed
+Storage Account. The installing user receives `Storage Blob Data Contributor`,
+and the Function managed identity receives `Storage Blob Data Owner`. The
+installer therefore needs both resource deployment permissions and
+`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses
+custom Azure roles, they must also allow Function ZIP publishing for the
+resource types defined in `infra/main.bicep`.
+
+The Consumption-plan deployment requires the Storage Account data endpoint to
+permit public network access. Blob public access and shared-key authentication
+remain disabled; both the installer and Function authenticate with Entra ID.
+If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture
+requires a VNet-integrated hosting plan, Storage Private Endpoints, and private
+DNS instead of the standard Consumption template.
 
 Importing users require no Azure subscription role, Entra directory role,
 Microsoft Graph permission, or direct Intune administrative role. Authorization
@@ -61,6 +72,12 @@ policy outside the provided script and therefore bypass its strict
 ## 1. Entra Application for the Function API
 
 By default, the installer searches the selected tenant for an app registration named `Autopilot Import API`. If it does not exist, the installer creates and configures it automatically. During application setup, Microsoft Graph requests `Application.ReadWrite.All` and `User.Read`. The separate managed-identity permission step requests `Application.Read.All` and `AppRoleAssignment.ReadWrite.All`.
+
+The installer compares the existing application with the desired configuration
+before writing. A user with read access can therefore reuse an already compliant
+application. Application ownership or an application administrator directory
+role is required only when the application actually needs to be created or
+updated.
 
 These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All` and the read-only `DeviceManagementRBAC.Read.All` permission.
 
@@ -102,7 +119,37 @@ The installer prompts for all values that were not supplied as parameters, valid
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
-After a successful deployment, the installer writes `client.settings.json` containing the import URL, management URL, API Application ID URI, and Tenant ID. The file contains no credentials, but it is environment-specific and therefore excluded from Git. The client scripts load these values automatically.
+After the Azure resources are deployed, the installer creates a portable client
+tools package. It asks for the destination and suggests
+`Documents\PowerShell\Scripts\AutopilotImport`. The package contains:
+
+- `Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psd1`
+- `Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psm1`
+- `Modules\AutopilotImport.Client\<version>\AutopilotImport.psm1`
+- `Modules\AutopilotImport.Client\<version>\client.settings.json`
+- `scripts\Import-AutopilotDevice.ps1`
+- `scripts\Set-TagAuthorizationPolicy.ps1`
+- `scripts\Set-TagPolicyManagers.ps1`
+
+The settings file contains the import and management URLs, API Application ID
+URI, Tenant ID, Subscription ID, resource group, and Function App name. It
+contains no credentials. The module loads these values automatically, while
+explicitly supplied parameters take precedence. The scripts are thin
+compatibility wrappers over the module commands.
+
+Import the newest installed module version from a custom tools directory:
+
+```powershell
+$module = Get-ChildItem `
+    'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\*\AutopilotImport.Client.psd1' |
+    Sort-Object { [version] $_.Directory.Name } -Descending |
+    Select-Object -First 1
+Import-Module $module.FullName
+```
+
+The module exports `Import-AutopilotDevice`, `Get-AutopilotTagPolicy`,
+`Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
+`Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
 
 The installer prompts for:
 
@@ -111,6 +158,7 @@ The installer prompts for:
 - Azure Resource Group
 - Azure region
 - Globally unique Function App name, with a generated name proposed by default
+- Destination directory for the operational PowerShell scripts
 - Entra group object IDs
 - Allowed Device Tags for each group
 
@@ -136,6 +184,7 @@ pwsh .\Install-AutopilotImport.ps1 `
         '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
+    -ClientToolsPath 'C:\Tools\AutopilotImport' `
     -InstallMissingModules `
     -Confirm:$false
 ```
@@ -156,7 +205,7 @@ pwsh .\Install-AutopilotImport.ps1 `
 
 ### Change Group-to-Tag Assignments Later
 
-Use `Set-TagAuthorizationPolicy.ps1` to change an already installed Function.
+Use `AutopilotImport.Client` to change an already installed Function.
 The installing user, configured manager users or groups, and current members
 of the Intune RBAC role `Intune Role Administrator` may use this command. They
 do not need Azure resource permissions.
@@ -164,7 +213,7 @@ do not need Azure resource permissions.
 Read the current policy:
 
 ```powershell
-.\scripts\Set-TagAuthorizationPolicy.ps1 -List
+Get-AutopilotTagPolicy
 ```
 
 The supplied rules are the complete desired configuration: add new rules,
@@ -174,7 +223,7 @@ group.
 Preview the changes first:
 
 ```powershell
-.\scripts\Set-TagAuthorizationPolicy.ps1 `
+Set-AutopilotTagPolicy `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
@@ -190,11 +239,7 @@ on the Function App, its resource group, or its subscription may add or remove
 explicit manager users and groups:
 
 ```powershell
-.\scripts\Set-TagPolicyManagers.ps1 `
-    -SubscriptionId '<Subscription-ID>' `
-    -TenantId '<Tenant-ID>' `
-    -ResourceGroupName 'rg-autopilot-import' `
-    -FunctionAppName '<function-app-name>' `
+Update-AutopilotTagPolicyManager `
     -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
     -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
     -WhatIf
@@ -279,7 +324,7 @@ The script does not read local CIM or MDM data. `-CsvPath` is always required an
 Validate the CSV without signing in or calling the API:
 
 ```powershell
-.\scripts\Import-AutopilotDevice.ps1 `
+Import-AutopilotDevice `
     -CsvPath '.\kilispaw3.csv' `
     -GroupTag 'PAW' `
     -ValidateOnly
@@ -290,14 +335,26 @@ Run the actual import:
 ```powershell
 Install-Module Az.Accounts -Scope CurrentUser
 
-.\scripts\Import-AutopilotDevice.ps1 `
+Import-AutopilotDevice `
     -CsvPath '.\kilispaw3.csv' `
     -GroupTag 'PAW'
 ```
 
-`-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` remain available as optional overrides for values loaded from `client.settings.json`. Use `-ConfigPath` to select a different configuration file.
+`-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` remain available as
+optional overrides for values loaded from `client.settings.json`. The manager
+script likewise allows overriding `-SubscriptionId`, `-ResourceGroupName`, and
+`-FunctionAppName`. Use `-ConfigPath` to select a different configuration file.
 
-A successful request returns HTTP 202 with the import ID, authorized Group Tag, and initial Intune import status. A tag without a matching group rule returns HTTP 403. Intune processes the import asynchronously.
+The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing
+the explicit manager list additionally requires `Az.Resources` and
+`Az.Websites`. The project module dependency is included in the installed
+package.
+
+A successful request returns HTTP 202 with the import ID, authorized Group Tag,
+initial Intune import status, local import time in `importedAt`, and an
+`intuneAvailabilityNote`. Intune processes imports asynchronously, so it may
+take several minutes before a device appears in the Intune admin center. A tag
+without a matching group rule returns HTTP 403.
 
 ## Dynamic Device Group
 
@@ -342,6 +399,6 @@ For a local manual increment, run:
 - Application Insights logs the correlation ID, import ID, serial number, and object ID of the calling user.
 - Hardware hashes and access tokens are not logged.
 - Graph error details are not returned to the client.
-- Allowed tags are stored in a private Storage blob and changed through the protected management endpoint.
+- Allowed tags are stored in a private Storage blob and changed through the protected management endpoint. Shared-key access is not required; the installer and Function use their Entra identities.
 - The explicit manager list remains in `MANAGER_AUTHORIZATION_POLICY` and can be changed only through Azure by an effective Owner or Contributor.
 - Tag authorization is denied when the Entra group claim is missing. This also applies to group overage for users with a very large number of group memberships.

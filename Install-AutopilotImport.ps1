@@ -27,8 +27,9 @@ grants the managed identity its Microsoft Graph application permission,
 publishes the Function package, and verifies that Easy Auth rejects anonymous
 requests.
 
-The installer also writes client.settings.json with the Function URL, API
-Application ID URI, and Tenant ID used as defaults by Import-AutopilotDevice.ps1.
+The installer also installs AutopilotImport.Client with client.settings.json.
+The Function and management URLs, API Application ID URI, tenant, subscription,
+resource group, and Function App name are then available as command defaults.
 
 .PARAMETER SubscriptionId
 Azure subscription GUID that will contain the Function resources. The current
@@ -68,6 +69,11 @@ One or more group-to-tag rules in the form
 .PARAMETER TagManagerPrincipalId
 Optional Entra user or group object IDs that may manage Group Tags in addition
 to the installing user and Intune Role Administrators.
+
+.PARAMETER ClientToolsPath
+Destination directory for the versioned client module, compatibility scripts,
+local module dependency, and client.settings.json. When omitted, the installer
+asks for a path and suggests the current user's PowerShell script directory.
 
 .PARAMETER InstallMissingModules
 Installs missing Az modules, Microsoft.Graph.Authentication, and the Bicep CLI
@@ -121,7 +127,7 @@ Displays the requested configuration without changing Azure or Entra.
 .OUTPUTS
 PSCustomObject containing the subscription, tenant, resource group, Function
 URL, API audience, managed identity object ID, authorization policy, and local
-client settings path.
+and installed client settings paths and client tools directory.
 
 .NOTES
 The installing administrator requires Azure resource deployment permissions
@@ -152,6 +158,8 @@ param(
     [string[]] $TagAuthorizationRule,
 
     [guid[]] $TagManagerPrincipalId,
+
+    [string] $ClientToolsPath,
 
     [switch] $InstallMissingModules,
 
@@ -362,6 +370,117 @@ function ConvertTo-TagAuthorizationPolicy {
     return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $enteredRules)
 }
 
+function ConvertTo-AdditionalManagerPrincipalIds {
+    <#
+    .SYNOPSIS
+    Normalizes the optional additional tag manager principal IDs.
+
+    .DESCRIPTION
+    Converts the supplied Entra user or group object IDs to their canonical
+    string representation, removes duplicate entries, and excludes the
+    installing user because that user is added separately to the manager
+    authorization policy. A missing principal ID collection produces an empty
+    result.
+
+    .PARAMETER PrincipalIds
+    Optional Entra user or group object IDs to add as tag policy managers.
+
+    .PARAMETER InstallingUserObjectId
+    Object ID of the installing user, which is excluded from the result.
+
+    .OUTPUTS
+    System.String[]. Unique additional manager principal IDs.
+    #>
+    param(
+        [AllowNull()]
+        [guid[]] $PrincipalIds,
+
+        [guid] $InstallingUserObjectId
+    )
+
+    return @($PrincipalIds |
+        Where-Object { $null -ne $_ } |
+        ForEach-Object { $_.ToString() } |
+        Where-Object { $_ -ne $InstallingUserObjectId.ToString() } |
+        Select-Object -Unique)
+}
+
+function Install-AutopilotClientTools {
+    <#
+    .SYNOPSIS
+    Installs the client module, compatibility scripts, and local dependencies.
+
+    .PARAMETER DestinationPath
+    Root directory for the portable client package.
+
+    .PARAMETER ProjectRoot
+    Root directory of the Autopilot importer source project.
+
+    .PARAMETER ClientSettingsJson
+    Installation-derived client configuration written beside the client module.
+
+    .OUTPUTS
+    System.String. Full path to the installed client.settings.json file.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $DestinationPath,
+
+        [Parameter(Mandatory)]
+        [string] $ProjectRoot,
+
+        [Parameter(Mandatory)]
+        [string] $ClientSettingsJson
+    )
+
+    $destinationRoot = [IO.Path]::GetFullPath($DestinationPath)
+    $scriptDestination = Join-Path $destinationRoot 'scripts'
+    $clientModuleSource = Join-Path $ProjectRoot 'src\AutopilotImport.Client'
+    $clientModuleManifest = Import-PowerShellDataFile `
+        -LiteralPath (Join-Path $clientModuleSource 'AutopilotImport.Client.psd1')
+    $moduleDestination = Join-Path $destinationRoot `
+        "Modules\AutopilotImport.Client\$($clientModuleManifest.ModuleVersion)"
+    [void] (New-Item -Path $scriptDestination -ItemType Directory -Force)
+    [void] (New-Item -Path $moduleDestination -ItemType Directory -Force)
+
+    foreach ($scriptName in @(
+            'Import-AutopilotDevice.ps1',
+            'Set-TagAuthorizationPolicy.ps1',
+            'Set-TagPolicyManagers.ps1'
+        )) {
+        Copy-Item `
+            -LiteralPath (Join-Path $ProjectRoot "scripts\$scriptName") `
+            -Destination (Join-Path $scriptDestination $scriptName) `
+            -Force
+    }
+    foreach ($moduleFileName in @(
+            'AutopilotImport.Client.psm1',
+            'AutopilotImport.Client.psd1'
+        )) {
+        Copy-Item `
+            -LiteralPath (Join-Path $clientModuleSource $moduleFileName) `
+            -Destination (Join-Path $moduleDestination $moduleFileName) `
+            -Force
+    }
+    Copy-Item `
+        -LiteralPath (Join-Path $ProjectRoot 'src\AutopilotImport\AutopilotImport.psm1') `
+        -Destination (Join-Path $moduleDestination 'AutopilotImport.psm1') `
+        -Force
+
+    $settingsPath = Join-Path $moduleDestination 'client.settings.json'
+    $settingsTemporaryPath = "$settingsPath.tmp"
+    Set-Content `
+        -LiteralPath $settingsTemporaryPath `
+        -Value $ClientSettingsJson `
+        -Encoding utf8NoBOM
+    Move-Item `
+        -LiteralPath $settingsTemporaryPath `
+        -Destination $settingsPath `
+        -Force
+
+    return $settingsPath
+}
+
 function Import-DeploymentModule {
     <#
     .SYNOPSIS
@@ -508,6 +627,15 @@ $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0,
 $FunctionAppName = Read-FunctionAppName `
     -CurrentValue $FunctionAppName `
     -DefaultValue $defaultFunctionName
+$documentsPath = [Environment]::GetFolderPath('MyDocuments')
+if ([string]::IsNullOrWhiteSpace($documentsPath)) {
+    $documentsPath = $HOME
+}
+$defaultClientToolsPath = Join-Path $documentsPath 'PowerShell\Scripts\AutopilotImport'
+$ClientToolsPath = Read-DeploymentValue `
+    -CurrentValue $ClientToolsPath `
+    -Prompt 'Operational PowerShell scripts directory' `
+    -DefaultValue $defaultClientToolsPath
 $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
@@ -555,6 +683,7 @@ Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
+Write-Host "  Client tools : $ClientToolsPath"
 Write-Host '  Group to Device Tag rules:'
 foreach ($rule in $tagAuthorizationPolicy) {
     Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
@@ -616,11 +745,9 @@ Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
-$additionalManagerPrincipalIds = @($TagManagerPrincipalId | ForEach-Object {
-    ([guid] $_).ToString()
-} | Where-Object {
-    $_ -ne $installingUserObjectId.ToString()
-} | Select-Object -Unique)
+$additionalManagerPrincipalIds = ConvertTo-AdditionalManagerPrincipalIds `
+    -PrincipalIds $TagManagerPrincipalId `
+    -InstallingUserObjectId $installingUserObjectId
 $managerAuthorizationPolicy = [ordered]@{
     installerPrincipalId          = $installingUserObjectId.ToString()
     additionalPrincipalIds        = $additionalManagerPrincipalIds
@@ -641,6 +768,7 @@ $deploymentParameters = @{
     apiAudience       = $ApiAudience
     tagAuthorizationPolicy = $tagAuthorizationPolicyJson
     managerAuthorizationPolicy = $managerAuthorizationPolicyJson
+    installerPrincipalId = $installingUserObjectId.ToString()
 }
 
 Write-Host 'Validating Bicep deployment...'
@@ -666,45 +794,71 @@ $functionUrl = [string] $deployment.Outputs.functionUrl.Value
 $managementUrl = [string] $deployment.Outputs.managementUrl.Value
 $managedIdentityObjectId = [guid] $deployment.Outputs.managedIdentityObjectId.Value
 $storageAccountName = [string] $deployment.Outputs.storageAccountName.Value
-$storageAccountKey = Get-AzStorageAccountKey `
+$clientSettings = [ordered]@{
+    functionUrl            = $functionUrl
+    managementUrl          = $managementUrl
+    apiApplicationIdUri    = $ApiAudience
+    tenantId               = $TenantId
+    subscriptionId         = $SubscriptionId
+    resourceGroupName      = $ResourceGroupName
+    functionAppName        = $FunctionAppName
+} | ConvertTo-Json
+$clientSettingsPath = Join-Path $projectRoot 'client.settings.json'
+Set-Content `
+    -LiteralPath $clientSettingsPath `
+    -Value $clientSettings `
+    -Encoding utf8NoBOM
+$installedClientSettingsPath = Install-AutopilotClientTools `
+    -DestinationPath $ClientToolsPath `
+    -ProjectRoot $projectRoot `
+    -ClientSettingsJson $clientSettings
+Write-Host "Installed AutopilotImport.Client, compatibility scripts, and defaults in '$ClientToolsPath'."
+
+$storageAccount = Get-AzStorageAccount `
     -ResourceGroupName $ResourceGroupName `
-    -Name $storageAccountName | Select-Object -First 1
+    -Name $storageAccountName
+if ($storageAccount.PublicNetworkAccess -ne 'Enabled') {
+    throw @"
+Storage Account '$storageAccountName' has PublicNetworkAccess='$($storageAccount.PublicNetworkAccess)'.
+The deployed Azure Functions Consumption architecture requires access to the Storage data endpoint. Azure Policy appears to disable public network access after deployment.
+Request a policy exemption that permits public network access for this Storage Account while shared-key access remains disabled, or deploy a VNet-integrated hosting plan with Private Endpoints and private DNS.
+"@
+}
 $storageContext = New-AzStorageContext `
     -StorageAccountName $storageAccountName `
-    -StorageAccountKey $storageAccountKey.Value
+    -UseConnectedAccount
 $policyTemporaryPath = Join-Path ([IO.Path]::GetTempPath()) "tag-policy-$([guid]::NewGuid()).json"
 try {
     Set-Content `
         -LiteralPath $policyTemporaryPath `
         -Value $tagAuthorizationPolicyJson `
         -Encoding utf8NoBOM
-    Set-AzStorageBlobContent `
-        -Context $storageContext `
-        -Container 'configuration' `
-        -File $policyTemporaryPath `
-        -Blob 'tag-authorization-policy.json' `
-        -Force | Out-Null
+    $maximumUploadAttempts = 12
+    for ($uploadAttempt = 1; $uploadAttempt -le $maximumUploadAttempts; $uploadAttempt++) {
+        try {
+            Set-AzStorageBlobContent `
+                -Context $storageContext `
+                -Container 'configuration' `
+                -File $policyTemporaryPath `
+                -Blob 'tag-authorization-policy.json' `
+                -Force | Out-Null
+            break
+        }
+        catch {
+            $isAuthorizationDelay = $_.Exception.Message -match `
+                '403|AuthorizationPermissionMismatch|not authorized'
+            if (-not $isAuthorizationDelay -or $uploadAttempt -eq $maximumUploadAttempts) {
+                throw
+            }
+
+            Write-Warning "Storage RBAC is not active yet. Retrying policy upload in 10 seconds ($uploadAttempt/$maximumUploadAttempts)."
+            Start-Sleep -Seconds 10
+        }
+    }
 }
 finally {
     Remove-Item $policyTemporaryPath -Force -ErrorAction SilentlyContinue
 }
-$clientSettingsPath = Join-Path $projectRoot 'client.settings.json'
-$clientSettings = [ordered]@{
-    functionUrl            = $functionUrl
-    managementUrl          = $managementUrl
-    apiApplicationIdUri    = $ApiAudience
-    tenantId               = $TenantId
-} | ConvertTo-Json
-$clientSettingsTemporaryPath = "$clientSettingsPath.tmp"
-Set-Content `
-    -LiteralPath $clientSettingsTemporaryPath `
-    -Value $clientSettings `
-    -Encoding utf8NoBOM
-Move-Item `
-    -LiteralPath $clientSettingsTemporaryPath `
-    -Destination $clientSettingsPath `
-    -Force
-Write-Host "Wrote client defaults to '$clientSettingsPath'."
 
 #endregion Client configuration
 
@@ -777,6 +931,8 @@ $result = [pscustomobject]@{
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
+    InstalledClientSettingsPath = $installedClientSettingsPath
+    ClientToolsPath         = [IO.Path]::GetFullPath($ClientToolsPath)
 }
 
 Write-Host "`nInstallation completed." -ForegroundColor Green

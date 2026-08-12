@@ -27,6 +27,63 @@ a validated Microsoft Graph Autopilot import payload.
 
 Set-StrictMode -Version Latest
 
+function ConvertFrom-BlobBindingContent {
+    <#
+    .SYNOPSIS
+    Converts an Azure Functions blob input binding value to text.
+
+    .PARAMETER Value
+    Blob binding value represented as text, bytes, a stream, or a content
+    wrapper supplied by the Functions PowerShell worker.
+
+    .OUTPUTS
+    System.String, or null when the binding has no value.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object] $Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [string]) {
+        return $Value
+    }
+    if ($Value -is [byte[]]) {
+        return [Text.Encoding]::UTF8.GetString($Value)
+    }
+    if ($Value -is [IO.Stream]) {
+        if ($Value.CanSeek) {
+            $Value.Position = 0
+        }
+        $reader = [IO.StreamReader]::new(
+            $Value,
+            [Text.Encoding]::UTF8,
+            $true,
+            1024,
+            $true
+        )
+        try {
+            return $reader.ReadToEnd()
+        }
+        finally {
+            $reader.Dispose()
+        }
+    }
+    if ($Value.PSObject.Properties.Name -contains 'Content') {
+        return ConvertFrom-BlobBindingContent -Value $Value.Content
+    }
+    if ($Value -is [System.Collections.IDictionary] -or
+        $Value -is [pscustomobject] -or
+        $Value -is [System.Collections.IEnumerable]) {
+        return $Value | ConvertTo-Json -Depth 20 -Compress
+    }
+
+    return $Value.ToString()
+}
+
 function ConvertTo-TagAuthorizationPolicy {
     <#
     .SYNOPSIS
@@ -441,6 +498,7 @@ function ConvertTo-AutopilotImportPayload {
 }
 
 Export-ModuleMember -Function @(
+    'ConvertFrom-BlobBindingContent',
     'ConvertTo-TagAuthorizationPolicy',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',

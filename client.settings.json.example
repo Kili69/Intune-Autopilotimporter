@@ -2,5 +2,8 @@
   "functionUrl": "https://<function-app>.azurewebsites.net/api/devices/import",
   "managementUrl": "https://<function-app>.azurewebsites.net/api/management/tag-policy",
   "apiApplicationIdUri": "api://<application-client-id>",
-  "tenantId": "<tenant-id>"
+  "tenantId": "<tenant-id>",
+  "subscriptionId": "<subscription-id>",
+  "resourceGroupName": "<resource-group-name>",
+  "functionAppName": "<function-app-name>"
 }

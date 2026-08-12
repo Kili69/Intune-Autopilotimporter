@@ -78,16 +78,11 @@ function Send-JsonResponse {
     })
 }
 
-$tagAuthorizationPolicyJson = if ($TagPolicyBlob -is [byte[]]) {
-    [Text.Encoding]::UTF8.GetString($TagPolicyBlob)
-}
-elseif ($null -ne $TagPolicyBlob) {
-    [string] $TagPolicyBlob
-}
-else {
-    $env:TAG_AUTHORIZATION_POLICY
-}
+$tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
 
+if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
+    $tagAuthorizationPolicyJson = $env:TAG_AUTHORIZATION_POLICY
+}
 if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
     Write-Error "[$correlationId] Required application settings are missing."
     Send-JsonResponse -StatusCode InternalServerError -Body @{
@@ -104,12 +99,20 @@ try {
     }
 }
 catch {
-    Write-Error "[$correlationId] Tag authorization policy is invalid: $($_.Exception.Message)"
-    Send-JsonResponse -StatusCode InternalServerError -Body @{
-        error         = 'serviceNotConfigured'
-        correlationId = $correlationId
+    try {
+        $tagAuthorizationPolicy = @($env:TAG_AUTHORIZATION_POLICY | ConvertFrom-Json)
+        if ($tagAuthorizationPolicy.Count -eq 0) {
+            throw 'Tag authorization policy is empty.'
+        }
     }
-    return
+    catch {
+        Write-Error "[$correlationId] Tag authorization policy is invalid: $($_.Exception.Message)"
+        Send-JsonResponse -StatusCode InternalServerError -Body @{
+            error         = 'serviceNotConfigured'
+            correlationId = $correlationId
+        }
+        return
+    }
 }
 
 $principalHeader = $Request.Headers['x-ms-client-principal']

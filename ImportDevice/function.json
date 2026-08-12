@@ -19,6 +19,7 @@
       "type": "blob",
       "direction": "in",
       "name": "TagPolicyBlob",
+      "dataType": "string",
       "path": "configuration/tag-authorization-policy.json",
       "connection": "AzureWebJobsStorage"
     }

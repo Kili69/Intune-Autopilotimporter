@@ -25,6 +25,134 @@ Pester test results when invoked through Invoke-Pester.
 $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $modulePath -Force
 
+Describe 'Client API error messages' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+        $clientModule = Get-Module AutopilotImport.Client |
+            Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
+    }
+
+    It 'explains a disallowed Group Tag and includes the correlation ID' {
+        $exception = [InvalidOperationException]::new('HTTP 403 Forbidden')
+        $errorRecord = [Management.Automation.ErrorRecord]::new(
+            $exception,
+            'HttpResponseException',
+            [Management.Automation.ErrorCategory]::PermissionDenied,
+            $null
+        )
+        $errorRecord.ErrorDetails = [Management.Automation.ErrorDetails]::new(
+            '{"error":"groupTagNotAllowed","correlationId":"109ff31c-4392-415a-b39f-56d3d7776110"}'
+        )
+
+        $message = & $clientModule {
+            param($ApiError)
+            Get-ClientApiErrorMessage `
+                -ErrorRecord $ApiError `
+                -SerialNumber 'TEST-001' `
+                -GroupTag 'BG-PAW1'
+        } $errorRecord
+
+        $message | Should -Match "Group Tag 'BG-PAW1' is not allowed"
+        $message | Should -Match "serial 'TEST-001'"
+        $message | Should -Match 'Correlation ID: 109ff31c-4392-415a-b39f-56d3d7776110'
+    }
+
+    It 'preserves the original message for an unknown API error' {
+        $errorRecord = [Management.Automation.ErrorRecord]::new(
+            [InvalidOperationException]::new('Connection was closed'),
+            'UnknownApiError',
+            [Management.Automation.ErrorCategory]::ConnectionError,
+            $null
+        )
+
+        $message = & $clientModule {
+            param($ApiError)
+            Get-ClientApiErrorMessage `
+                -ErrorRecord $ApiError `
+                -SerialNumber 'TEST-002' `
+                -GroupTag 'BG-PAW'
+        } $errorRecord
+
+        $message | Should -Match 'Connection was closed'
+    }
+}
+
+Describe 'Client import result metadata' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+        $clientModule = Get-Module AutopilotImport.Client |
+            Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
+    }
+
+    It 'adds the local import time and Intune availability notice' {
+        $response = [pscustomobject]@{
+            importId     = '82d7266e-4213-4fa1-a5d5-b0ee10d009de'
+            serialNumber = 'TEST-001'
+        }
+        $importedAt = [datetimeoffset]::Parse('2026-08-12T14:35:42+02:00')
+
+        $result = & $clientModule {
+            param($ImportResponse, $Timestamp)
+            Add-ClientImportMetadata `
+                -ImportResponse $ImportResponse `
+                -ImportedAt $Timestamp
+        } $response $importedAt
+
+        $result.importedAt | Should -Be '2026-08-12 14:35:42 +02:00'
+        $result.intuneAvailabilityNote | Should -Match `
+            'several minutes before the device appears'
+    }
+}
+
+Describe 'Blob binding content conversion' {
+    It 'decodes text and byte content' {
+        $json = '{"groupId":"11111111-1111-1111-1111-111111111111"}'
+
+        ConvertFrom-BlobBindingContent -Value $json | Should -Be $json
+        ConvertFrom-BlobBindingContent `
+            -Value ([Text.Encoding]::UTF8.GetBytes($json)) |
+            Should -Be $json
+    }
+
+    It 'decodes streams and content wrappers' {
+        $json = '{"groupId":"11111111-1111-1111-1111-111111111111"}'
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+        $stream = [IO.MemoryStream]::new($bytes)
+        $wrapper = [pscustomobject]@{ Content = [IO.MemoryStream]::new($bytes) }
+        try {
+            ConvertFrom-BlobBindingContent -Value $stream | Should -Be $json
+            ConvertFrom-BlobBindingContent -Value $wrapper | Should -Be $json
+        }
+        finally {
+            $stream.Dispose()
+            $wrapper.Content.Dispose()
+        }
+    }
+
+    It 'serializes policy objects supplied by the Functions worker' {
+        $policy = @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags    = @('BG-Client')
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags    = @('BG-PAW')
+            }
+        )
+
+        $decodedPolicy = @(ConvertFrom-BlobBindingContent -Value $policy |
+            ConvertFrom-Json)
+
+        $decodedPolicy.Count | Should -Be 2
+        $decodedPolicy[0].tags | Should -Be 'BG-Client'
+    }
+}
+
 Describe 'Autopilot import request validation' {
     It 'builds a Graph payload with the server-side group tag' {
         $requestBody = [pscustomobject]@{
@@ -198,6 +326,108 @@ Describe 'Installer Function App naming' {
         @{ Name = 'func autopilot' }
     ) {
         Test-FunctionAppName -Name $Name | Should -Be $false
+    }
+}
+
+Describe 'Installer additional manager principal IDs' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'ConvertTo-AdditionalManagerPrincipalIds'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'returns an empty collection when no additional manager is supplied' {
+        $managerIds = @(ConvertTo-AdditionalManagerPrincipalIds `
+            -PrincipalIds $null `
+            -InstallingUserObjectId '11111111-1111-1111-1111-111111111111')
+
+        $managerIds.Count | Should -Be 0
+    }
+
+    It 'removes the installing user and duplicate additional managers' {
+        $managerIds = @(ConvertTo-AdditionalManagerPrincipalIds `
+            -PrincipalIds @(
+                '11111111-1111-1111-1111-111111111111'
+                '22222222-2222-2222-2222-222222222222'
+                '22222222-2222-2222-2222-222222222222'
+            ) `
+            -InstallingUserObjectId '11111111-1111-1111-1111-111111111111')
+
+        $managerIds | Should -Be '22222222-2222-2222-2222-222222222222'
+    }
+}
+
+Describe 'Installer client tools package' {
+    BeforeAll {
+        $projectRoot = Join-Path $PSScriptRoot '..'
+        $installerPath = Join-Path $projectRoot 'Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Install-AutopilotClientTools'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'installs compatibility scripts and a versioned client module with defaults' {
+        $destinationPath = Join-Path $TestDrive 'AutopilotImport'
+        $settings = [ordered]@{
+            functionUrl         = 'https://func-test.azurewebsites.net/api/devices/import'
+            managementUrl       = 'https://func-test.azurewebsites.net/api/management/tag-policy'
+            apiApplicationIdUri = 'api://11111111-1111-1111-1111-111111111111'
+            tenantId            = '22222222-2222-2222-2222-222222222222'
+            subscriptionId      = '33333333-3333-3333-3333-333333333333'
+            resourceGroupName   = 'rg-test'
+            functionAppName     = 'func-test'
+        } | ConvertTo-Json
+
+        $settingsPath = Install-AutopilotClientTools `
+            -DestinationPath $destinationPath `
+            -ProjectRoot $projectRoot `
+            -ClientSettingsJson $settings
+
+        $modulePath = Join-Path $destinationPath `
+            'Modules\AutopilotImport.Client\1.0.20260812.2'
+        $settingsPath | Should -Be (Join-Path $modulePath 'client.settings.json')
+        @(
+            'scripts\Import-AutopilotDevice.ps1'
+            'scripts\Set-TagAuthorizationPolicy.ps1'
+            'scripts\Set-TagPolicyManagers.ps1'
+            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.Client.psm1'
+            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.Client.psd1'
+            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.psm1'
+            'Modules\AutopilotImport.Client\1.0.20260812.2\client.settings.json'
+        ) | ForEach-Object {
+            Join-Path $destinationPath $_ | Should -Exist
+        }
+        $installedSettings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+        $installedSettings.functionAppName | Should -Be 'func-test'
+        $installedSettings.subscriptionId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+
+        Import-Module `
+            (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
+            -Force
+        (Get-Command -Module AutopilotImport.Client).Count | Should -Be 6
+        Remove-Module AutopilotImport.Client
     }
 }
 

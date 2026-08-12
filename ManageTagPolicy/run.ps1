@@ -124,11 +124,9 @@ if (-not $isManager) {
     return
 }
 
-$currentPolicyJson = if ($TagPolicyBlob -is [byte[]]) {
-    [Text.Encoding]::UTF8.GetString($TagPolicyBlob)
-}
-else {
-    [string] $TagPolicyBlob
+$currentPolicyJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
+if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
+    $currentPolicyJson = $env:TAG_AUTHORIZATION_POLICY
 }
 
 if ($Request.Method -ieq 'GET') {

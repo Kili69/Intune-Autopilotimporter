@@ -112,7 +112,7 @@ if ([string]::IsNullOrWhiteSpace($ClientId)) {
     $filter = [uri]::EscapeDataString("displayName eq '$escapedDisplayName'")
     $response = Invoke-MgGraphRequest `
         -Method GET `
-        -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,api,appRoles"
+        -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,groupMembershipClaims,api,appRoles"
     $applications = @(Get-GraphCollectionItems -Response $response)
 
     if ($applications.Count -gt 1) {
@@ -130,7 +130,7 @@ else {
     $filter = [uri]::EscapeDataString("appId eq '$ClientId'")
     $response = Invoke-MgGraphRequest `
         -Method GET `
-        -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,api,appRoles"
+        -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,groupMembershipClaims,api,appRoles"
     $application = @(Get-GraphCollectionItems -Response $response) | Select-Object -First 1
     if (-not $application) {
         throw "No Entra application with Client ID '$ClientId' was found in tenant '$TenantId'."
@@ -189,14 +189,43 @@ $updateBody = @{
     }
 }
 
-if ($PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope')) {
-    $updateJson = $updateBody | ConvertTo-Json -Depth 20 -Compress
-    Invoke-MgGraphRequest `
-        -Method PATCH `
-        -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" `
-        -Body $updateJson `
-        -ContentType 'application/json' | Out-Null
+$scopeNeedsUpdate = $null -eq $scope -or
+    -not $scope.isEnabled -or
+    $scope.type -ne 'Admin'
+$apiConfigurationNeedsUpdate =
+    $applicationIdUri -notin $identifierUris -or
+    $application.groupMembershipClaims -ne 'SecurityGroup' -or
+    $application.api.requestedAccessTokenVersion -ne 2 -or
+    $scopeNeedsUpdate
 
+if ($apiConfigurationNeedsUpdate -and
+    $PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope')) {
+    $updateJson = $updateBody | ConvertTo-Json -Depth 20 -Compress
+    try {
+        Invoke-MgGraphRequest `
+            -Method PATCH `
+            -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" `
+            -Body $updateJson `
+            -ContentType 'application/json' | Out-Null
+    }
+    catch {
+        if ($_.Exception.Message -match '403|Authorization_RequestDenied') {
+            throw "Updating Entra application '$DisplayName' requires ownership of the application or the Application Administrator or Cloud Application Administrator role. $($_.Exception.Message)"
+        }
+        throw
+    }
+}
+elseif (-not $apiConfigurationNeedsUpdate) {
+    Write-Host "Entra application API configuration is already current."
+}
+
+$existingPreAuthorization = @($application.api.preAuthorizedApplications |
+    Where-Object appId -eq $azurePowerShellClientId) |
+    Select-Object -First 1
+$preAuthorizationNeedsUpdate = $null -eq $existingPreAuthorization -or
+    $scopeId -notin @($existingPreAuthorization.delegatedPermissionIds)
+if ($preAuthorizationNeedsUpdate -and
+    $PSCmdlet.ShouldProcess($applicationIdUri, 'Preauthorize Azure PowerShell')) {
     $preAuthorizationBody = @{
         api = @{
             requestedAccessTokenVersion = 2
@@ -209,11 +238,22 @@ if ($PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope')) {
             )
         }
     } | ConvertTo-Json -Depth 20 -Compress
-    Invoke-MgGraphRequest `
-        -Method PATCH `
-        -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" `
-        -Body $preAuthorizationBody `
-        -ContentType 'application/json' | Out-Null
+    try {
+        Invoke-MgGraphRequest `
+            -Method PATCH `
+            -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" `
+            -Body $preAuthorizationBody `
+            -ContentType 'application/json' | Out-Null
+    }
+    catch {
+        if ($_.Exception.Message -match '403|Authorization_RequestDenied') {
+            throw "Preauthorizing Azure PowerShell for Entra application '$DisplayName' requires ownership of the application or the Application Administrator or Cloud Application Administrator role. $($_.Exception.Message)"
+        }
+        throw
+    }
+}
+elseif (-not $preAuthorizationNeedsUpdate) {
+    Write-Host 'Azure PowerShell is already preauthorized for the API scope.'
 }
 
 $servicePrincipalFilter = [uri]::EscapeDataString("appId eq '$($application.appId)'")
