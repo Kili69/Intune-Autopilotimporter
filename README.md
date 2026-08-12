@@ -4,6 +4,21 @@ This Azure Function imports Windows Autopilot hardware hashes from a CSV file. T
 
 The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token.
 
+## Problem
+
+Granting a user permission to import Windows Autopilot hardware hashes does not,
+by itself, restrict which Group Tag the user can assign. The standard import
+authorization does not require a tag, validate that a supplied tag is approved,
+or verify that the importing user is authorized to use that specific tag. A user
+who is allowed to import a hardware hash could therefore omit the Group Tag or
+assign a tag intended for a different device population, potentially placing the
+device into an unintended dynamic group and its associated deployment profile,
+applications, and policies.
+
+This project closes that authorization gap by validating the requested Group Tag
+server-side and allowing the import only when the authenticated user belongs to
+an Entra security group mapped to that tag.
+
 ## Process
 
 1. The client script reads the serial number and hardware hash from an Autopilot CSV supplied as a parameter.
