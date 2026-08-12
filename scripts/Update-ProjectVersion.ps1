@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260812.1
+# Project-Version: 1.0.20260812.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -26,8 +26,8 @@ Reads the current version from VERSION, creates a version in the format
 script, module, and data file in the repository.
 
 The counter increases by IncrementBy when the existing version date matches
-Date. It starts at IncrementBy when the date changes. The GitHub version
-workflow passes the number of commits contained in a push.
+Date. It starts at IncrementBy when the date changes. Run this script locally
+before committing changes that require a new project version.
 
 .PARAMETER IncrementBy
 Number to add to the current day's counter. The default is 1.

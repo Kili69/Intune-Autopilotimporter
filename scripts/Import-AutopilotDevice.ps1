@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Az.Accounts
-# Project-Version: 1.0.20260812.1
+# Project-Version: 1.0.20260812.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
