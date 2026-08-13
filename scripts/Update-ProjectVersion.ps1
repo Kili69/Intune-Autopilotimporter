@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -64,6 +64,7 @@ $projectRoot = Split-Path $PSScriptRoot -Parent
 $versionPath = Join-Path $projectRoot 'VERSION'
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
+$moduleVersionPattern = "(?m)^(\s*ModuleVersion\s*=\s*)'\d+\.\d+\.\d{8}\.\d+'"
 
 $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($currentVersion -notmatch $versionPattern) {
@@ -103,6 +104,25 @@ foreach ($file in $powerShellFiles) {
     if ($PSCmdlet.ShouldProcess($file.FullName, "Set project version to $newVersion")) {
         Set-Content -LiteralPath $file.FullName -Value $updatedContent -NoNewline
     }
+}
+
+$clientManifestPath = Join-Path $projectRoot `
+    'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+$clientManifestContent = Get-Content -LiteralPath $clientManifestPath -Raw
+if ([regex]::Matches($clientManifestContent, $moduleVersionPattern).Count -ne 1) {
+    throw "'$clientManifestPath' must contain exactly one ModuleVersion entry."
+}
+$updatedManifestContent = [regex]::Replace(
+    $clientManifestContent,
+    $moduleVersionPattern,
+    "`$1'$newVersion'",
+    1
+)
+if ($PSCmdlet.ShouldProcess($clientManifestPath, "Set ModuleVersion to $newVersion")) {
+    Set-Content `
+        -LiteralPath $clientManifestPath `
+        -Value $updatedManifestContent `
+        -NoNewline
 }
 
 if ($PSCmdlet.ShouldProcess($versionPath, "Set project version to $newVersion")) {

@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -166,6 +166,61 @@ if ([string] $Request.Method -eq 'GET') {
             -Principal $principal `
             -Policy $tagAuthorizationPolicy `
             -RequestedGroupTag ([string] $graphResponse.groupTag)
+
+        $intuneStatus = ([string] $graphResponse.state.deviceImportStatus).ToLowerInvariant()
+        $extensionAttribute = if ([string]::IsNullOrWhiteSpace(
+                $env:DEVICE_TAG_EXTENSION_ATTRIBUTE)) {
+            'extensionAttribute1'
+        }
+        else {
+            $env:DEVICE_TAG_EXTENSION_ATTRIBUTE
+        }
+        $extensionAttributeStatus = if ($intuneStatus -eq 'error') {
+            'notApplicable'
+        }
+        else {
+            'pending'
+        }
+        $extensionAttributeValue = $null
+        $entraDeviceId = $null
+
+        if ($intuneStatus -eq 'complete') {
+            try {
+                $registrationId = Get-AutopilotDeviceRegistrationId `
+                    -ImportedDevice $graphResponse
+                $registeredDevice = Invoke-RestMethod `
+                    -Method Get `
+                    -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registrationId" `
+                    -Authentication Bearer `
+                    -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+                    -ErrorAction Stop
+                $parsedEntraDeviceId = [guid]::Empty
+                if (-not [guid]::TryParse(
+                        [string] $registeredDevice.azureActiveDirectoryDeviceId,
+                        [ref] $parsedEntraDeviceId)) {
+                    throw 'The Entra device is not available yet.'
+                }
+                $entraDeviceId = $parsedEntraDeviceId.ToString()
+                $entraDevice = Invoke-RestMethod `
+                    -Method Get `
+                    -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=deviceId,extensionAttributes" `
+                    -Authentication Bearer `
+                    -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+                    -ErrorAction Stop
+                $extensionProperty = $entraDevice.extensionAttributes.PSObject.Properties[
+                    $extensionAttribute
+                ]
+                if ($extensionProperty) {
+                    $extensionAttributeValue = [string] $extensionProperty.Value
+                }
+                if ($extensionAttributeValue -ceq $authorizedGroupTag) {
+                    $extensionAttributeStatus = 'complete'
+                }
+            }
+            catch {
+                Write-Information "[$correlationId] Extension attribute status is still pending for import '$parsedImportId': $($_.Exception.Message)"
+            }
+        }
     }
     catch [System.UnauthorizedAccessException] {
         Send-JsonResponse -StatusCode Forbidden -Body @{
@@ -183,14 +238,29 @@ if ([string] $Request.Method -eq 'GET') {
         return
     }
 
+    $workflowStatus = if ($intuneStatus -eq 'error') {
+        'error'
+    }
+    elseif ($intuneStatus -eq 'complete' -and
+        $extensionAttributeStatus -eq 'complete') {
+        'complete'
+    }
+    else {
+        'pending'
+    }
     Send-JsonResponse -StatusCode OK -Body @{
-        importId       = $graphResponse.id
-        serialNumber   = $graphResponse.serialNumber
-        groupTag       = $authorizedGroupTag
-        status         = $graphResponse.state.deviceImportStatus
-        deviceErrorCode = $graphResponse.state.deviceErrorCode
-        deviceErrorName = $graphResponse.state.deviceErrorName
-        correlationId  = $correlationId
+        importId                = $graphResponse.id
+        serialNumber            = $graphResponse.serialNumber
+        groupTag                = $authorizedGroupTag
+        status                  = $graphResponse.state.deviceImportStatus
+        workflowStatus          = $workflowStatus
+        deviceErrorCode         = $graphResponse.state.deviceErrorCode
+        deviceErrorName         = $graphResponse.state.deviceErrorName
+        extensionAttributeName  = $extensionAttribute
+        extensionAttributeStatus = $extensionAttributeStatus
+        extensionAttributeValue = $extensionAttributeValue
+        entraDeviceId           = $entraDeviceId
+        correlationId           = $correlationId
     }
     return
 }
@@ -270,6 +340,10 @@ catch {
 }
 
 Write-Information "[$correlationId] Autopilot import '$($graphResponse.id)' created for serial '$($graphPayload.serialNumber)' by '$actorId'."
+Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
+    importId = [string] $graphResponse.id
+    groupTag = $groupTag
+} | ConvertTo-Json -Compress)
 Send-JsonResponse -StatusCode Accepted -Body @{
     importId      = $graphResponse.id
     serialNumber  = $graphResponse.serialNumber
