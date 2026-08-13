@@ -270,6 +270,45 @@ Update-AutopilotTagPolicyManager `
 The installing user cannot be removed. Authorization for current Intune Role
 Administrators also remains enabled.
 
+### Update an Existing Deployment
+
+Download or clone the desired release, then run the update script from its
+project directory. Preview the resolved deployment and planned installer action
+first:
+
+```powershell
+.\Update-AutopilotImport.ps1 -WhatIf
+```
+
+Apply the update:
+
+```powershell
+.\Update-AutopilotImport.ps1
+```
+
+By default, the script selects the newest installed `client.settings.json`
+under `Documents\PowerShell\Scripts\AutopilotImport`. Select another installed
+deployment explicitly when required:
+
+```powershell
+.\Update-AutopilotImport.ps1 `
+    -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\<version>\client.settings.json'
+```
+
+The script preserves the existing Function App name, region, API application,
+Group Tag authorization rules, configured Group Tag managers, client tools
+path, and Device Tag extension attribute. It then reuses the idempotent
+installer to update Azure resources, required permissions, Function code, and
+the versioned client package.
+
+The updating administrator needs the same Azure and Entra permissions as an
+installer. Reading and preserving the Function configuration requires
+`Microsoft.Web/sites/config/list/action`, which is included in Azure
+`Contributor` and `Owner`. The caller must also be authorized to read the
+Group Tag policy through the Function management API. Use
+`-InstallMissingModules` when local prerequisites may be missing. The installer
+skip switches are also available for separated administrative workflows.
+
 ### Manual Bicep Deployment
 
 The individual commands remain available for troubleshooting or manual installation:

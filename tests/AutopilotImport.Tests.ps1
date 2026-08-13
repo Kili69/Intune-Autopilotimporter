@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260813.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -481,6 +481,9 @@ Describe 'Installer client tools package' {
 
     It 'installs compatibility scripts and a versioned client module with defaults' {
         $destinationPath = Join-Path $TestDrive 'AutopilotImport'
+        $moduleVersion = [string] (Import-PowerShellDataFile `
+            (Join-Path $projectRoot `
+                'src\AutopilotImport.Client\AutopilotImport.Client.psd1')).ModuleVersion
         $previousModulePath = Join-Path $destinationPath `
             'Modules\AutopilotImport.Client\1.0.20260812.1'
         [void] (New-Item -Path $previousModulePath -ItemType Directory -Force)
@@ -502,16 +505,16 @@ Describe 'Installer client tools package' {
             -ClientSettingsJson $settings
 
         $modulePath = Join-Path $destinationPath `
-            'Modules\AutopilotImport.Client\1.0.20260813.1'
+            "Modules\AutopilotImport.Client\$moduleVersion"
         $settingsPath | Should -Be (Join-Path $modulePath 'client.settings.json')
         @(
             'scripts\Import-AutopilotDevice.ps1'
             'scripts\Set-TagAuthorizationPolicy.ps1'
             'scripts\Set-TagPolicyManagers.ps1'
-            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.Client.psm1'
-            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.Client.psd1'
-            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.psm1'
-            'Modules\AutopilotImport.Client\1.0.20260813.1\client.settings.json'
+            "Modules\AutopilotImport.Client\$moduleVersion\AutopilotImport.Client.psm1"
+            "Modules\AutopilotImport.Client\$moduleVersion\AutopilotImport.Client.psd1"
+            "Modules\AutopilotImport.Client\$moduleVersion\AutopilotImport.psm1"
+            "Modules\AutopilotImport.Client\$moduleVersion\client.settings.json"
         ) | ForEach-Object {
             Join-Path $destinationPath $_ | Should -Exist
         }
@@ -526,6 +529,60 @@ Describe 'Installer client tools package' {
             -Force
         (Get-Command -Module AutopilotImport.Client).Count | Should -Be 7
         Remove-Module AutopilotImport.Client
+    }
+}
+
+Describe 'Update script deployment discovery' {
+    BeforeAll {
+        $projectRoot = Join-Path $PSScriptRoot '..'
+        $updateScriptPath = Join-Path $projectRoot 'Update-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $updateAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $updateScriptPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        foreach ($functionName in @(
+                'Resolve-AutopilotUpdateConfigPath',
+                'Get-AutopilotClientToolsPath',
+                'ConvertTo-UpdateTagAuthorizationRules'
+            )) {
+            $functionAst = $updateAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
+    It 'uses an explicitly supplied client configuration' {
+        $configPath = Join-Path $TestDrive 'client.settings.json'
+        '{}' | Set-Content -LiteralPath $configPath
+
+        Resolve-AutopilotUpdateConfigPath -Path $configPath |
+            Should -Be (Resolve-Path $configPath).Path
+    }
+
+    It 'derives the client package root from a versioned configuration' {
+        $settingsPath = Join-Path $TestDrive `
+            'AutopilotImport\Modules\AutopilotImport.Client\1.0.20260813.1\client.settings.json'
+
+        Get-AutopilotClientToolsPath -SettingsPath $settingsPath |
+            Should -Be (Join-Path $TestDrive 'AutopilotImport')
+    }
+
+    It 'converts the current policy into installer rules' {
+        $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags    = @('PAW-CSM', 'BG-Default')
+            }
+        ))
+
+        $rules | Should -Be `
+            '11111111-1111-1111-1111-111111111111=PAW-CSM,BG-Default'
     }
 }
 
