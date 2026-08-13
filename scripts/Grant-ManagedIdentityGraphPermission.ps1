@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -19,13 +19,13 @@ possibility of such damages.
 
 <#
 .SYNOPSIS
-Grants the Autopilot Graph permission to a managed identity.
+Grants the required Graph permissions to a managed identity.
 
 .DESCRIPTION
-Connects to Microsoft Graph, resolves the required Autopilot import and Intune
-RBAC read application roles, and assigns them to the specified managed identity
-service principal. Existing assignments are detected, making the script safe
-to run repeatedly.
+Connects to Microsoft Graph, resolves the required Autopilot import, Entra
+device update, and Intune RBAC read application roles, and assigns them to the
+specified managed identity service principal. Existing assignments are
+detected, making the script safe to run repeatedly.
 
 .PARAMETER ManagedIdentityObjectId
 Object ID of the Function App's system-assigned managed identity service
@@ -57,6 +57,7 @@ $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 $permissionNames = @(
     'DeviceManagementServiceConfig.ReadWrite.All'
     'DeviceManagementRBAC.Read.All'
+    'Device.ReadWrite.All'
 )
 
 Connect-MgGraph `

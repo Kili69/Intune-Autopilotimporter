@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 Set-StrictMode -Version Latest
@@ -145,6 +145,51 @@ function Add-ClientImportMetadata {
         -NotePropertyValue 'Intune processes imports asynchronously. It may take several minutes before the device appears in the Intune admin center.' `
         -Force
     return $ImportResponse
+}
+
+function Add-ClientImportStatusMetadata {
+    param([Parameter(Mandatory)][object] $ImportStatus)
+
+    $status = ([string] $ImportStatus.status).ToLowerInvariant()
+    $extensionStatus = if ($ImportStatus.PSObject.Properties['extensionAttributeStatus']) {
+        ([string] $ImportStatus.extensionAttributeStatus).ToLowerInvariant()
+    }
+    else {
+        'unknown'
+    }
+    $description = switch ($status) {
+        'unknown' {
+            'Intune has accepted the import, but asynchronous processing has not reported a definitive state yet.'
+        }
+        'pending' {
+            'Intune is processing the imported hardware hash.'
+        }
+        'partial' {
+            'Intune has partially processed the import; processing is not complete yet.'
+        }
+        'complete' {
+            if ($extensionStatus -eq 'complete') {
+                'Intune completed the Autopilot import and the Entra device extension attribute was set successfully.'
+            }
+            else {
+                'Intune completed the Autopilot import; the Entra device extension attribute update is still pending.'
+            }
+        }
+        'error' {
+            'Intune could not complete the Autopilot device import.'
+        }
+        default {
+            "Intune returned the unrecognized import status '$status'."
+        }
+    }
+
+    $ImportStatus | Add-Member -NotePropertyName statusDescription `
+        -NotePropertyValue $description -Force
+    $isFinal = $status -eq 'error' -or
+        ($status -eq 'complete' -and $extensionStatus -eq 'complete')
+    $ImportStatus | Add-Member -NotePropertyName isFinal `
+        -NotePropertyValue $isFinal -Force
+    return $ImportStatus
 }
 
 function Get-ClientAccessToken {
@@ -305,14 +350,29 @@ function Import-AutopilotDevice {
 }
 
 function Get-AutopilotImportStatus {
-    <# .SYNOPSIS Returns the current Intune processing status of an Autopilot import. #>
+    <#
+    .SYNOPSIS
+    Returns the current Intune processing status of an Autopilot import.
+
+    .PARAMETER Wait
+    Polls until Intune returns complete or error, or TimeoutSeconds expires.
+
+    .PARAMETER PollIntervalSeconds
+    Seconds between requests when Wait is specified. The default is 15.
+
+    .PARAMETER TimeoutSeconds
+    Maximum wait time in seconds. The default is 1800 (30 minutes).
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][guid] $ImportId,
         [ValidatePattern('^https://')][string] $FunctionUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
         [string] $TenantId,
-        [string] $ConfigPath
+        [string] $ConfigPath,
+        [switch] $Wait,
+        [ValidateRange(1, 300)][int] $PollIntervalSeconds = 15,
+        [ValidateRange(1, 86400)][int] $TimeoutSeconds = 1800
     )
 
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
@@ -326,32 +386,44 @@ function Get-AutopilotImportStatus {
     $token = Get-ClientAccessToken $resolvedTenantId $audience
     $statusUrl = "$($url.TrimEnd('/'))?importId=$ImportId"
 
-    try {
-        Invoke-RestMethod `
-            -Method Get `
-            -Uri $statusUrl `
-            -Authentication Bearer `
-            -Token $token `
-            -ErrorAction Stop
-    }
-    catch {
-        $response = $null
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-            try { $response = $_.ErrorDetails.Message | ConvertFrom-Json }
-            catch { $response = $null }
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try {
+            $result = Invoke-RestMethod `
+                -Method Get `
+                -Uri $statusUrl `
+                -Authentication Bearer `
+                -Token $token `
+                -ErrorAction Stop
         }
-        $message = "Could not retrieve Autopilot import '$ImportId'."
-        if ($response -and $response.PSObject.Properties['error']) {
-            $message += " Service error: $($response.error)."
+        catch {
+            $response = $null
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                try { $response = $_.ErrorDetails.Message | ConvertFrom-Json }
+                catch { $response = $null }
+            }
+            $message = "Could not retrieve Autopilot import '$ImportId'."
+            if ($response -and $response.PSObject.Properties['error']) {
+                $message += " Service error: $($response.error)."
+            }
+            else {
+                $message += " $($_.Exception.Message)"
+            }
+            if ($response -and $response.PSObject.Properties['correlationId']) {
+                $message += " Correlation ID: $($response.correlationId)."
+            }
+            throw $message
         }
-        else {
-            $message += " $($_.Exception.Message)"
+
+        $result = Add-ClientImportStatusMetadata -ImportStatus $result
+        if (-not $Wait -or $result.isFinal) {
+            return $result
         }
-        if ($response -and $response.PSObject.Properties['correlationId']) {
-            $message += " Correlation ID: $($response.correlationId)."
+        if ($stopwatch.Elapsed.TotalSeconds + $PollIntervalSeconds -gt $TimeoutSeconds) {
+            throw "Autopilot import '$ImportId' did not reach a final state within $TimeoutSeconds seconds. Last status: $($result.status)."
         }
-        throw $message
-    }
+        Start-Sleep -Seconds $PollIntervalSeconds
+    } while ($true)
 }
 
 function Get-AutopilotTagPolicy {

@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -108,6 +108,61 @@ Describe 'Client import result metadata' {
     }
 }
 
+Describe 'Client import status metadata' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+        $clientModule = Get-Module AutopilotImport.Client |
+            Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
+    }
+
+    It 'explains that unknown is a non-final asynchronous state' {
+        $result = & $clientModule {
+            Add-ClientImportStatusMetadata -ImportStatus ([pscustomobject]@{
+                status = 'unknown'
+            })
+        }
+
+        $result.isFinal | Should -BeFalse
+        $result.statusDescription | Should -Match 'not reported a definitive state'
+    }
+
+    It 'does not mark a completed Intune import final while the attribute is pending' {
+        $result = & $clientModule {
+            Add-ClientImportStatusMetadata -ImportStatus ([pscustomobject]@{
+                status                   = 'complete'
+                extensionAttributeStatus = 'pending'
+            })
+        }
+
+        $result.isFinal | Should -BeFalse
+        $result.statusDescription | Should -Match 'still pending'
+    }
+
+    It 'marks the completed end-to-end workflow as final' {
+        $result = & $clientModule {
+            Add-ClientImportStatusMetadata -ImportStatus ([pscustomobject]@{
+                status                   = 'complete'
+                extensionAttributeStatus = 'complete'
+            })
+        }
+
+        $result.isFinal | Should -BeTrue
+    }
+
+    It 'marks an Intune import error as final' {
+        $result = & $clientModule {
+            Add-ClientImportStatusMetadata -ImportStatus ([pscustomobject]@{
+                status                   = 'error'
+                extensionAttributeStatus = 'notApplicable'
+            })
+        }
+
+        $result.isFinal | Should -BeTrue
+    }
+}
+
 Describe 'Blob binding content conversion' {
     It 'decodes text and byte content' {
         $json = '{"groupId":"11111111-1111-1111-1111-111111111111"}'
@@ -175,6 +230,43 @@ Describe 'Autopilot import request validation' {
 
         { ConvertTo-AutopilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate' } |
             Should -Throw
+    }
+}
+
+Describe 'Entra device extension attribute updates' {
+    It 'maps the Group Tag to the configured extension attribute' {
+        $payload = ConvertTo-EntraDeviceExtensionAttributes `
+            -ExtensionAttribute 'extensionAttribute7' `
+            -GroupTag 'PAW-CSM'
+
+        $payload.extensionAttributes.extensionAttribute7 | Should -Be 'PAW-CSM'
+        $payload.extensionAttributes.Keys.Count | Should -Be 1
+    }
+
+    It 'rejects an unsupported extension attribute name' {
+        {
+            ConvertTo-EntraDeviceExtensionAttributes `
+                -ExtensionAttribute 'extensionAttribute16' `
+                -GroupTag 'PAW-CSM'
+        } | Should -Throw
+    }
+
+    It 'resolves the registered Autopilot identity from a completed import' {
+        $registrationId = Get-AutopilotDeviceRegistrationId -ImportedDevice `
+            ([pscustomobject]@{
+                state = [pscustomobject]@{
+                    deviceRegistrationId = '11111111-1111-1111-1111-111111111111'
+                }
+            })
+
+        $registrationId | Should -Be '11111111-1111-1111-1111-111111111111'
+    }
+
+    It 'rejects an import without a device registration ID' {
+        {
+            Get-AutopilotDeviceRegistrationId -ImportedDevice `
+                ([pscustomobject]@{ state = [pscustomobject]@{} })
+        } | Should -Throw '*registration is not available yet*'
     }
 }
 
@@ -389,6 +481,11 @@ Describe 'Installer client tools package' {
 
     It 'installs compatibility scripts and a versioned client module with defaults' {
         $destinationPath = Join-Path $TestDrive 'AutopilotImport'
+        $previousModulePath = Join-Path $destinationPath `
+            'Modules\AutopilotImport.Client\1.0.20260812.1'
+        [void] (New-Item -Path $previousModulePath -ItemType Directory -Force)
+        '{"functionAppName":"func-previous"}' | Set-Content `
+            -LiteralPath (Join-Path $previousModulePath 'client.settings.json')
         $settings = [ordered]@{
             functionUrl         = 'https://func-test.azurewebsites.net/api/devices/import'
             managementUrl       = 'https://func-test.azurewebsites.net/api/management/tag-policy'
@@ -405,16 +502,16 @@ Describe 'Installer client tools package' {
             -ClientSettingsJson $settings
 
         $modulePath = Join-Path $destinationPath `
-            'Modules\AutopilotImport.Client\1.0.20260812.2'
+            'Modules\AutopilotImport.Client\1.0.20260813.1'
         $settingsPath | Should -Be (Join-Path $modulePath 'client.settings.json')
         @(
             'scripts\Import-AutopilotDevice.ps1'
             'scripts\Set-TagAuthorizationPolicy.ps1'
             'scripts\Set-TagPolicyManagers.ps1'
-            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.Client.psm1'
-            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.Client.psd1'
-            'Modules\AutopilotImport.Client\1.0.20260812.2\AutopilotImport.psm1'
-            'Modules\AutopilotImport.Client\1.0.20260812.2\client.settings.json'
+            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.Client.psm1'
+            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.Client.psd1'
+            'Modules\AutopilotImport.Client\1.0.20260813.1\AutopilotImport.psm1'
+            'Modules\AutopilotImport.Client\1.0.20260813.1\client.settings.json'
         ) | ForEach-Object {
             Join-Path $destinationPath $_ | Should -Exist
         }
@@ -422,6 +519,7 @@ Describe 'Installer client tools package' {
         $installedSettings.functionAppName | Should -Be 'func-test'
         $installedSettings.subscriptionId | Should -Be `
             '33333333-3333-3333-3333-333333333333'
+        $previousModulePath | Should -Not -Exist
 
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
@@ -639,6 +737,18 @@ Describe 'Project metadata entries' {
             $markers.Count | Should -Be 1
             $markers[0].Groups['version'].Value | Should -Be $projectVersion
         }
+    }
+
+    It 'uses the central version as the client module version' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectVersion = (Get-Content `
+            (Join-Path $projectRoot 'VERSION') `
+            -Raw).Trim()
+        $manifest = Import-PowerShellDataFile `
+            (Join-Path $projectRoot `
+                'src\AutopilotImport.Client\AutopilotImport.Client.psd1')
+
+        [string] $manifest.ModuleVersion | Should -Be $projectVersion
     }
 
     It 'uses the central author in every PowerShell file' {

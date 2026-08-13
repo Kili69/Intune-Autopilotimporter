@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -65,6 +65,11 @@ by the Entra application Client ID.
 .PARAMETER TagAuthorizationRule
 One or more group-to-tag rules in the form
 <Entra-group-object-ID>=<tag1>,<tag2>. Missing rules are requested interactively.
+
+.PARAMETER DeviceTagExtensionAttribute
+Entra device extension attribute that receives the authorized Group Tag.
+Supported values are extensionAttribute1 through extensionAttribute15. The
+interactive default is extensionAttribute1.
 
 .PARAMETER TagManagerPrincipalId
 Optional Entra user or group object IDs that may manage Group Tags in addition
@@ -156,6 +161,9 @@ param(
     [string] $ApiAudience,
 
     [string[]] $TagAuthorizationRule,
+
+    [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
+    [string] $DeviceTagExtensionAttribute,
 
     [guid[]] $TagManagerPrincipalId,
 
@@ -478,6 +486,15 @@ function Install-AutopilotClientTools {
         -Destination $settingsPath `
         -Force
 
+    $clientModuleRoot = Split-Path $moduleDestination -Parent
+    $normalizedModuleDestination = [IO.Path]::GetFullPath($moduleDestination).TrimEnd('\')
+    Get-ChildItem -LiteralPath $clientModuleRoot -Directory |
+        Where-Object {
+            [IO.Path]::GetFullPath($_.FullName).TrimEnd('\') -ne `
+                $normalizedModuleDestination
+        } |
+        Remove-Item -Recurse -Force
+
     return $settingsPath
 }
 
@@ -636,6 +653,13 @@ $ClientToolsPath = Read-DeploymentValue `
     -CurrentValue $ClientToolsPath `
     -Prompt 'Operational PowerShell scripts directory' `
     -DefaultValue $defaultClientToolsPath
+$DeviceTagExtensionAttribute = Read-DeploymentValue `
+    -CurrentValue $DeviceTagExtensionAttribute `
+    -Prompt 'Entra Device Tag extension attribute' `
+    -DefaultValue 'extensionAttribute1'
+if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$') {
+    throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
+}
 $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
@@ -684,6 +708,7 @@ Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
+Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host '  Group to Device Tag rules:'
 foreach ($rule in $tagAuthorizationPolicy) {
     Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
@@ -744,6 +769,7 @@ Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
+Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
 $additionalManagerPrincipalIds = ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
@@ -768,6 +794,7 @@ $deploymentParameters = @{
     apiAudience       = $ApiAudience
     tagAuthorizationPolicy = $tagAuthorizationPolicyJson
     managerAuthorizationPolicy = $managerAuthorizationPolicyJson
+    deviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     installerPrincipalId = $installingUserObjectId.ToString()
 }
 
@@ -878,6 +905,7 @@ if (-not $SkipPublish) {
                 (Join-Path $projectRoot 'requirements.psd1'),
                 (Join-Path $projectRoot 'profile.ps1'),
                 (Join-Path $projectRoot 'ImportDevice'),
+                (Join-Path $projectRoot 'ProcessDeviceAttribute'),
                 (Join-Path $projectRoot 'ManageTagPolicy'),
                 (Join-Path $projectRoot 'src')
             ) `
@@ -929,6 +957,7 @@ $result = [pscustomobject]@{
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
+    DeviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
     InstalledClientSettingsPath = $installedClientSettingsPath

@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260812.2
+# Project-Version: 1.0.20260813.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -145,6 +145,54 @@ function ConvertTo-TagAuthorizationPolicy {
             tags    = @($rulesByGroup[$_] | Sort-Object)
         }
     })
+}
+
+function ConvertTo-EntraDeviceExtensionAttributes {
+    <#
+    .SYNOPSIS
+    Creates a Microsoft Graph device extensionAttributes update payload.
+
+    .PARAMETER ExtensionAttribute
+    Target attribute from extensionAttribute1 through extensionAttribute15.
+
+    .PARAMETER GroupTag
+    Authorized Autopilot Group Tag written to the selected attribute.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
+        [string] $ExtensionAttribute,
+
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 128)]
+        [string] $GroupTag
+    )
+
+    return [ordered]@{
+        extensionAttributes = [ordered]@{
+            $ExtensionAttribute = $GroupTag
+        }
+    }
+}
+
+function Get-AutopilotDeviceRegistrationId {
+    <#
+    .SYNOPSIS
+    Returns the registered Autopilot identity ID from a completed import.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object] $ImportedDevice)
+
+    $registrationId = [guid]::Empty
+    if (-not $ImportedDevice.state -or
+        $null -eq $ImportedDevice.state.PSObject.Properties['deviceRegistrationId'] -or
+        -not [guid]::TryParse(
+            [string] $ImportedDevice.state.deviceRegistrationId,
+            [ref] $registrationId)) {
+        throw 'The Autopilot device registration is not available yet.'
+    }
+    return $registrationId
 }
 
 function Compare-TagAuthorizationPolicyGroups {
@@ -500,6 +548,8 @@ function ConvertTo-AutopilotImportPayload {
 Export-ModuleMember -Function @(
     'ConvertFrom-BlobBindingContent',
     'ConvertTo-TagAuthorizationPolicy',
+    'ConvertTo-EntraDeviceExtensionAttributes',
+    'Get-AutopilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',
     'Test-TagManagerPolicyAdministratorRole',

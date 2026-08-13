@@ -20,6 +20,26 @@ param tagAuthorizationPolicy string
 @minLength(2)
 param managerAuthorizationPolicy string
 
+@description('Entra device extension attribute that receives the authorized Autopilot Group Tag.')
+@allowed([
+  'extensionAttribute1'
+  'extensionAttribute2'
+  'extensionAttribute3'
+  'extensionAttribute4'
+  'extensionAttribute5'
+  'extensionAttribute6'
+  'extensionAttribute7'
+  'extensionAttribute8'
+  'extensionAttribute9'
+  'extensionAttribute10'
+  'extensionAttribute11'
+  'extensionAttribute12'
+  'extensionAttribute13'
+  'extensionAttribute14'
+  'extensionAttribute15'
+])
+param deviceTagExtensionAttribute string = 'extensionAttribute1'
+
 @description('Object ID of the user performing the deployment and initial policy upload.')
 param installerPrincipalId string
 
@@ -29,6 +49,7 @@ var hostingPlanName = '${functionAppName}-plan'
 var azurePowerShellClientId = '1950a258-227b-4e31-a9cf-717495945fc2'
 var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   #disable-next-line BCP334 // uniqueString guarantees 13 characters after replacement.
@@ -128,6 +149,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'MANAGER_AUTHORIZATION_POLICY'
           value: managerAuthorizationPolicy
         }
+        {
+          name: 'DEVICE_TAG_EXTENSION_ATTRIBUTE'
+          value: deviceTagExtensionAttribute
+        }
       ]
     }
   }
@@ -138,6 +163,16 @@ resource functionStorageBlobDataOwner 'Microsoft.Authorization/roleAssignments@2
   scope: storageAccount
   properties: {
     roleDefinitionId: storageBlobDataOwnerRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.id, storageQueueDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: storageQueueDataContributorRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }

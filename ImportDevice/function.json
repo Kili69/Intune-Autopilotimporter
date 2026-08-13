@@ -17,6 +17,13 @@
       "name": "Response"
     },
     {
+      "type": "queue",
+      "direction": "out",
+      "name": "DeviceAttributeUpdate",
+      "queueName": "device-attribute-updates",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
       "type": "blob",
       "direction": "in",
       "name": "TagPolicyBlob",

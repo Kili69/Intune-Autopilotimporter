@@ -2,7 +2,7 @@
 
 This Azure Function imports Windows Autopilot hardware hashes from a CSV file. The user authenticates to the Function API with their Entra account. Microsoft Graph is called exclusively through the system-assigned managed identity of the Function.
 
-The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token.
+The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`.
 
 ## Problem
 
@@ -27,6 +27,7 @@ an Entra security group mapped to that tag.
 4. The Function requires a matching group-to-tag rule for the authenticated caller.
 5. The managed identity submits only the authorized tag to Microsoft Graph v1.0.
 6. Intune processes the import asynchronously.
+7. A queue-triggered Function waits for the Entra device and writes the tag to the configured `extensionAttribute1` through `extensionAttribute15`.
 
 ## Prerequisites
 
@@ -54,14 +55,17 @@ one another implicitly.
 | Permission administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
 | Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
+| Function App managed identity | Deployed Storage Account | `Storage Queue Data Contributor` | Queues and retries the Entra device extension attribute update while Autopilot processing is incomplete. Assigned automatically by the installer. |
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer creates two role assignments scoped to the deployed
+The standard installer creates three role assignments scoped to the deployed
 Storage Account. The installing user receives `Storage Blob Data Contributor`,
-and the Function managed identity receives `Storage Blob Data Owner`. The
+and the Function managed identity receives `Storage Blob Data Owner` and
+`Storage Queue Data Contributor`. The
 installer therefore needs both resource deployment permissions and
 `Microsoft.Authorization/roleAssignments/write`. If organizational policy uses
 custom Azure roles, they must also allow Function ZIP publishing for the
@@ -94,7 +98,7 @@ application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or
 updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All` and the read-only `DeviceManagementRBAC.Read.All` permission.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All` permission.
 
 The installer configures:
 
@@ -175,6 +179,7 @@ The installer prompts for:
 - Azure region
 - Globally unique Function App name, with a generated name proposed by default
 - Destination directory for the operational PowerShell scripts
+- Entra device extension attribute for the authorized Group Tag; the default is `extensionAttribute1`
 - Entra group object IDs
 - Allowed Device Tags for each group
 
@@ -195,6 +200,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
+    -DeviceTagExtensionAttribute 'extensionAttribute1' `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
@@ -379,8 +385,26 @@ Get-AutopilotImportStatus `
     -ImportId '82d7266e-4213-4fa1-a5d5-b0ee10d009de'
 ```
 
-Only `status: complete` confirms a successful import. `status: error` includes
-`deviceErrorCode` and `deviceErrorName`; synthetic hashes return
+`unknown`, `pending`, and `partial` are non-final asynchronous states. Wait for
+Intune to report a final result with:
+
+```powershell
+Get-AutopilotImportStatus `
+    -ImportId '82d7266e-4213-4fa1-a5d5-b0ee10d009de' `
+    -Wait
+```
+
+The default timeout is 30 minutes with a 15-second polling interval. Override
+them with `-TimeoutSeconds` and `-PollIntervalSeconds`. The returned `status`
+is the Intune import status. `workflowStatus` remains `pending` until the
+configured Entra extension attribute contains the authorized Group Tag.
+`extensionAttributeStatus`, `extensionAttributeName`, and
+`extensionAttributeValue` expose that second stage. `statusDescription`
+explains the combined state, and `isFinal` becomes true only when the complete
+workflow succeeds or the Intune import ends in an error.
+
+Only `workflowStatus: complete` confirms a successful end-to-end import.
+`status: error` includes `deviceErrorCode` and `deviceErrorName`; synthetic hashes return
 `InvalidZtdHardwareHash` because they do not represent real devices.
 
 ## Dynamic Device Group
