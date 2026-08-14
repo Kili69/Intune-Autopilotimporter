@@ -2,7 +2,7 @@
 
 This Azure Function imports Windows Autopilot hardware hashes from a CSV file. The user authenticates to the Function API with their Entra account. Microsoft Graph is called exclusively through the system-assigned managed identity of the Function.
 
-The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`.
+The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`. Optionally, the Function adds the device to a configured Entra restricted management administrative unit (RMAU).
 
 ## Problem
 
@@ -56,6 +56,7 @@ one another implicitly.
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
+| Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional RMAU and adds the imported Entra device as a member. |
 | Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
 | Function App managed identity | Deployed Storage Account | `Storage Queue Data Contributor` | Queues and retries the Entra device extension attribute update while Autopilot processing is incomplete. Assigned automatically by the installer. |
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
@@ -98,7 +99,7 @@ application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or
 updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All` permission.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All` permission.
 
 The installer configures:
 
@@ -138,6 +139,30 @@ The installer prompts for all values that were not supplied as parameters, valid
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
+To sign out a cached Microsoft Graph account and explicitly select another
+Entra administrator without changing the Azure PowerShell account, add
+`-ForceGraphSignIn`. The installer uses device-code authentication so the
+operator can open the sign-in page in the appropriate browser profile:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 `
+    -InstallMissingModules `
+    -ForceGraphSignIn
+```
+
+Assigning Microsoft Graph application permissions requires a signed-in user
+with Application Administrator, Cloud Application Administrator, or Privileged
+Role Administrator in the target tenant. After a failed installation, retry
+only the idempotent permission assignment with the managed identity object ID
+reported by the deployment:
+
+```powershell
+.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+    -ManagedIdentityObjectId '<Function-managed-identity-object-ID>' `
+    -TenantId '<Tenant-ID>' `
+    -ForceGraphSignIn
+```
+
 After the Azure resources are deployed, the installer creates a portable client
 tools package. It asks for the destination and suggests
 `Documents\PowerShell\Scripts\AutopilotImport`. The package contains:
@@ -155,6 +180,29 @@ URI, Tenant ID, Subscription ID, resource group, and Function App name. It
 contains no credentials. The module loads these values automatically, while
 explicitly supplied parameters take precedence. The scripts are thin
 compatibility wrappers over the module commands.
+
+The installer also creates
+`AutopilotImport.Client-<version>.zip` in the client tools directory. The ZIP
+contains the versioned module and its `client.settings.json`, with the folder
+layout required by PowerShell module autoloading. Transfer the archive to
+another computer and extract it into the current user's PowerShell module
+directory:
+
+```powershell
+$moduleRoot = Join-Path `
+    ([Environment]::GetFolderPath('MyDocuments')) `
+    'PowerShell\Modules'
+New-Item -Path $moduleRoot -ItemType Directory -Force | Out-Null
+Expand-Archive `
+    -LiteralPath '.\AutopilotImport.Client-<version>.zip' `
+    -DestinationPath $moduleRoot `
+    -Force
+```
+
+After extraction, commands such as `Import-AutopilotDevice` are available
+through PowerShell module autoloading. The user does not need to run
+`Import-Module` first. PowerShell 7.2 or later and the required Az modules must
+still be installed on the destination computer.
 
 Import the newest installed module version from a custom tools directory:
 
@@ -180,6 +228,7 @@ The installer prompts for:
 - Globally unique Function App name, with a generated name proposed by default
 - Destination directory for the operational PowerShell scripts
 - Entra device extension attribute for the authorized Group Tag; the default is `extensionAttribute1`
+- Optional display name of an Entra restricted management administrative unit
 - Entra group object IDs
 - Allowed Device Tags for each group
 
@@ -204,6 +253,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
+    -RestrictedManagementAdministrativeUnitName 'RMAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -249,10 +299,16 @@ Set-AutopilotTagPolicy `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
+    -RestrictedManagementAdministrativeUnitName 'RMAU-Autopilot-Devices' `
     -WhatIf
 ```
 
 Run the same command without `-WhatIf` to apply it.
+
+The RMAU must already exist, have `isMemberManagementRestricted` enabled, and
+have a unique display name. Leave the parameter empty during installation, or
+set it to an empty string in `Set-AutopilotTagPolicy`, to disable automatic
+RMAU membership. Without a configured RMAU, imports behave as before.
 
 ### Change Group Tag Managers Later
 
@@ -297,7 +353,7 @@ deployment explicitly when required:
 
 The script preserves the existing Function App name, region, API application,
 Group Tag authorization rules, configured Group Tag managers, client tools
-path, and Device Tag extension attribute. It then reuses the idempotent
+path, Device Tag extension attribute, and optional RMAU. It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and
 the versioned client package.
 
@@ -349,7 +405,7 @@ The template enables HTTPS, Easy Auth, Application Insights, and a system-assign
 
 ## 3. Assign the Graph Permission
 
-This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All` and `DeviceManagementRBAC.Read.All`.
+This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser

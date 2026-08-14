@@ -15,6 +15,9 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'Set')]
     [string[]] $TagAuthorizationRule,
 
+    [Parameter(ParameterSetName = 'Set')]
+    [string] $RestrictedManagementAdministrativeUnitName,
+
     [string] $ManagementUrl,
 
     [string] $ApiApplicationIdUri,
@@ -49,6 +52,11 @@ if ($List) {
 }
 else {
     $parameters.TagAuthorizationRule = $TagAuthorizationRule
+    if ($PSBoundParameters.ContainsKey(
+            'RestrictedManagementAdministrativeUnitName')) {
+        $parameters.RestrictedManagementAdministrativeUnitName = `
+            $RestrictedManagementAdministrativeUnitName
+    }
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }

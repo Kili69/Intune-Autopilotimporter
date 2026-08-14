@@ -451,6 +451,7 @@ function Set-AutopilotTagPolicy {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(Mandatory)][string[]] $TagAuthorizationRule,
+        [string] $RestrictedManagementAdministrativeUnitName,
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
         [string] $TenantId,
@@ -463,14 +464,21 @@ function Set-AutopilotTagPolicy {
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     $coreModulePath = Get-CoreModulePath
     Import-Module $coreModulePath -Force
-    $policy = @(ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule)
+    $policy = @(ConvertTo-TagAuthorizationPolicy `
+        -Rules $TagAuthorizationRule `
+        -RestrictedManagementAdministrativeUnitName `
+            $RestrictedManagementAdministrativeUnitName)
     if (-not $PSCmdlet.ShouldProcess($url, "Replace tag authorization policy with $($policy.Count) group rule(s)")) {
         return
     }
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
-    $body = @{ rules = @($TagAuthorizationRule) } | ConvertTo-Json -Depth 4 -Compress
+    $body = @{
+        rules = @($TagAuthorizationRule)
+        restrictedManagementAdministrativeUnitName = `
+            $RestrictedManagementAdministrativeUnitName
+    } | ConvertTo-Json -Depth 4 -Compress
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body
 }

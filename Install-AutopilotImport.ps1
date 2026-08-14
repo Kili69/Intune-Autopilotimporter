@@ -66,6 +66,11 @@ by the Entra application Client ID.
 One or more group-to-tag rules in the form
 <Entra-group-object-ID>=<tag1>,<tag2>. Missing rules are requested interactively.
 
+.PARAMETER RestrictedManagementAdministrativeUnitName
+Optional display name of a restricted management administrative unit. Imported
+devices are added to this unit after Intune creates their Entra device. Leave
+empty to keep the current behavior.
+
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
 Supported values are extensionAttribute1 through extensionAttribute15. The
@@ -83,6 +88,11 @@ asks for a path and suggests the current user's PowerShell script directory.
 .PARAMETER InstallMissingModules
 Installs missing Az modules, Microsoft.Graph.Authentication, and the Bicep CLI
 for the current user where applicable.
+
+.PARAMETER ForceGraphSignIn
+Signs out the cached Microsoft Graph account before Entra configuration and
+uses device-code authentication to select an account explicitly. The Azure
+PowerShell account is not changed.
 
 .PARAMETER SkipEntraAppConfiguration
 Skips app registration and API scope management.
@@ -162,6 +172,8 @@ param(
 
     [string[]] $TagAuthorizationRule,
 
+    [string] $RestrictedManagementAdministrativeUnitName,
+
     [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
     [string] $DeviceTagExtensionAttribute,
 
@@ -170,6 +182,8 @@ param(
     [string] $ClientToolsPath,
 
     [switch] $InstallMissingModules,
+
+    [switch] $ForceGraphSignIn,
 
     [switch] $SkipEntraAppConfiguration,
 
@@ -352,7 +366,9 @@ function ConvertTo-TagAuthorizationPolicy {
     corresponding collection of allowed tags.
     #>
     param(
-        [string[]] $Rules
+        [string[]] $Rules,
+
+        [string] $RestrictedManagementAdministrativeUnitName
     )
 
     $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -375,7 +391,10 @@ function ConvertTo-TagAuthorizationPolicy {
         }
     }
 
-    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $enteredRules)
+    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy `
+        -Rules $enteredRules `
+        -RestrictedManagementAdministrativeUnitName `
+            $RestrictedManagementAdministrativeUnitName)
 }
 
 function ConvertTo-AdditionalManagerPrincipalIds {
@@ -494,6 +513,14 @@ function Install-AutopilotClientTools {
                 $normalizedModuleDestination
         } |
         Remove-Item -Recurse -Force
+
+    $modulePackagePath = Join-Path $destinationRoot `
+        "AutopilotImport.Client-$($clientModuleManifest.ModuleVersion).zip"
+    Compress-Archive `
+        -LiteralPath $clientModuleRoot `
+        -DestinationPath $modulePackagePath `
+        -CompressionLevel Optimal `
+        -Force
 
     return $settingsPath
 }
@@ -660,7 +687,23 @@ $DeviceTagExtensionAttribute = Read-DeploymentValue `
 if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$') {
     throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
 }
-$tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule
+if (-not $PSBoundParameters.ContainsKey(
+        'RestrictedManagementAdministrativeUnitName')) {
+    $RestrictedManagementAdministrativeUnitName = Read-Host `
+        'Restricted management administrative unit display name (optional)'
+}
+$RestrictedManagementAdministrativeUnitName = if (
+    [string]::IsNullOrWhiteSpace(
+        $RestrictedManagementAdministrativeUnitName)) {
+    ''
+}
+else {
+    $RestrictedManagementAdministrativeUnitName.Trim()
+}
+$tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy `
+    -Rules $TagAuthorizationRule `
+    -RestrictedManagementAdministrativeUnitName `
+        $RestrictedManagementAdministrativeUnitName
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
 $parsedGuid = [guid]::Empty
@@ -709,6 +752,7 @@ Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
+Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host '  Group to Device Tag rules:'
 foreach ($rule in $tagAuthorizationPolicy) {
     Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
@@ -737,21 +781,34 @@ if (-not $SkipEntraAppConfiguration) {
         -TenantId $TenantId `
         -ClientId $EntraClientId `
         -DisplayName $EntraApplicationName `
+        -ForceGraphSignIn:$ForceGraphSignIn `
         -Confirm:$false
     $EntraClientId = $entraApplication.ClientId
     $ApiAudience = $entraApplication.ApplicationIdUri
     $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
+    Write-Host "Microsoft Graph account: $($entraApplication.InstallingUserPrincipalName)"
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
 }
 else {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    Connect-MgGraph -TenantId $TenantId -Scopes 'User.Read' -NoWelcome
+    $graphConnectParameters = @{
+        TenantId  = $TenantId
+        Scopes    = @('User.Read')
+        NoWelcome = $true
+    }
+    if ($ForceGraphSignIn) {
+        Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
+        $graphConnectParameters.UseDeviceCode = $true
+        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+    }
+    Connect-MgGraph @graphConnectParameters
     $installingUser = Invoke-MgGraphRequest `
         -Method GET `
-        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id'
+        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
     $installingUserObjectId = [guid] $installingUser.id
+    Write-Host "Microsoft Graph account: $($installingUser.userPrincipalName)"
 }
 
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
@@ -770,6 +827,7 @@ Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
+Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
 $additionalManagerPrincipalIds = ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
@@ -839,7 +897,13 @@ $installedClientSettingsPath = Install-AutopilotClientTools `
     -DestinationPath $ClientToolsPath `
     -ProjectRoot $projectRoot `
     -ClientSettingsJson $clientSettings
+$installedClientModuleVersion = Split-Path $installedClientSettingsPath -Parent |
+    Split-Path -Leaf
+$clientModulePackagePath = Join-Path ([IO.Path]::GetFullPath($ClientToolsPath)) `
+    "AutopilotImport.Client-$installedClientModuleVersion.zip"
 Write-Host "Installed AutopilotImport.Client, compatibility scripts, and defaults in '$ClientToolsPath'."
+Write-Host "Created portable PowerShell module package '$clientModulePackagePath'."
+Write-Host 'Extract the archive into a directory listed in $env:PSModulePath to use its commands through module autoloading.'
 
 $storageAccount = Get-AzStorageAccount `
     -ResourceGroupName $ResourceGroupName `
@@ -893,7 +957,9 @@ finally {
 
 if (-not $SkipGraphPermission) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    & $grantScriptPath -ManagedIdentityObjectId $managedIdentityObjectId
+    & $grantScriptPath `
+        -ManagedIdentityObjectId $managedIdentityObjectId `
+        -TenantId $TenantId
 }
 
 if (-not $SkipPublish) {
@@ -957,10 +1023,13 @@ $result = [pscustomobject]@{
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
+    RestrictedManagementAdministrativeUnitName = `
+        $RestrictedManagementAdministrativeUnitName
     DeviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
     InstalledClientSettingsPath = $installedClientSettingsPath
+    ClientModulePackagePath = $clientModulePackagePath
     ClientToolsPath         = [IO.Path]::GetFullPath($ClientToolsPath)
 }
 

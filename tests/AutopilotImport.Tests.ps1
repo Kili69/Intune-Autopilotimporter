@@ -383,6 +383,117 @@ Describe 'Installer tag authorization rules' {
         { ConvertTo-TagAuthorizationPolicy -Rules @('Not-A-Group=Standard') } |
             Should -Throw
     }
+
+    It 'preserves an optional restricted management administrative unit name' {
+        $policy = ConvertTo-TagAuthorizationPolicy `
+            -Rules @('11111111-1111-1111-1111-111111111111=Standard') `
+            -RestrictedManagementAdministrativeUnitName ' RMAU-Autopilot '
+
+        $policy.restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-Autopilot'
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Standard' | Should -Be 'RMAU-Autopilot'
+    }
+
+    It 'keeps the current policy shape when no administrative unit is configured' {
+        $policy = ConvertTo-TagAuthorizationPolicy `
+            -Rules @('11111111-1111-1111-1111-111111111111=Standard')
+
+        $policy.PSObject.Properties.Name |
+            Should -Not -Contain 'restrictedManagementAdministrativeUnitName'
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Standard' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Restricted management administrative unit membership' {
+    InModuleScope AutopilotImport {
+        BeforeEach {
+            $script:administrativeUnit = [pscustomobject]@{
+                id                           = '22222222-2222-2222-2222-222222222222'
+                displayName                  = 'RMAU-Autopilot'
+                isMemberManagementRestricted = $true
+            }
+            $script:existingMembers = @()
+            Mock Invoke-RestMethod {
+                if ($Uri -match '/members\?') {
+                    return @{ value = @($script:existingMembers) }
+                }
+                if ($Method -eq 'Get') {
+                    return @{ value = @($script:administrativeUnit) }
+                }
+                return $null
+            }
+        }
+
+        It 'adds a new Entra device member to the named RMAU' {
+            $deviceObjectId = [guid] `
+                '11111111-1111-1111-1111-111111111111'
+            $result = `
+                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                    -AdministrativeUnitName 'RMAU-Autopilot' `
+                    -DeviceObjectId $deviceObjectId `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force)
+
+            $result.MembershipAdded | Should -BeTrue
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter {
+                    $Method -eq 'Post' -and
+                    $Uri -match '/administrativeUnits/.+/members/\$ref$' -and
+                    $Body -match [regex]::Escape($deviceObjectId.ToString())
+                }
+        }
+
+        It 'does not add an Entra device that is already a member' {
+            $deviceObjectId = [guid] `
+                '11111111-1111-1111-1111-111111111111'
+            $script:existingMembers = @(
+                [pscustomobject]@{ id = $deviceObjectId.ToString() }
+            )
+
+            $result = `
+                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                    -AdministrativeUnitName 'RMAU-Autopilot' `
+                    -DeviceObjectId $deviceObjectId `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force)
+
+            $result.MembershipAdded | Should -BeFalse
+            Assert-MockCalled Invoke-RestMethod -Times 0 `
+                -ParameterFilter { $Method -eq 'Post' }
+        }
+
+        It 'checks membership without adding a missing device' {
+            $result = `
+                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                    -AdministrativeUnitName 'RMAU-Autopilot' `
+                    -DeviceObjectId `
+                        '11111111-1111-1111-1111-111111111111' `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force) `
+                    -TestOnly
+
+            $result.IsMember | Should -BeFalse
+            $result.MembershipAdded | Should -BeFalse
+            Assert-MockCalled Invoke-RestMethod -Times 0 `
+                -ParameterFilter { $Method -eq 'Post' }
+        }
+
+        It 'rejects an administrative unit that is not restricted' {
+            $script:administrativeUnit.isMemberManagementRestricted = $false
+
+            {
+                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                    -AdministrativeUnitName 'RMAU-Autopilot' `
+                    -DeviceObjectId '11111111-1111-1111-1111-111111111111' `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force)
+            } | Should -Throw '*is not a restricted management administrative unit*'
+        }
+    }
 }
 
 Describe 'Installer Function App naming' {
@@ -524,6 +635,40 @@ Describe 'Installer client tools package' {
             '33333333-3333-3333-3333-333333333333'
         $previousModulePath | Should -Not -Exist
 
+        $modulePackagePath = Join-Path $destinationPath `
+            "AutopilotImport.Client-$moduleVersion.zip"
+        $modulePackagePath | Should -Exist
+        $archive = [IO.Compression.ZipFile]::OpenRead($modulePackagePath)
+        try {
+            @($archive.Entries.FullName) | Should -Contain `
+                "AutopilotImport.Client/$moduleVersion/AutopilotImport.Client.psd1"
+            @($archive.Entries.FullName) | Should -Contain `
+                "AutopilotImport.Client/$moduleVersion/client.settings.json"
+        }
+        finally {
+            $archive.Dispose()
+        }
+
+        $autoloadModuleRoot = Join-Path $TestDrive 'PowerShell\Modules'
+        Expand-Archive `
+            -LiteralPath $modulePackagePath `
+            -DestinationPath $autoloadModuleRoot
+        $originalModulePath = $env:PSModulePath
+        try {
+            $env:PSModulePath = $autoloadModuleRoot + `
+                [IO.Path]::PathSeparator + $originalModulePath
+            Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
+            $autoloadedCommand = Get-Command Import-AutopilotDevice `
+                -ErrorAction Stop
+            $autoloadedCommand.Module.Path | Should -Be `
+                (Join-Path $autoloadModuleRoot `
+                    "AutopilotImport.Client\$moduleVersion\AutopilotImport.Client.psm1")
+        }
+        finally {
+            Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
+            $env:PSModulePath = $originalModulePath
+        }
+
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
@@ -546,7 +691,8 @@ Describe 'Update script deployment discovery' {
         foreach ($functionName in @(
                 'Resolve-AutopilotUpdateConfigPath',
                 'Get-AutopilotClientToolsPath',
-                'ConvertTo-UpdateTagAuthorizationRules'
+                'ConvertTo-UpdateTagAuthorizationRules',
+                'Get-UpdateRestrictedManagementAdministrativeUnitName'
             )) {
             $functionAst = $updateAst.FindAll({
                 param($node)
@@ -583,6 +729,28 @@ Describe 'Update script deployment discovery' {
 
         $rules | Should -Be `
             '11111111-1111-1111-1111-111111111111=PAW-CSM,BG-Default'
+    }
+
+    It 'supports an existing policy without RMAU metadata' {
+        $policy = [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags    = @('Standard')
+        }
+
+        Get-UpdateRestrictedManagementAdministrativeUnitName `
+            -Policy $policy | Should -BeNullOrEmpty
+    }
+
+    It 'preserves the configured RMAU name' {
+        $policy = [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags    = @('Standard')
+            restrictedManagementAdministrativeUnitName = `
+                'RMAU-Autopilot'
+        }
+
+        Get-UpdateRestrictedManagementAdministrativeUnitName `
+            -Policy $policy | Should -Be 'RMAU-Autopilot'
     }
 }
 

@@ -154,7 +154,10 @@ try {
     else {
         $Request.Body
     }
-    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy -Rules @($requestBody.rules))
+    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
+        -Rules @($requestBody.rules) `
+        -RestrictedManagementAdministrativeUnitName `
+            ([string] $requestBody.restrictedManagementAdministrativeUnitName))
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
 }
 catch {

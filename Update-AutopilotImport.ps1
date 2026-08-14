@@ -9,8 +9,9 @@ Updates an existing Autopilot Import deployment from the current source tree.
 .DESCRIPTION
 Discovers the installed client configuration, reads the current Group Tag
 policy through the Function management API, preserves configured policy
-managers, and reads the deployed extension attribute and region from Azure.
-It then invokes Install-AutopilotImport.ps1 with the existing resource names.
+managers and optional RMAU, and reads the deployed extension attribute and
+region from Azure. It then invokes Install-AutopilotImport.ps1 with the
+existing resource names.
 
 .PARAMETER ConfigPath
 Path to the installed client.settings.json. When omitted, the newest version
@@ -136,6 +137,23 @@ function ConvertTo-UpdateTagAuthorizationRules {
     return $rules
 }
 
+function Get-UpdateRestrictedManagementAdministrativeUnitName {
+    param([object[]] $Policy = @())
+
+    $names = @($Policy | Where-Object {
+        $_.PSObject.Properties[
+            'restrictedManagementAdministrativeUnitName'
+        ] -and -not [string]::IsNullOrWhiteSpace(
+            [string] $_.restrictedManagementAdministrativeUnitName)
+    } | ForEach-Object {
+        ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+    } | Select-Object -Unique)
+    if ($names.Count -gt 1) {
+        throw 'The current Group Tag policy contains multiple restricted management administrative units.'
+    }
+    return $names | Select-Object -First 1
+}
+
 $projectRoot = $PSScriptRoot
 $installerPath = Join-Path $projectRoot 'Install-AutopilotImport.ps1'
 $clientModulePath = Join-Path $projectRoot `
@@ -186,6 +204,9 @@ Import-Module $clientModulePath -Force
 $policyResponse = Get-AutopilotTagPolicy -ConfigPath $resolvedConfigPath
 $tagAuthorizationRules = ConvertTo-UpdateTagAuthorizationRules `
     -Policy @($policyResponse.policy)
+$restrictedManagementAdministrativeUnitName = `
+    Get-UpdateRestrictedManagementAdministrativeUnitName `
+        -Policy @($policyResponse.policy)
 
 if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
     -not (Get-Command Invoke-AzRestMethod -ErrorAction SilentlyContinue)) {
@@ -248,6 +269,7 @@ Write-Host "  Function      : $($settings.functionAppName)"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
+Write-Host "  Restricted management AU: $restrictedManagementAdministrativeUnitName"
 Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 
@@ -260,6 +282,8 @@ $installerParameters = @{
     EntraClientId               = $entraClientId.ToString()
     ApiAudience                 = $apiAudience
     TagAuthorizationRule        = $tagAuthorizationRules
+    RestrictedManagementAdministrativeUnitName = `
+        [string] $restrictedManagementAdministrativeUnitName
     DeviceTagExtensionAttribute = $extensionAttribute
     TagManagerPrincipalId       = @($managerPrincipalIds)
     ClientToolsPath             = $resolvedClientToolsPath
