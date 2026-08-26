@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -14,6 +14,9 @@ param(
 
     [Parameter(Mandatory, ParameterSetName = 'Set')]
     [string[]] $TagAuthorizationRule,
+
+    [Parameter(ParameterSetName = 'Set')]
+    [string] $RestrictedManagementAdministrativeUnitName,
 
     [string] $ManagementUrl,
 
@@ -49,6 +52,11 @@ if ($List) {
 }
 else {
     $parameters.TagAuthorizationRule = $TagAuthorizationRule
+    if ($PSBoundParameters.ContainsKey(
+            'RestrictedManagementAdministrativeUnitName')) {
+        $parameters.RestrictedManagementAdministrativeUnitName = `
+            $RestrictedManagementAdministrativeUnitName
+    }
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }

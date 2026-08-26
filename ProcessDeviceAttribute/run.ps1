@@ -1,14 +1,16 @@
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Writes an imported device's authorized Group Tag to an Entra extension attribute.
+Completes the Entra configuration of an imported Autopilot device.
 
 .DESCRIPTION
 Processes queued Autopilot imports after Intune has created the Entra device.
-An incomplete import throws so the Storage Queue trigger retries it according
-to host.json. Successful updates are idempotent.
+It writes the authorized Group Tag to an extension attribute and optionally
+adds the device to a restricted management administrative unit. An incomplete
+import throws so the Storage Queue trigger retries it according to host.json.
+Successful updates are idempotent.
 #>
 
 param($QueueItem, $TriggerMetadata)
@@ -71,6 +73,34 @@ if (-not [guid]::TryParse(
     throw "Entra device is not available yet for Autopilot import '$importId'."
 }
 
+$restrictedManagementAdministrativeUnitName = [string] `
+    $message.restrictedManagementAdministrativeUnitName
+$deviceObjectId = [guid]::Empty
+if (-not [string]::IsNullOrWhiteSpace(
+        $restrictedManagementAdministrativeUnitName)) {
+    $entraDevice = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ErrorAction Stop
+    if (-not [guid]::TryParse([string] $entraDevice.id, [ref] $deviceObjectId)) {
+        throw "Entra device object ID is unavailable for device '$entraDeviceId'."
+    }
+
+    $existingMembership = `
+        Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+            -AdministrativeUnitName `
+                $restrictedManagementAdministrativeUnitName `
+            -DeviceObjectId $deviceObjectId `
+            -AccessToken $secureToken `
+            -TestOnly
+    if ($existingMembership.IsMember) {
+        Write-Information "Entra device '$entraDeviceId' is already a member of restricted management administrative unit '$restrictedManagementAdministrativeUnitName'."
+        return
+    }
+}
+
 Invoke-RestMethod `
     -Method Patch `
     -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')" `
@@ -81,3 +111,20 @@ Invoke-RestMethod `
     -ErrorAction Stop | Out-Null
 
 Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
+
+if (-not [string]::IsNullOrWhiteSpace(
+        $restrictedManagementAdministrativeUnitName)) {
+    $membershipResult = `
+        Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+            -AdministrativeUnitName `
+                $restrictedManagementAdministrativeUnitName `
+            -DeviceObjectId $deviceObjectId `
+            -AccessToken $secureToken
+    $membershipAction = if ($membershipResult.MembershipAdded) {
+        'added to'
+    }
+    else {
+        'already a member of'
+    }
+    Write-Information "Entra device '$entraDeviceId' $membershipAction restricted management administrative unit '$restrictedManagementAdministrativeUnitName'."
+}

@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -23,17 +23,29 @@ Grants the required Graph permissions to a managed identity.
 
 .DESCRIPTION
 Connects to Microsoft Graph, resolves the required Autopilot import, Entra
-device update, and Intune RBAC read application roles, and assigns them to the
-specified managed identity service principal. Existing assignments are
-detected, making the script safe to run repeatedly.
+device update, restricted management administrative unit, and Intune RBAC read
+application roles, and assigns them to the specified managed identity service
+principal. Existing assignments are detected, making the script safe to run
+repeatedly.
 
 .PARAMETER ManagedIdentityObjectId
 Object ID of the Function App's system-assigned managed identity service
 principal. This is not the managed identity application/client ID.
 
+.PARAMETER TenantId
+Optional Entra tenant GUID. Supplying it ensures that Microsoft Graph connects
+to the tenant that owns the managed identity.
+
+.PARAMETER ForceGraphSignIn
+Signs out the cached Microsoft Graph account and uses device-code
+authentication to select an account explicitly before assigning permissions.
+Use this when the cached account lacks the required Entra administrative role.
+
 .EXAMPLE
 .\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
-    -ManagedIdentityObjectId '22222222-2222-2222-2222-222222222222'
+    -ManagedIdentityObjectId '22222222-2222-2222-2222-222222222222' `
+    -TenantId '11111111-1111-1111-1111-111111111111' `
+    -ForceGraphSignIn
 
 Grants the required Microsoft Graph application permission, or reports that it
 is already assigned.
@@ -50,19 +62,40 @@ application permission is a privileged tenant operation.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [guid] $ManagedIdentityObjectId
+    [guid] $ManagedIdentityObjectId,
+
+    [guid] $TenantId,
+
+    [switch] $ForceGraphSignIn
 )
 
 $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 $permissionNames = @(
+    'AdministrativeUnit.ReadWrite.All'
     'DeviceManagementServiceConfig.ReadWrite.All'
     'DeviceManagementRBAC.Read.All'
     'Device.ReadWrite.All'
 )
 
-Connect-MgGraph `
-    -Scopes 'Application.Read.All', 'AppRoleAssignment.ReadWrite.All' `
-    -NoWelcome
+if ($ForceGraphSignIn) {
+    Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
+}
+
+$connectParameters = @{
+    Scopes    = @('Application.Read.All', 'AppRoleAssignment.ReadWrite.All')
+    NoWelcome = $true
+}
+if ($TenantId -ne [guid]::Empty) {
+    $connectParameters.TenantId = $TenantId
+}
+if ($ForceGraphSignIn) {
+    $connectParameters.UseDeviceCode = $true
+    Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+}
+Connect-MgGraph @connectParameters
+
+$graphContext = Get-MgContext
+Write-Host "Microsoft Graph account: $($graphContext.Account)"
 
 $filter = [uri]::EscapeDataString("appId eq '$graphApplicationId'")
 $graphResponse = Invoke-MgGraphRequest `
@@ -93,15 +126,23 @@ foreach ($permissionName in $permissionNames) {
         continue
     }
 
-    Invoke-MgGraphRequest `
-        -Method POST `
-        -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `
-        -Body (@{
-            principalId = [string] $ManagedIdentityObjectId
-            resourceId  = [string] $graphServicePrincipal.id
-            appRoleId   = [string] $permission.id
-        } | ConvertTo-Json -Compress) `
-        -ContentType 'application/json' | Out-Null
+    try {
+        Invoke-MgGraphRequest `
+            -Method POST `
+            -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `
+            -Body (@{
+                principalId = [string] $ManagedIdentityObjectId
+                resourceId  = [string] $graphServicePrincipal.id
+                appRoleId   = [string] $permission.id
+            } | ConvertTo-Json -Compress) `
+            -ContentType 'application/json' | Out-Null
+    }
+    catch {
+        if ($_.Exception.Message -match '403|Authorization_RequestDenied|Insufficient privileges') {
+            throw "Microsoft Graph account '$($graphContext.Account)' cannot assign application permissions. Sign in with an account that has Application Administrator, Cloud Application Administrator, or Privileged Role Administrator, then run again with -ForceGraphSignIn. Original error: $($_.Exception.Message)"
+        }
+        throw
+    }
 
     Write-Output "Assigned Microsoft Graph permission '$permissionName'."
 }

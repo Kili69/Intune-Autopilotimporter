@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -98,8 +98,16 @@ function ConvertTo-TagAuthorizationPolicy {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string[]] $Rules
+        [string[]] $Rules,
+
+        [string] $RestrictedManagementAdministrativeUnitName
     )
+
+    if (-not [string]::IsNullOrWhiteSpace(
+            $RestrictedManagementAdministrativeUnitName) -and
+        $RestrictedManagementAdministrativeUnitName.Trim().Length -gt 256) {
+        throw 'Restricted management administrative unit name must not exceed 256 characters.'
+    }
 
     $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($enteredRules.Count -eq 0) {
@@ -140,11 +148,127 @@ function ConvertTo-TagAuthorizationPolicy {
     }
 
     return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
-        [pscustomobject]@{
+        $policyEntry = [ordered]@{
             groupId = $_
             tags    = @($rulesByGroup[$_] | Sort-Object)
         }
+        if (-not [string]::IsNullOrWhiteSpace(
+                $RestrictedManagementAdministrativeUnitName)) {
+            $policyEntry.restrictedManagementAdministrativeUnitName =
+                $RestrictedManagementAdministrativeUnitName.Trim()
+        }
+        [pscustomobject] $policyEntry
     })
+}
+
+function Resolve-RestrictedManagementAdministrativeUnitName {
+    <#
+    .SYNOPSIS
+    Resolves the optional restricted management administrative unit for a tag.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]] $Policy = @(),
+
+        [Parameter(Mandatory)]
+        [string] $GroupTag
+    )
+
+    $administrativeUnitNames = @($Policy | Where-Object {
+        @($_.tags) -contains $GroupTag -and
+        $_.PSObject.Properties['restrictedManagementAdministrativeUnitName'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.restrictedManagementAdministrativeUnitName)
+    } | ForEach-Object {
+        ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+    } | Select-Object -Unique)
+
+    if ($administrativeUnitNames.Count -gt 1) {
+        throw "Group Tag '$GroupTag' maps to multiple restricted management administrative units."
+    }
+    return $administrativeUnitNames | Select-Object -First 1
+}
+
+function Add-EntraDeviceToRestrictedManagementAdministrativeUnit {
+    <#
+    .SYNOPSIS
+    Adds an Entra device to a named restricted management administrative unit.
+
+    .OUTPUTS
+    PSCustomObject containing the resolved administrative unit ID and whether
+    membership was added.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 256)]
+        [string] $AdministrativeUnitName,
+
+        [Parameter(Mandatory)]
+        [guid] $DeviceObjectId,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken,
+
+        [switch] $TestOnly
+    )
+
+    $escapedName = $AdministrativeUnitName.Trim().Replace("'", "''")
+    $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+    $administrativeUnitResponse = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=$filter&`$select=id,displayName,isMemberManagementRestricted" `
+        -Authentication Bearer `
+        -Token $AccessToken `
+        -ErrorAction Stop
+    $matchingUnits = @($administrativeUnitResponse.value | Where-Object {
+        [string]::Equals(
+            [string] $_.displayName,
+            $AdministrativeUnitName.Trim(),
+            [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matchingUnits.Count -eq 0) {
+        throw "Administrative unit '$AdministrativeUnitName' was not found."
+    }
+    if ($matchingUnits.Count -gt 1) {
+        throw "Administrative unit name '$AdministrativeUnitName' is not unique."
+    }
+
+    $administrativeUnit = $matchingUnits[0]
+    if ($administrativeUnit.isMemberManagementRestricted -ne $true) {
+        throw "Administrative unit '$AdministrativeUnitName' is not a restricted management administrative unit."
+    }
+
+    $deviceId = $DeviceObjectId.ToString()
+    $memberFilter = [uri]::EscapeDataString("id eq '$deviceId'")
+    $memberResponse = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($administrativeUnit.id)/members?`$filter=$memberFilter&`$count=true&`$select=id" `
+        -Headers @{ ConsistencyLevel = 'eventual' } `
+        -Authentication Bearer `
+        -Token $AccessToken `
+        -ErrorAction Stop
+    $isMember = @($memberResponse.value | Where-Object {
+        [string] $_.id -eq $deviceId
+    }).Count -gt 0
+    if (-not $isMember -and -not $TestOnly) {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($administrativeUnit.id)/members/`$ref" `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -ContentType 'application/json' `
+            -Body (@{
+                '@odata.id' = "https://graph.microsoft.com/v1.0/devices/$deviceId"
+            } | ConvertTo-Json -Compress) `
+            -ErrorAction Stop | Out-Null
+    }
+
+    return [pscustomobject]@{
+        AdministrativeUnitId = [string] $administrativeUnit.id
+        IsMember             = $isMember
+        MembershipAdded      = -not $isMember -and -not $TestOnly
+    }
 }
 
 function ConvertTo-EntraDeviceExtensionAttributes {
@@ -549,6 +673,8 @@ Export-ModuleMember -Function @(
     'ConvertFrom-BlobBindingContent',
     'ConvertTo-TagAuthorizationPolicy',
     'ConvertTo-EntraDeviceExtensionAttributes',
+    'Resolve-RestrictedManagementAdministrativeUnitName',
+    'Add-EntraDeviceToRestrictedManagementAdministrativeUnit',
     'Get-AutopilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',

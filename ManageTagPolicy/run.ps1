@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -154,7 +154,10 @@ try {
     else {
         $Request.Body
     }
-    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy -Rules @($requestBody.rules))
+    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
+        -Rules @($requestBody.rules) `
+        -RestrictedManagementAdministrativeUnitName `
+            ([string] $requestBody.restrictedManagementAdministrativeUnitName))
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
 }
 catch {

@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -42,6 +42,10 @@ creates it when no match exists.
 Display name used to find or create the app registration. The default is
 Autopilot Import API.
 
+.PARAMETER ForceGraphSignIn
+Signs out the cached Microsoft Graph account and uses device-code
+authentication to select an account explicitly.
+
 .EXAMPLE
 .\scripts\Ensure-EntraApiApplication.ps1 `
     -TenantId '11111111-1111-1111-1111-111111111111'
@@ -72,7 +76,9 @@ param(
 
     [string] $ClientId,
 
-    [string] $DisplayName = 'Autopilot Import API'
+    [string] $DisplayName = 'Autopilot Import API',
+
+    [switch] $ForceGraphSignIn
 )
 
 Set-StrictMode -Version Latest
@@ -98,10 +104,17 @@ function Get-GraphCollectionItems {
     return @($Response)
 }
 
-Connect-MgGraph `
-    -TenantId $TenantId `
-    -Scopes 'Application.ReadWrite.All', 'User.Read' `
-    -NoWelcome
+$graphConnectParameters = @{
+    TenantId  = $TenantId
+    Scopes    = @('Application.ReadWrite.All', 'User.Read')
+    NoWelcome = $true
+}
+if ($ForceGraphSignIn) {
+    Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
+    $graphConnectParameters.UseDeviceCode = $true
+    Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+}
+Connect-MgGraph @graphConnectParameters
 
 $installingUser = Invoke-MgGraphRequest `
     -Method GET `
@@ -286,4 +299,5 @@ if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
     ApplicationIdUri         = $applicationIdUri
     Scope                    = $scopeValue
     InstallingUserObjectId   = [string] $installingUser.id
+    InstallingUserPrincipalName = [string] $installingUser.userPrincipalName
 }

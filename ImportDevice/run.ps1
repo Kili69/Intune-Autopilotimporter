@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -277,6 +277,10 @@ try {
         -Principal $principal `
         -Policy $tagAuthorizationPolicy `
         -RequestedGroupTag ([string] $requestBody.groupTag)
+    $restrictedManagementAdministrativeUnitName = `
+        Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $tagAuthorizationPolicy `
+            -GroupTag $groupTag
 }
 catch [System.UnauthorizedAccessException] {
     Send-JsonResponse -StatusCode Forbidden -Body @{
@@ -343,6 +347,8 @@ Write-Information "[$correlationId] Autopilot import '$($graphResponse.id)' crea
 Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
     importId = [string] $graphResponse.id
     groupTag = $groupTag
+    restrictedManagementAdministrativeUnitName = `
+        $restrictedManagementAdministrativeUnitName
 } | ConvertTo-Json -Compress)
 Send-JsonResponse -StatusCode Accepted -Body @{
     importId      = $graphResponse.id

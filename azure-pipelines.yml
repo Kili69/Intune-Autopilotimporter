@@ -1,0 +1,87 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - '*'
+
+variables:
+  - group: autopilot-import-deployment
+
+pool:
+  vmImage: windows-latest
+
+stages:
+  - stage: Test
+    jobs:
+      - job: Pester
+        steps:
+          - checkout: self
+          - task: PowerShell@2
+            displayName: Run Pester tests
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                if (-not (Get-Module -ListAvailable -Name Pester | Where-Object Version -ge '5.0.0')) {
+                  Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
+                }
+                Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
+
+  - stage: Deploy
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployFunction
+        environment: autopilot-import
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzurePowerShell@5
+                  displayName: Deploy infrastructure and Function code
+                  env:
+                    TAG_AUTHORIZATION_RULES_JSON: $(tagAuthorizationRulesJson)
+                    TAG_MANAGER_PRINCIPAL_IDS_JSON: $(tagManagerPrincipalIdsJson)
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    ScriptType: InlineScript
+                    Inline: |
+                      $tagAuthorizationRules = @(
+                        $env:TAG_AUTHORIZATION_RULES_JSON | ConvertFrom-Json
+                      )
+                      if ($tagAuthorizationRules.Count -eq 0) {
+                        throw 'tagAuthorizationRulesJson must contain at least one rule.'
+                      }
+
+                      $tagManagerPrincipalIds = @()
+                      if (-not [string]::IsNullOrWhiteSpace($env:TAG_MANAGER_PRINCIPAL_IDS_JSON)) {
+                        $tagManagerPrincipalIds = @(
+                          $env:TAG_MANAGER_PRINCIPAL_IDS_JSON | ConvertFrom-Json
+                        )
+                      }
+
+                      ./Install-AutopilotImport.ps1 `
+                        -SubscriptionId '$(subscriptionId)' `
+                        -TenantId '$(tenantId)' `
+                        -ResourceGroupName '$(resourceGroupName)' `
+                        -Location '$(location)' `
+                        -FunctionAppName '$(functionAppName)' `
+                        -EntraClientId '$(entraClientId)' `
+                        -InstallerPrincipalId '$(installerPrincipalId)' `
+                        -TagAuthorizationRule $tagAuthorizationRules `
+                        -TagManagerPrincipalId $tagManagerPrincipalIds `
+                        -SkipEntraAppConfiguration `
+                        -SkipGraphPermission `
+                        -Confirm:$false
+                    azurePowerShellVersion: LatestVersion
+                    pwsh: true
+                - task: PublishPipelineArtifact@1
+                  displayName: Publish client settings
+                  inputs:
+                    targetPath: client.settings.json
+                    artifact: autopilot-import-client-settings

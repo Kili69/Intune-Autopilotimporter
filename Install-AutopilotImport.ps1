@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260813.1
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -58,6 +58,11 @@ application if it does not exist.
 Display name used to find or create the Entra API app registration. The default
 is Autopilot Import API.
 
+.PARAMETER InstallerPrincipalId
+Entra object ID of the user or group that remains a permanent Group Tag
+manager. This parameter is required with SkipEntraAppConfiguration so that
+non-interactive deployments do not need a delegated Microsoft Graph login.
+
 .PARAMETER ApiAudience
 Optional token audience accepted by Easy Auth. The default is api:// followed
 by the Entra application Client ID.
@@ -65,6 +70,11 @@ by the Entra application Client ID.
 .PARAMETER TagAuthorizationRule
 One or more group-to-tag rules in the form
 <Entra-group-object-ID>=<tag1>,<tag2>. Missing rules are requested interactively.
+
+.PARAMETER RestrictedManagementAdministrativeUnitName
+Optional display name of a restricted management administrative unit. Imported
+devices are added to this unit after Intune creates their Entra device. Leave
+empty to keep the current behavior.
 
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
@@ -83,6 +93,11 @@ asks for a path and suggests the current user's PowerShell script directory.
 .PARAMETER InstallMissingModules
 Installs missing Az modules, Microsoft.Graph.Authentication, and the Bicep CLI
 for the current user where applicable.
+
+.PARAMETER ForceGraphSignIn
+Signs out the cached Microsoft Graph account before Entra configuration and
+uses device-code authentication to select an account explicitly. The Azure
+PowerShell account is not changed.
 
 .PARAMETER SkipEntraAppConfiguration
 Skips app registration and API scope management.
@@ -158,9 +173,13 @@ param(
 
     [string] $EntraApplicationName = 'Autopilot Import API',
 
+    [guid] $InstallerPrincipalId,
+
     [string] $ApiAudience,
 
     [string[]] $TagAuthorizationRule,
+
+    [string] $RestrictedManagementAdministrativeUnitName,
 
     [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
     [string] $DeviceTagExtensionAttribute,
@@ -170,6 +189,8 @@ param(
     [string] $ClientToolsPath,
 
     [switch] $InstallMissingModules,
+
+    [switch] $ForceGraphSignIn,
 
     [switch] $SkipEntraAppConfiguration,
 
@@ -352,7 +373,9 @@ function ConvertTo-TagAuthorizationPolicy {
     corresponding collection of allowed tags.
     #>
     param(
-        [string[]] $Rules
+        [string[]] $Rules,
+
+        [string] $RestrictedManagementAdministrativeUnitName
     )
 
     $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -375,7 +398,10 @@ function ConvertTo-TagAuthorizationPolicy {
         }
     }
 
-    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $enteredRules)
+    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy `
+        -Rules $enteredRules `
+        -RestrictedManagementAdministrativeUnitName `
+            $RestrictedManagementAdministrativeUnitName)
 }
 
 function ConvertTo-AdditionalManagerPrincipalIds {
@@ -495,6 +521,14 @@ function Install-AutopilotClientTools {
         } |
         Remove-Item -Recurse -Force
 
+    $modulePackagePath = Join-Path $destinationRoot `
+        "AutopilotImport.Client-$($clientModuleManifest.ModuleVersion).zip"
+    Compress-Archive `
+        -LiteralPath $clientModuleRoot `
+        -DestinationPath $modulePackagePath `
+        -CompressionLevel Optimal `
+        -Force
+
     return $settingsPath
 }
 
@@ -594,6 +628,98 @@ function Initialize-BicepCli {
     $env:Path = "$(Split-Path $bicepPath -Parent);$env:Path"
 }
 
+function Format-AzureDeploymentError {
+    <#
+    .SYNOPSIS
+    Formats nested Azure deployment errors without losing policy details.
+
+    .DESCRIPTION
+    Converts an Azure PowerShell error record or validation result to JSON.
+    This preserves nested Details and InnerError values such as the rejected
+    resource, policy assignment, and policy definition.
+
+    .PARAMETER ErrorObject
+    Azure deployment error record, exception, or validation result.
+
+    .OUTPUTS
+    System.String. A readable representation of the complete Azure error.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object] $ErrorObject
+    )
+
+    $candidate = if ($ErrorObject -is [Management.Automation.ErrorRecord]) {
+        $ErrorObject.Exception
+    }
+    else {
+        $ErrorObject
+    }
+
+    if ($candidate.PSObject.Properties['Body'] -and $candidate.Body) {
+        $candidate = $candidate.Body
+    }
+
+    try {
+        return $candidate | ConvertTo-Json -Depth 20
+    }
+    catch {
+        return $ErrorObject | Format-List * -Force | Out-String
+    }
+}
+
+function Ensure-AzureResourceProvider {
+    <#
+    .SYNOPSIS
+    Ensures that an Azure resource provider is registered.
+
+    .DESCRIPTION
+    Returns immediately when ProviderNamespace is registered in the current
+    subscription. Otherwise, starts registration and waits up to five minutes
+    for Azure to report the Registered state.
+
+    .PARAMETER ProviderNamespace
+    Azure resource provider namespace, such as Microsoft.OperationalInsights.
+
+    .OUTPUTS
+    None.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $ProviderNamespace
+    )
+
+    $provider = Get-AzResourceProvider `
+        -ProviderNamespace $ProviderNamespace `
+        -ErrorAction Stop
+    if ($provider.RegistrationState -eq 'Registered') {
+        return
+    }
+
+    Write-Host "Registering Azure resource provider '$ProviderNamespace'..."
+    $provider = Register-AzResourceProvider `
+        -ProviderNamespace $ProviderNamespace `
+        -ErrorAction Stop
+    if ($provider.RegistrationState -eq 'Registered') {
+        return
+    }
+
+    $registrationDeadline = [DateTime]::UtcNow.AddMinutes(5)
+    do {
+        Start-Sleep -Seconds 5
+        $provider = Get-AzResourceProvider `
+            -ProviderNamespace $ProviderNamespace `
+            -ErrorAction Stop
+    } while (
+        $provider.RegistrationState -ne 'Registered' -and
+        [DateTime]::UtcNow -lt $registrationDeadline
+    )
+
+    if ($provider.RegistrationState -ne 'Registered') {
+        throw "Azure resource provider '$ProviderNamespace' did not reach the Registered state within five minutes."
+    }
+}
+
 #endregion Helper functions
 
 #region Prerequisites
@@ -660,7 +786,23 @@ $DeviceTagExtensionAttribute = Read-DeploymentValue `
 if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$') {
     throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
 }
-$tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules $TagAuthorizationRule
+if (-not $PSBoundParameters.ContainsKey(
+        'RestrictedManagementAdministrativeUnitName')) {
+    $RestrictedManagementAdministrativeUnitName = Read-Host `
+        'Restricted management administrative unit display name (optional)'
+}
+$RestrictedManagementAdministrativeUnitName = if (
+    [string]::IsNullOrWhiteSpace(
+        $RestrictedManagementAdministrativeUnitName)) {
+    ''
+}
+else {
+    $RestrictedManagementAdministrativeUnitName.Trim()
+}
+$tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy `
+    -Rules $TagAuthorizationRule `
+    -RestrictedManagementAdministrativeUnitName `
+        $RestrictedManagementAdministrativeUnitName
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
 $parsedGuid = [guid]::Empty
@@ -709,6 +851,7 @@ Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
+Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host '  Group to Device Tag rules:'
 foreach ($rule in $tagAuthorizationPolicy) {
     Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
@@ -721,6 +864,8 @@ if (-not $PSCmdlet.ShouldProcess(
     )) {
     return
 }
+
+Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
 
 #endregion Azure context and confirmation
 
@@ -737,21 +882,37 @@ if (-not $SkipEntraAppConfiguration) {
         -TenantId $TenantId `
         -ClientId $EntraClientId `
         -DisplayName $EntraApplicationName `
+        -ForceGraphSignIn:$ForceGraphSignIn `
         -Confirm:$false
     $EntraClientId = $entraApplication.ClientId
     $ApiAudience = $entraApplication.ApplicationIdUri
     $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
+    Write-Host "Microsoft Graph account: $($entraApplication.InstallingUserPrincipalName)"
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
 }
+elseif ($InstallerPrincipalId -eq [guid]::Empty) {
+    throw 'InstallerPrincipalId is required when SkipEntraAppConfiguration is used.'
+}
 else {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    Connect-MgGraph -TenantId $TenantId -Scopes 'User.Read' -NoWelcome
+    $graphConnectParameters = @{
+        TenantId  = $TenantId
+        Scopes    = @('User.Read')
+        NoWelcome = $true
+    }
+    if ($ForceGraphSignIn) {
+        Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
+        $graphConnectParameters.UseDeviceCode = $true
+        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+    }
+    Connect-MgGraph @graphConnectParameters
     $installingUser = Invoke-MgGraphRequest `
         -Method GET `
-        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id'
+        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
     $installingUserObjectId = [guid] $installingUser.id
+    Write-Host "Microsoft Graph account: $($installingUser.userPrincipalName)"
 }
 
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
@@ -770,6 +931,7 @@ Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
+Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
 $additionalManagerPrincipalIds = ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
@@ -799,10 +961,16 @@ $deploymentParameters = @{
 }
 
 Write-Host 'Validating Bicep deployment...'
-$validationErrors = Test-AzResourceGroupDeployment @deploymentParameters
+$validationErrors = try {
+    Test-AzResourceGroupDeployment @deploymentParameters
+}
+catch {
+    Write-Error (Format-AzureDeploymentError -ErrorObject $_)
+    throw 'Bicep deployment validation failed. Review the Azure error details above.'
+}
 if ($validationErrors) {
-    $validationErrors | Format-List | Out-String | Write-Error
-    throw 'Bicep deployment validation failed.'
+    Write-Error (Format-AzureDeploymentError -ErrorObject $validationErrors)
+    throw 'Bicep deployment validation failed. Review the Azure error details above.'
 }
 
 Write-Host 'Deploying Azure resources...'
@@ -839,7 +1007,13 @@ $installedClientSettingsPath = Install-AutopilotClientTools `
     -DestinationPath $ClientToolsPath `
     -ProjectRoot $projectRoot `
     -ClientSettingsJson $clientSettings
+$installedClientModuleVersion = Split-Path $installedClientSettingsPath -Parent |
+    Split-Path -Leaf
+$clientModulePackagePath = Join-Path ([IO.Path]::GetFullPath($ClientToolsPath)) `
+    "AutopilotImport.Client-$installedClientModuleVersion.zip"
 Write-Host "Installed AutopilotImport.Client, compatibility scripts, and defaults in '$ClientToolsPath'."
+Write-Host "Created portable PowerShell module package '$clientModulePackagePath'."
+Write-Host 'Extract the archive into a directory listed in $env:PSModulePath to use its commands through module autoloading.'
 
 $storageAccount = Get-AzStorageAccount `
     -ResourceGroupName $ResourceGroupName `
@@ -893,7 +1067,9 @@ finally {
 
 if (-not $SkipGraphPermission) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    & $grantScriptPath -ManagedIdentityObjectId $managedIdentityObjectId
+    & $grantScriptPath `
+        -ManagedIdentityObjectId $managedIdentityObjectId `
+        -TenantId $TenantId
 }
 
 if (-not $SkipPublish) {
@@ -957,10 +1133,13 @@ $result = [pscustomobject]@{
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
+    RestrictedManagementAdministrativeUnitName = `
+        $RestrictedManagementAdministrativeUnitName
     DeviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
     InstalledClientSettingsPath = $installedClientSettingsPath
+    ClientModulePackagePath = $clientModulePackagePath
     ClientToolsPath         = [IO.Path]::GetFullPath($ClientToolsPath)
 }
 
