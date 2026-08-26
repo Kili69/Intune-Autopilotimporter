@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260813.2
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -751,6 +751,85 @@ Describe 'Update script deployment discovery' {
 
         Get-UpdateRestrictedManagementAdministrativeUnitName `
             -Policy $policy | Should -Be 'RMAU-Autopilot'
+    }
+}
+
+Describe 'Installer Azure deployment diagnostics' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Format-AzureDeploymentError'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'preserves nested Azure Policy violation details' {
+        $policyError = [pscustomobject]@{
+            Code = 'InvalidTemplateDeployment'
+            Details = @(
+                [pscustomobject]@{
+                    Code = 'RequestDisallowedByPolicy'
+                    Message = "Resource 'func-autopilot-test' was disallowed by policy."
+                    AdditionalInfo = [pscustomobject]@{
+                        policyAssignmentDisplayName = 'Require approved Function plans'
+                    }
+                }
+            )
+        }
+
+        $formattedError = Format-AzureDeploymentError -ErrorObject $policyError
+
+        $formattedError | Should -Match 'RequestDisallowedByPolicy'
+        $formattedError | Should -Match 'func-autopilot-test'
+        $formattedError | Should -Match 'Require approved Function plans'
+    }
+}
+
+Describe 'Installer Azure resource provider registration' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Ensure-AzureResourceProvider'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'does not register an already registered provider' {
+        Mock Get-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'Registered' } }
+        Mock Register-AzResourceProvider
+
+        Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+
+        Should -Invoke Register-AzResourceProvider -Times 0
+    }
+
+    It 'registers a missing provider' {
+        Mock Get-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'NotRegistered' } }
+        Mock Register-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'Registered' } }
+
+        Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+
+        Should -Invoke Register-AzResourceProvider -Times 1 -ParameterFilter {
+            $ProviderNamespace -eq 'Microsoft.OperationalInsights'
+        }
     }
 }
 

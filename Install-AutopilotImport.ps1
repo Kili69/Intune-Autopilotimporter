@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260813.2
+# Project-Version: 1.0.20260826.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -57,6 +57,11 @@ application if it does not exist.
 .PARAMETER EntraApplicationName
 Display name used to find or create the Entra API app registration. The default
 is Autopilot Import API.
+
+.PARAMETER InstallerPrincipalId
+Entra object ID of the user or group that remains a permanent Group Tag
+manager. This parameter is required with SkipEntraAppConfiguration so that
+non-interactive deployments do not need a delegated Microsoft Graph login.
 
 .PARAMETER ApiAudience
 Optional token audience accepted by Easy Auth. The default is api:// followed
@@ -167,6 +172,8 @@ param(
     [string] $EntraClientId,
 
     [string] $EntraApplicationName = 'Autopilot Import API',
+
+    [guid] $InstallerPrincipalId,
 
     [string] $ApiAudience,
 
@@ -621,6 +628,98 @@ function Initialize-BicepCli {
     $env:Path = "$(Split-Path $bicepPath -Parent);$env:Path"
 }
 
+function Format-AzureDeploymentError {
+    <#
+    .SYNOPSIS
+    Formats nested Azure deployment errors without losing policy details.
+
+    .DESCRIPTION
+    Converts an Azure PowerShell error record or validation result to JSON.
+    This preserves nested Details and InnerError values such as the rejected
+    resource, policy assignment, and policy definition.
+
+    .PARAMETER ErrorObject
+    Azure deployment error record, exception, or validation result.
+
+    .OUTPUTS
+    System.String. A readable representation of the complete Azure error.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object] $ErrorObject
+    )
+
+    $candidate = if ($ErrorObject -is [Management.Automation.ErrorRecord]) {
+        $ErrorObject.Exception
+    }
+    else {
+        $ErrorObject
+    }
+
+    if ($candidate.PSObject.Properties['Body'] -and $candidate.Body) {
+        $candidate = $candidate.Body
+    }
+
+    try {
+        return $candidate | ConvertTo-Json -Depth 20
+    }
+    catch {
+        return $ErrorObject | Format-List * -Force | Out-String
+    }
+}
+
+function Ensure-AzureResourceProvider {
+    <#
+    .SYNOPSIS
+    Ensures that an Azure resource provider is registered.
+
+    .DESCRIPTION
+    Returns immediately when ProviderNamespace is registered in the current
+    subscription. Otherwise, starts registration and waits up to five minutes
+    for Azure to report the Registered state.
+
+    .PARAMETER ProviderNamespace
+    Azure resource provider namespace, such as Microsoft.OperationalInsights.
+
+    .OUTPUTS
+    None.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $ProviderNamespace
+    )
+
+    $provider = Get-AzResourceProvider `
+        -ProviderNamespace $ProviderNamespace `
+        -ErrorAction Stop
+    if ($provider.RegistrationState -eq 'Registered') {
+        return
+    }
+
+    Write-Host "Registering Azure resource provider '$ProviderNamespace'..."
+    $provider = Register-AzResourceProvider `
+        -ProviderNamespace $ProviderNamespace `
+        -ErrorAction Stop
+    if ($provider.RegistrationState -eq 'Registered') {
+        return
+    }
+
+    $registrationDeadline = [DateTime]::UtcNow.AddMinutes(5)
+    do {
+        Start-Sleep -Seconds 5
+        $provider = Get-AzResourceProvider `
+            -ProviderNamespace $ProviderNamespace `
+            -ErrorAction Stop
+    } while (
+        $provider.RegistrationState -ne 'Registered' -and
+        [DateTime]::UtcNow -lt $registrationDeadline
+    )
+
+    if ($provider.RegistrationState -ne 'Registered') {
+        throw "Azure resource provider '$ProviderNamespace' did not reach the Registered state within five minutes."
+    }
+}
+
 #endregion Helper functions
 
 #region Prerequisites
@@ -766,6 +865,8 @@ if (-not $PSCmdlet.ShouldProcess(
     return
 }
 
+Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+
 #endregion Azure context and confirmation
 
 #region Resource group and Entra application
@@ -790,6 +891,9 @@ if (-not $SkipEntraAppConfiguration) {
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
+}
+elseif ($InstallerPrincipalId -eq [guid]::Empty) {
+    throw 'InstallerPrincipalId is required when SkipEntraAppConfiguration is used.'
 }
 else {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
@@ -857,10 +961,16 @@ $deploymentParameters = @{
 }
 
 Write-Host 'Validating Bicep deployment...'
-$validationErrors = Test-AzResourceGroupDeployment @deploymentParameters
+$validationErrors = try {
+    Test-AzResourceGroupDeployment @deploymentParameters
+}
+catch {
+    Write-Error (Format-AzureDeploymentError -ErrorObject $_)
+    throw 'Bicep deployment validation failed. Review the Azure error details above.'
+}
 if ($validationErrors) {
-    $validationErrors | Format-List | Out-String | Write-Error
-    throw 'Bicep deployment validation failed.'
+    Write-Error (Format-AzureDeploymentError -ErrorObject $validationErrors)
+    throw 'Bicep deployment validation failed. Review the Azure error details above.'
 }
 
 Write-Host 'Deploying Azure resources...'

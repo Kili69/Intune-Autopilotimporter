@@ -275,6 +275,75 @@ pwsh .\Install-AutopilotImport.ps1 `
     -WhatIf
 ```
 
+### Azure DevOps Pipeline
+
+The repository contains `azure-pipelines.yml`. Pull requests run the Pester
+tests. A successful run on `main` additionally deploys the Bicep template and
+Function ZIP through an Azure Resource Manager service connection. The
+generated `client.settings.json` is published as the pipeline artifact
+`autopilot-import-client-settings`.
+
+Create an Azure DevOps service connection that uses workload identity
+federation. Grant its service principal `Contributor` on the target resource
+group. If the pipeline must create the resource group, grant `Contributor` at
+subscription scope instead. The pipeline service principal does not require
+Microsoft Graph permissions.
+
+Create a variable group named `autopilot-import-deployment` with these values:
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `azureServiceConnection` | `sc-autopilot-import` | Name of the Azure Resource Manager service connection |
+| `subscriptionId` | `00000000-0000-0000-0000-000000000000` | Target Azure subscription |
+| `tenantId` | `11111111-1111-1111-1111-111111111111` | Entra tenant |
+| `resourceGroupName` | `rg-autopilot-import` | Target resource group |
+| `location` | `westeurope` | Azure region |
+| `functionAppName` | `func-autopilot-contoso` | Globally unique Function App name |
+| `entraClientId` | `22222222-2222-2222-2222-222222222222` | Client ID of the preconfigured API app registration |
+| `installerPrincipalId` | `33333333-3333-3333-3333-333333333333` | Object ID of the user or group that remains a permanent Group Tag manager |
+| `tagAuthorizationRulesJson` | `["44444444-4444-4444-4444-444444444444=Standard,Kiosk"]` | JSON array containing the complete group-to-tag policy |
+| `tagManagerPrincipalIdsJson` | `[]` | JSON array of additional manager user or group object IDs |
+
+Authorize the pipeline to use this variable group. None of these values is a
+credential; authentication is provided by workload identity federation.
+
+The Entra API application and the managed identity's Microsoft Graph
+permissions remain intentionally outside the pipeline because they require
+privileged tenant permissions that should not be assigned to a deployment
+service connection.
+
+Before the first pipeline deployment, create or configure the Entra API
+application once from an administrator workstation and supply the returned
+client ID through `entraClientId`:
+
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+$entraApplication = .\scripts\Ensure-EntraApiApplication.ps1 `
+    -TenantId '<Tenant-ID>' `
+    -DisplayName 'Autopilot Import API' `
+    -Confirm:$false
+$entraApplication
+```
+
+After the first pipeline deployment has created the Function managed identity,
+a Privileged Role Administrator or Global Administrator runs the idempotent
+permission script once:
+
+```powershell
+Connect-AzAccount -Tenant '<Tenant-ID>' -Subscription '<Subscription-ID>'
+$function = Get-AzWebApp `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -Name '<function-app-name>'
+
+.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+    -ManagedIdentityObjectId $function.Identity.PrincipalId
+```
+
+Subsequent pipeline deployments update infrastructure, policies, and Function
+code without repeating either privileged Entra operation. Configure approvals
+and checks on the Azure DevOps environment `autopilot-import` when production
+deployments require manual authorization.
+
 ### Change Group-to-Tag Assignments Later
 
 Use `AutopilotImport.Client` to change an already installed Function.
@@ -437,6 +506,130 @@ Managed Dependencies can take several minutes to make `Az.Accounts` available af
 ## 5. Import Devices
 
 The script does not read local CIM or MDM data. `-CsvPath` is always required and the CSV can contain one or more devices. CSV files are excluded from the repository through `.gitignore`.
+
+### Distribute the Import Client to Additional PCs
+
+The Azure Function itself remains in Azure. An importing PC needs only:
+
+- PowerShell 7.2 or later (`pwsh`)
+- `scripts\Import-AutopilotDevice.ps1`
+- the PowerShell module `Az.Accounts`
+- a configured `client.settings.json`
+- HTTPS access to Microsoft Entra sign-in and the Function App
+
+The `src\AutopilotImport` module, Function folders, Bicep template, deployment
+scripts, and `Microsoft.Graph.Authentication` are not required on importing
+PCs. `Microsoft.Graph.Authentication` is used only for administrative setup.
+
+For a PC with access to the PowerShell Gallery, install `Az.Accounts` for the
+current user:
+
+```powershell
+Install-Module Az.Accounts `
+        -Scope CurrentUser `
+        -Repository PSGallery `
+        -Force
+```
+
+For a managed installation available to all users, run the following command
+as an administrator or deploy it through the organization's software
+management system:
+
+```powershell
+Install-Module Az.Accounts `
+        -Scope AllUsers `
+        -Repository PSGallery `
+        -Force
+```
+
+In networks without direct PowerShell Gallery access, download the module and
+its dependencies on a connected staging PC:
+
+```powershell
+$packagePath = 'C:\AutopilotImportPackage'
+New-Item -ItemType Directory -Path "$packagePath\Modules" -Force | Out-Null
+
+Save-Module Az.Accounts `
+        -Path "$packagePath\Modules" `
+        -Repository PSGallery `
+        -Force
+
+Copy-Item .\scripts\Import-AutopilotDevice.ps1 `
+        -Destination $packagePath
+Copy-Item .\client.settings.json `
+        -Destination $packagePath
+```
+
+Copy the package to each target PC and place every directory below `Modules`
+in a PowerShell 7 module path. For a per-machine installation, use:
+
+```powershell
+$packagePath = 'C:\AutopilotImportPackage'
+$modulePath = "$env:ProgramFiles\PowerShell\Modules"
+
+Get-ChildItem "$packagePath\Modules" -Directory | ForEach-Object {
+        Copy-Item $_.FullName -Destination $modulePath -Recurse -Force
+}
+```
+
+This copy step requires local administrator rights. For a per-user
+installation, use `$HOME\Documents\PowerShell\Modules` instead. Distribute the
+same package with Microsoft Intune, Configuration Manager, Group Policy, or
+another software deployment system when many PCs must be maintained. Sign the
+PowerShell script with a trusted code-signing certificate when the target
+environment enforces `AllSigned` or `RemoteSigned`; do not weaken the execution
+policy as part of deployment.
+
+When Azure DevOps performs the Function deployment, download the
+`autopilot-import-client-settings` pipeline artifact and distribute its
+`client.settings.json` together with the import script. The file contains no
+password, client secret, or access token, but it selects a tenant and Function
+environment and should therefore be managed as environment-specific
+configuration.
+
+The configuration must contain these values:
+
+```json
+{
+    "functionUrl": "https://<function-app>.azurewebsites.net/api/devices/import",
+    "managementUrl": "https://<function-app>.azurewebsites.net/api/management/tag-policy",
+    "apiApplicationIdUri": "api://<application-client-id>",
+    "tenantId": "<tenant-id>"
+}
+```
+
+- `functionUrl` is the complete HTTPS import endpoint, including
+    `/api/devices/import`.
+- `managementUrl` is used only by the policy-management script and may remain
+    in the shared configuration.
+- `apiApplicationIdUri` must match the Application ID URI exposed by the Entra
+    API application and the Easy Auth audience.
+- `tenantId` is the Entra tenant in which users authenticate.
+
+Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it
+in a centrally managed location and pass its path with `-ConfigPath`. When the
+script remains in the repository layout under `scripts`, its default is the
+repository-root `client.settings.json`. Explicit `-FunctionUrl`,
+`-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which
+is useful when one PC targets multiple environments.
+
+Each operator signs in interactively when the script first needs an access
+token. The user must belong to an Entra group authorized for the requested
+Group Tag in the server-side policy. No local client secret, Azure subscription
+role, Intune role, or Microsoft Graph permission is required. Conditional
+Access and multifactor authentication continue to apply to this sign-in.
+
+Verify every distributed installation before importing devices:
+
+```powershell
+pwsh -NoProfile -Command "Import-Module Az.Accounts; Get-Module Az.Accounts"
+
+pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
+        -CsvPath '.\devices.csv' `
+        -GroupTag 'PAW' `
+        -ConfigPath '.\client.settings.json' `
+        -ValidateOnly
+```
 
 Validate the CSV without signing in or calling the API:
 
