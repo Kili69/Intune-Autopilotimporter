@@ -5,6 +5,57 @@
 <#
 .SYNOPSIS
 Compatibility wrapper for Update-AutopilotTagPolicyManager.
+
+.DESCRIPTION
+Adds and removes explicit users or groups from the Group Tag manager policy of
+an Autopilot Import Function App. The script loads AutopilotImport.Client from
+the installation or source tree and forwards the supplied parameters to
+Update-AutopilotTagPolicyManager.
+
+The command verifies that the caller is an Owner or Contributor of the Function
+App before updating its MANAGER_AUTHORIZATION_POLICY application setting. The
+installing user remains protected from removal. Values omitted on the command
+line are resolved from the client configuration file.
+
+.PARAMETER SubscriptionId
+Azure subscription containing the Autopilot Import Function App. When omitted,
+the value is read from the client configuration.
+
+.PARAMETER TenantId
+Microsoft Entra tenant used for Azure authentication. When omitted, the value
+is read from the client configuration.
+
+.PARAMETER ResourceGroupName
+Name of the Azure resource group containing the Function App. When omitted,
+the value is read from the client configuration.
+
+.PARAMETER FunctionAppName
+Name of the Autopilot Import Function App whose manager policy is updated. When
+omitted, the value is read from the client configuration.
+
+.PARAMETER AddPrincipalId
+Object IDs of Microsoft Entra users or groups to add as explicit Group Tag
+managers.
+
+.PARAMETER RemovePrincipalId
+Object IDs of Microsoft Entra users or groups to remove from the explicit Group
+Tag managers. The identity that installed the solution cannot be removed.
+
+.PARAMETER ConfigPath
+Path to the client.settings.json file used to resolve values not supplied as
+parameters.
+
+.OUTPUTS
+PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
+
+.EXAMPLE
+.\Set-TagPolicyManagers.ps1 `
+    -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
+    -RemovePrincipalId '22222222-2222-2222-2222-222222222222' `
+    -ConfigPath '.\client.settings.json'
+
+Adds one principal and removes another by using the Azure deployment values
+from client.settings.json.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]

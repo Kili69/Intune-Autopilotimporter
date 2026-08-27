@@ -92,6 +92,12 @@ function ConvertTo-TagAuthorizationPolicy {
     .PARAMETER Rules
     Rules in the form <group-object-id>=<tag1>,<tag2>.
 
+    .PARAMETER RestrictedManagementAdministrativeUnitName
+    Optional display name of the restricted management administrative unit to
+    associate with every generated policy entry. Imported devices using a
+    matching Group Tag are added to this unit after their Entra device becomes
+    available. Leave empty to disable automatic administrative-unit membership.
+
     .OUTPUTS
     PSCustomObject entries with groupId and tags properties.
     #>
@@ -165,6 +171,17 @@ function Resolve-RestrictedManagementAdministrativeUnitName {
     <#
     .SYNOPSIS
     Resolves the optional restricted management administrative unit for a tag.
+
+    .PARAMETER Policy
+    Collection of tag authorization policy entries containing tags and an
+    optional restrictedManagementAdministrativeUnitName property.
+
+    .PARAMETER GroupTag
+    Group Tag whose restricted management administrative unit name is resolved.
+
+    .OUTPUTS
+    System.String, or null when no administrative unit is configured for the
+    Group Tag.
     #>
     [CmdletBinding()]
     param(
@@ -193,6 +210,21 @@ function Add-EntraDeviceToRestrictedManagementAdministrativeUnit {
     <#
     .SYNOPSIS
     Adds an Entra device to a named restricted management administrative unit.
+
+    .PARAMETER AdministrativeUnitName
+    Display name of the restricted management administrative unit. The name
+    must uniquely identify an existing unit.
+
+    .PARAMETER DeviceObjectId
+    Entra object ID of the device to add to the administrative unit.
+
+    .PARAMETER AccessToken
+    Microsoft Graph access token used to resolve the administrative unit,
+    inspect its members, and add the device when required.
+
+    .PARAMETER TestOnly
+    Checks the administrative unit and current membership without adding the
+    device.
 
     .OUTPUTS
     PSCustomObject containing the resolved administrative unit ID and whether
@@ -304,6 +336,10 @@ function Get-AutopilotDeviceRegistrationId {
     <#
     .SYNOPSIS
     Returns the registered Autopilot identity ID from a completed import.
+
+    .PARAMETER ImportedDevice
+    Imported Windows Autopilot device identity whose state contains the
+    deviceRegistrationId returned by Microsoft Graph.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][object] $ImportedDevice)
@@ -323,6 +359,14 @@ function Compare-TagAuthorizationPolicyGroups {
     <#
     .SYNOPSIS
     Compares group membership between two tag authorization policies.
+
+    .PARAMETER PreviousPolicy
+    Existing tag authorization policy whose group IDs form the comparison
+    baseline.
+
+    .PARAMETER UpdatedPolicy
+    Updated tag authorization policy whose group IDs are compared with the
+    previous policy.
 
     .OUTPUTS
     PSCustomObject containing AddedGroupIds and RemovedGroupIds.

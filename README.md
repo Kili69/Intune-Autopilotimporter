@@ -1,35 +1,150 @@
-# Intune Autopilot Import Function
+<!-- markdownlint-disable-next-line MD033 -->
+<h1 align="center">Intune AutoPilot Importer</h1>
 
 This Azure Function imports Windows Autopilot hardware hashes from a CSV file. The user authenticates to the Function API with their Entra account. Microsoft Graph is called exclusively through the system-assigned managed identity of the Function.
 
-The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`. Optionally, the Function adds the device to a configured Entra restricted management administrative unit (RMAU).
+The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`. Optionally, the Function adds the device to a configured Entra administrative unit (MAU) or restricted management administrative unit (RMAU).
 
-## Problem
+## The Problem
 
-Granting a user permission to import Windows Autopilot hardware hashes does not,
-by itself, restrict which Group Tag the user can assign. The standard import
-authorization does not require a tag, validate that a supplied tag is approved,
-or verify that the importing user is authorized to use that specific tag. A user
-who is allowed to import a hardware hash could therefore omit the Group Tag or
-assign a tag intended for a different device population, potentially placing the
-device into an unintended dynamic group and its associated deployment profile,
-applications, and policies.
+Granting a user permission to import Windows Autopilot hardware hashes does not, by itself, restrict which Group Tag the user can assign. The standard import authorization does not require a tag, validate that a supplied tag is approved, or verify that the importing user is authorized to use that specific tag. A user who is allowed to import a hardware hash could therefore omit the Group Tag or assign a tag intended for a different device population, potentially placing the
+device into an unintended dynamic group and its associated deployment profile, applications, and policies.
 
-This project closes that authorization gap by validating the requested Group Tag
-server-side and allowing the import only when the authenticated user belongs to
-an Entra security group mapped to that tag.
+This project closes that authorization gap by validating the requested Group Tag server-side and allowing the import only when the authenticated user belongs to an Entra security group mapped to that tag.
 
-## Process
+## The solution
 
-1. The client script reads the serial number and hardware hash from an Autopilot CSV supplied as a parameter.
-2. `Az.Accounts` requests a user token for the Function API.
-3. Azure App Service Authentication, also known as Easy Auth, validates the token.
-4. The Function requires a matching group-to-tag rule for the authenticated caller.
-5. The managed identity submits only the authorized tag to Microsoft Graph v1.0.
-6. Intune processes the import asynchronously.
-7. A queue-triggered Function waits for the Entra device and writes the tag to the configured `extensionAttribute1` through `extensionAttribute15`.
+The client script reads the serial number and hardware hash from an Autopilot CSV supplied as a parameter.
+- `Az.Accounts` requests a user token for the Function API.
+- Azure App Service Authentication, also known as Easy Auth, validates the token.
+- The Function requires a matching group-to-tag rule for the authenticated caller.
+- The managed identity submits only the authorized tag to Microsoft Graph v1.0.
+- Intune processes the import asynchronously.
+- A queue-triggered Function waits for the Entra device and writes the tag to the configured `extensionAttribute1` through `extensionAttribute15`.
 
-## Prerequisites
+```mermaid
+flowchart TB
+    CSV[Autopilot CSV<br/>Serial number and hardware hash]
+    Client[AutopilotImport.Client<br/>Read and validate CSV]
+    SignIn[Az.Accounts<br/>Request user access token]
+    EasyAuth[App Service Easy Auth<br/>Validate token]
+    Authorize{User group authorized<br/>for requested Group Tag?}
+    Reject[Reject request<br/>HTTP 403]
+    Function[Import Function<br/>Validate device and Group Tag]
+    Graph[Microsoft Graph v1.0<br/>Managed identity]
+    Intune[Intune<br/>Process Autopilot import]
+    Queue[Queue-triggered Function<br/>Wait for Entra device]
+    Entra[Entra device<br/>Write extension attribute]
+
+    CSV --> Client --> SignIn --> EasyAuth --> Authorize
+    Authorize -- No --> Reject
+    Authorize -- Yes --> Function --> Graph --> Intune --> Queue --> Entra
+```
+
+## Howto use the AutopilotImporter
+
+The installer deploys `AutopilotImport.Client` and a matching `client.settings.json`. The module reads the Function URL, API Application ID URI, and tenant from that file. It exports the commands used for importing and monitoring devices. (see installation)
+
+### Import a device hash
+
+Use the `Import-AutopilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
+
+- `AutopilotImport.Client` and its `client.settings.json` have been installed.
+- Your account belongs to an Entra security group that is authorized for the
+    Group Tag you want to use.
+- The CSV contains the columns `Device Serial Number` and `Hardware Hash`.
+
+The selected Group Tag is applied to every device in the CSV. First, validate the file locally without signing in or sending data to the Azure Function:
+
+```powershell
+Import-AutopilotDevice `
+    -CsvPath '.\devices.csv' `
+    -GroupTag 'PAW' `
+    -ValidateOnly
+```
+
+If validation succeeds, run the same command without `-ValidateOnly`:
+
+```powershell
+Import-AutopilotDevice `
+    -CsvPath '.\devices.csv' `
+    -GroupTag 'PAW'
+```
+
+PowerShell signs you in with your Entra account when an access token is needed. The Azure Function then verifies that your account is authorized for the requested Group Tag before submitting each device to Intune. No Azure role, Microsoft Graph permission, client secret, or direct Intune role is required on the importing computer.
+
+The client package also contains `Import-AutopilotDevice.ps1`. This script is a compatibility wrapper around the module command and performs the same import. Use it when a software distribution system or shortcut needs to start a `.ps1` file directly:
+
+```powershell
+pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
+    -CsvPath '.\devices.csv' `
+    -GroupTag 'PAW' `
+    -ConfigPath '.\client.settings.json'
+```
+
+Normally, the command reads the Function URL, API Application ID URI, and tenant from `client.settings.json`. Use `-ConfigPath` to select another configuration file. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values override the file settings, allowing one computer to target multiple environments.
+
+### Track Import Status
+
+A successful request returns HTTP 202 and an `importId`. Intune processes the request asynchronously. Check the current state:
+
+```powershell
+Get-AutopilotImportStatus -ImportId '<import-id>'
+```
+
+Wait for a final end-to-end result:
+
+```powershell
+Get-AutopilotImportStatus `
+    -ImportId '<import-id>' `
+    -Wait
+```
+
+The default timeout is 30 minutes with a 15-second polling interval. Override these values with `-TimeoutSeconds` and `-PollIntervalSeconds`. Only `workflowStatus: complete` confirms that both the Intune import and the Entra extension-attribute update succeeded.
+
+## Autopilot-importer management
+
+### Change Group-to-Tag Assignments
+
+The installing user, configured manager users or groups, and current members of the Intune RBAC role `Intune Role Administrator` may update the policy. They do not need Azure resource permissions.
+
+Read the current policy:
+
+```powershell
+Get-AutopilotTagPolicy
+```
+
+Preview the complete desired policy before applying it:
+
+```powershell
+Set-AutopilotTagPolicy `
+    -TagAuthorizationRule `
+        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
+        '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
+    -RestrictedManagementAdministrativeUnitName 'MAU-Autopilot-Devices' `
+    -WhatIf
+```
+
+Run the same command without `-WhatIf` to apply it. Omit a previous rule to remove that group. Set `-RestrictedManagementAdministrativeUnitName` to an empty string to disable automatic MAU membership.
+
+The MAU must already exist, have `isMemberManagementRestricted` enabled, and have a unique display name. Without a configured MAU, imports continue without automatic administrative-unit membership.
+
+### Change Group Tag Managers
+
+Only a principal with an effective Azure `Owner` or `Contributor` assignment on the Function App, its resource group, or its subscription may change the explicit manager list:
+
+```powershell
+Update-AutopilotTagPolicyManager `
+    -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
+    -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
+    -WhatIf
+```
+
+The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
+
+## Installation
+
+### Prerequisites
 
 - An Azure subscription and an active Intune tenant
 - PowerShell 7.2 or later on the importing computer
@@ -38,11 +153,9 @@ an Entra security group mapped to that tag.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 - The appropriate Entra ID licensing for dynamic device groups
 
-## Required Roles and Permissions
+### Required Roles and Permissions
 
-Azure RBAC roles, Entra directory roles, Microsoft Graph permissions, and the
-application role of this Function serve different purposes. They do not grant
-one another implicitly.
+Azure RBAC roles, Entra directory roles, Microsoft Graph permissions, and the application role of this Function serve different purposes. They do not grant one another implicitly.
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
@@ -56,48 +169,32 @@ one another implicitly.
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
-| Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional RMAU and adds the imported Entra device as a member. |
+| Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |
 | Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
 | Function App managed identity | Deployed Storage Account | `Storage Queue Data Contributor` | Queues and retries the Entra device extension attribute update while Autopilot processing is incomplete. Assigned automatically by the installer. |
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer creates three role assignments scoped to the deployed
-Storage Account. The installing user receives `Storage Blob Data Contributor`,
-and the Function managed identity receives `Storage Blob Data Owner` and
-`Storage Queue Data Contributor`. The
-installer therefore needs both resource deployment permissions and
-`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses
-custom Azure roles, they must also allow Function ZIP publishing for the
-resource types defined in `infra/main.bicep`.
+The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
+`Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
+`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `infra/main.bicep`.
 
-The Consumption-plan deployment requires the Storage Account data endpoint to
-permit public network access. Blob public access and shared-key authentication
-remain disabled; both the installer and Function authenticate with Entra ID.
-If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture
-requires a VNet-integrated hosting plan, Storage Private Endpoints, and private
-DNS instead of the standard Consumption template.
+The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
+If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
 
-Importing users require no Azure subscription role, Entra directory role,
-Microsoft Graph permission, or direct Intune administrative role. Authorization
-is provided by the configured group-to-tag rule. The Function's managed
+Importing users require no Azure subscription role, Entra directory role, Microsoft Graph permission, or direct Intune administrative role. Authorization is provided by the configured group-to-tag rule. The Function's managed
 identity holds the Intune-related Graph permissions independently of the user.
 
-Do not grant other principals Azure roles that can modify the Function App's
-application settings or deployed code. Such permissions can change the manager
-policy outside the provided script and therefore bypass its strict
+Do not grant other principals Azure roles that can modify the Function App's application settings or deployed code. Such permissions can change the manager policy outside the provided script and therefore bypass its strict
 `Owner`/`Contributor` check.
 
-## 1. Entra Application for the Function API
+### 1. Entra Application for the Function API
 
 By default, the installer searches the selected tenant for an app registration named `Autopilot Import API`. If it does not exist, the installer creates and configures it automatically. During application setup, Microsoft Graph requests `Application.ReadWrite.All` and `User.Read`. The separate managed-identity permission step requests `Application.Read.All` and `AppRoleAssignment.ReadWrite.All`.
 
-The installer compares the existing application with the desired configuration
-before writing. A user with read access can therefore reuse an already compliant
-application. Application ownership or an application administrator directory
-role is required only when the application actually needs to be created or
-updated.
+The installer compares the existing application with the desired configuration before writing. A user with read access can therefore reuse an already compliant application. Application ownership or an application administrator directory
+role is required only when the application actually needs to be created or updated.
 
 These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All` permission.
 
@@ -106,13 +203,13 @@ The installer configures:
 - A single-tenant app registration
 - Application ID URI `api://<Application-Client-ID>`
 - Delegated scope `DeviceHash.Import`
-- Preauthorization for Microsoft Azure PowerShell
+- Pre-authorization for Microsoft Azure PowerShell
 - Security-group claims for endpoint-level authorization
 - An enterprise application that allows authenticated tenant users to reach endpoint-level authorization
 
 Use `-EntraClientId '<Client-ID>'` to select a specific existing application. Without this parameter, the installer searches by `-EntraApplicationName`, which defaults to `Autopilot Import API`.
 
-### Manual Alternative
+#### Manual Alternative
 
 Create a single-tenant app registration in the Entra admin center, for example `Autopilot Import API`.
 
@@ -131,7 +228,7 @@ Then configure the enterprise application:
 
 The delegated scope allows Azure PowerShell to request a token for the API. It does not grant the user Microsoft Graph or Intune permissions.
 
-## 2. Deploy Azure Resources
+### 2. Deploy Azure Resources
 
 The installer prompts for all values that were not supplied as parameters, validates the Bicep template, deploys the resources, assigns the Graph permission, publishes the Function code, and verifies that Easy Auth rejects anonymous requests with HTTP 401:
 
@@ -139,10 +236,7 @@ The installer prompts for all values that were not supplied as parameters, valid
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
-To sign out a cached Microsoft Graph account and explicitly select another
-Entra administrator without changing the Azure PowerShell account, add
-`-ForceGraphSignIn`. The installer uses device-code authentication so the
-operator can open the sign-in page in the appropriate browser profile:
+To sign out a cached Microsoft Graph account and explicitly select another Entra administrator without changing the Azure PowerShell account, add `-ForceGraphSignIn`. The installer uses device-code authentication so the operator can open the sign-in page in the appropriate browser profile:
 
 ```powershell
 pwsh .\Install-AutopilotImport.ps1 `
@@ -150,11 +244,8 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ForceGraphSignIn
 ```
 
-Assigning Microsoft Graph application permissions requires a signed-in user
-with Application Administrator, Cloud Application Administrator, or Privileged
-Role Administrator in the target tenant. After a failed installation, retry
-only the idempotent permission assignment with the managed identity object ID
-reported by the deployment:
+Assigning Microsoft Graph application permissions requires a signed-in user with Application Administrator, Cloud Application Administrator, or Privileged Role Administrator in the target tenant. After a failed installation, retry
+only the idempotent permission assignment with the managed identity object ID reported by the deployment:
 
 ```powershell
 .\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
@@ -163,8 +254,7 @@ reported by the deployment:
     -ForceGraphSignIn
 ```
 
-After the Azure resources are deployed, the installer creates a portable client
-tools package. It asks for the destination and suggests
+After the Azure resources are deployed, the installer creates a portable client tools package. It asks for the destination and suggests
 `Documents\PowerShell\Scripts\AutopilotImport`. The package contains:
 
 - `Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psd1`
@@ -175,18 +265,10 @@ tools package. It asks for the destination and suggests
 - `scripts\Set-TagAuthorizationPolicy.ps1`
 - `scripts\Set-TagPolicyManagers.ps1`
 
-The settings file contains the import and management URLs, API Application ID
-URI, Tenant ID, Subscription ID, resource group, and Function App name. It
-contains no credentials. The module loads these values automatically, while
-explicitly supplied parameters take precedence. The scripts are thin
-compatibility wrappers over the module commands.
+The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module loads these values automatically, while
+explicitly supplied parameters take precedence. The scripts are thin compatibility wrappers over the module commands.
 
-The installer also creates
-`AutopilotImport.Client-<version>.zip` in the client tools directory. The ZIP
-contains the versioned module and its `client.settings.json`, with the folder
-layout required by PowerShell module autoloading. Transfer the archive to
-another computer and extract it into the current user's PowerShell module
-directory:
+The installer also creates `AutopilotImport.Client-<version>.zip` in the client tools directory. The ZIP contains the versioned module and its `client.settings.json`, with the folder layout required by PowerShell module autoloading. Transfer the archive to another computer and extract it into the current user's PowerShell module directory:
 
 ```powershell
 $moduleRoot = Join-Path `
@@ -199,10 +281,7 @@ Expand-Archive `
     -Force
 ```
 
-After extraction, commands such as `Import-AutopilotDevice` are available
-through PowerShell module autoloading. The user does not need to run
-`Import-Module` first. PowerShell 7.2 or later and the required Az modules must
-still be installed on the destination computer.
+After extraction, commands such as `Import-AutopilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
 
 Import the newest installed module version from a custom tools directory:
 
@@ -232,9 +311,7 @@ The installer prompts for:
 - Entra group object IDs
 - Allowed Device Tags for each group
 
-Function App names must contain 2-60 letters, digits, or hyphens and must start
-and end with a letter or digit. The installer rejects an invalid
-`-FunctionAppName`; in interactive mode it asks again until the name is valid.
+Function App names must contain 2-60 letters, digits, or hyphens and must start and end with a letter or digit. The installer rejects an invalid `-FunctionAppName`; in interactive mode it asks again until the name is valid.
 
 The Client ID is taken automatically from the existing or newly created app registration.
 
@@ -247,19 +324,22 @@ pwsh .\Install-AutopilotImport.ps1 `
     -SubscriptionId '<Subscription-ID>' `
     -TenantId '<Tenant-ID>' `
     -ResourceGroupName 'rg-autopilot-import' `
+    -ResourceGroupTags @{ Environment = 'Production'; Owner = 'Endpoint Team' } `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
     -DeviceTagExtensionAttribute 'extensionAttribute1' `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
-    -RestrictedManagementAdministrativeUnitName 'RMAU-Autopilot-Devices' `
+    -RestrictedManagementAdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
     -InstallMissingModules `
     -Confirm:$false
 ```
+
+`-ResourceGroupTags` accepts an optional PowerShell hashtable. Tags are included in the request that creates a new resource group, allowing tag-enforcement policies to succeed. For an existing resource group, the installer merges the requested tags while leaving tags with other names unchanged.
 
 Use `-WhatIf` for a safe preview that displays the configuration and planned action without creating Azure or Entra resources:
 
@@ -275,19 +355,11 @@ pwsh .\Install-AutopilotImport.ps1 `
     -WhatIf
 ```
 
-### Azure DevOps Pipeline
+#### Azure DevOps Pipeline
 
-The repository contains `azure-pipelines.yml`. Pull requests run the Pester
-tests. A successful run on `main` additionally deploys the Bicep template and
-Function ZIP through an Azure Resource Manager service connection. The
-generated `client.settings.json` is published as the pipeline artifact
-`autopilot-import-client-settings`.
+The repository contains `azure-pipelines.yml`. Pull requests run the Pester tests. A successful run on `main` additionally deploys the Bicep template and Function ZIP through an Azure Resource Manager service connection. The generated `client.settings.json` is published as the pipeline artifact `autopilot-import-client-settings`.
 
-Create an Azure DevOps service connection that uses workload identity
-federation. Grant its service principal `Contributor` on the target resource
-group. If the pipeline must create the resource group, grant `Contributor` at
-subscription scope instead. The pipeline service principal does not require
-Microsoft Graph permissions.
+Create an Azure DevOps service connection that uses workload identity federation. Grant its service principal `Contributor` on the target resource group. If the pipeline must create the resource group, grant `Contributor` at subscription scope instead. The pipeline service principal does not require Microsoft Graph permissions.
 
 Create a variable group named `autopilot-import-deployment` with these values:
 
@@ -304,17 +376,11 @@ Create a variable group named `autopilot-import-deployment` with these values:
 | `tagAuthorizationRulesJson` | `["44444444-4444-4444-4444-444444444444=Standard,Kiosk"]` | JSON array containing the complete group-to-tag policy |
 | `tagManagerPrincipalIdsJson` | `[]` | JSON array of additional manager user or group object IDs |
 
-Authorize the pipeline to use this variable group. None of these values is a
-credential; authentication is provided by workload identity federation.
+Authorize the pipeline to use this variable group. None of these values is a credential; authentication is provided by workload identity federation.
 
-The Entra API application and the managed identity's Microsoft Graph
-permissions remain intentionally outside the pipeline because they require
-privileged tenant permissions that should not be assigned to a deployment
-service connection.
+The Entra API application and the managed identity's Microsoft Graph permissions remain intentionally outside the pipeline because they require privileged tenant permissions that should not be assigned to a deployment service connection.
 
-Before the first pipeline deployment, create or configure the Entra API
-application once from an administrator workstation and supply the returned
-client ID through `entraClientId`:
+Before the first pipeline deployment, create or configure the Entra API application once from an administrator workstation and supply the returned client ID through `entraClientId`:
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
@@ -325,9 +391,7 @@ $entraApplication = .\scripts\Ensure-EntraApiApplication.ps1 `
 $entraApplication
 ```
 
-After the first pipeline deployment has created the Function managed identity,
-a Privileged Role Administrator or Global Administrator runs the idempotent
-permission script once:
+After the first pipeline deployment has created the Function managed identity, a Privileged Role Administrator or Global Administrator runs the idempotent permission script once:
 
 ```powershell
 Connect-AzAccount -Tenant '<Tenant-ID>' -Subscription '<Subscription-ID>'
@@ -339,67 +403,11 @@ $function = Get-AzWebApp `
     -ManagedIdentityObjectId $function.Identity.PrincipalId
 ```
 
-Subsequent pipeline deployments update infrastructure, policies, and Function
-code without repeating either privileged Entra operation. Configure approvals
-and checks on the Azure DevOps environment `autopilot-import` when production
-deployments require manual authorization.
+Subsequent pipeline deployments update infrastructure, policies, and Function code without repeating either privileged Entra operation. Configure approvals and checks on the Azure DevOps environment `autopilot-import` when production deployments require manual authorization.
 
-### Change Group-to-Tag Assignments Later
+#### Update an Existing Deployment
 
-Use `AutopilotImport.Client` to change an already installed Function.
-The installing user, configured manager users or groups, and current members
-of the Intune RBAC role `Intune Role Administrator` may use this command. They
-do not need Azure resource permissions.
-
-Read the current policy:
-
-```powershell
-Get-AutopilotTagPolicy
-```
-
-The supplied rules are the complete desired configuration: add new rules,
-change the tags of existing rules, and omit a previous rule to remove that
-group.
-
-Preview the changes first:
-
-```powershell
-Set-AutopilotTagPolicy `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
-        '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
-    -RestrictedManagementAdministrativeUnitName 'RMAU-Autopilot-Devices' `
-    -WhatIf
-```
-
-Run the same command without `-WhatIf` to apply it.
-
-The RMAU must already exist, have `isMemberManagementRestricted` enabled, and
-have a unique display name. Leave the parameter empty during installation, or
-set it to an empty string in `Set-AutopilotTagPolicy`, to disable automatic
-RMAU membership. Without a configured RMAU, imports behave as before.
-
-### Change Group Tag Managers Later
-
-Only a principal with an effective Azure `Owner` or `Contributor` assignment
-on the Function App, its resource group, or its subscription may add or remove
-explicit manager users and groups:
-
-```powershell
-Update-AutopilotTagPolicyManager `
-    -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
-    -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
-    -WhatIf
-```
-
-The installing user cannot be removed. Authorization for current Intune Role
-Administrators also remains enabled.
-
-### Update an Existing Deployment
-
-Download or clone the desired release, then run the update script from its
-project directory. Preview the resolved deployment and planned installer action
-first:
+Download or clone the desired release, then run the update script from its project directory. Preview the resolved deployment and planned installer action first:
 
 ```powershell
 .\Update-AutopilotImport.ps1 -WhatIf
@@ -411,30 +419,20 @@ Apply the update:
 .\Update-AutopilotImport.ps1
 ```
 
-By default, the script selects the newest installed `client.settings.json`
-under `Documents\PowerShell\Scripts\AutopilotImport`. Select another installed
-deployment explicitly when required:
+By default, the script selects the newest installed `client.settings.json` under `Documents\PowerShell\Scripts\AutopilotImport`. Select another installed deployment explicitly when required:
 
 ```powershell
 .\Update-AutopilotImport.ps1 `
     -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\<version>\client.settings.json'
 ```
 
-The script preserves the existing Function App name, region, API application,
-Group Tag authorization rules, configured Group Tag managers, client tools
-path, Device Tag extension attribute, and optional RMAU. It then reuses the idempotent
-installer to update Azure resources, required permissions, Function code, and
-the versioned client package.
+The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
+installer to update Azure resources, required permissions, Function code, and the versioned client package.
 
-The updating administrator needs the same Azure and Entra permissions as an
-installer. Reading and preserving the Function configuration requires
-`Microsoft.Web/sites/config/list/action`, which is included in Azure
-`Contributor` and `Owner`. The caller must also be authorized to read the
-Group Tag policy through the Function management API. Use
-`-InstallMissingModules` when local prerequisites may be missing. The installer
-skip switches are also available for separated administrative workflows.
+The updating administrator needs the same Azure and Entra permissions as an installer. Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure
+`Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
-### Manual Bicep Deployment
+#### Manual Bicep Deployment
 
 The individual commands remain available for troubleshooting or manual installation:
 
@@ -472,7 +470,7 @@ $deployment = New-AzResourceGroupDeployment `
 
 The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated requests are rejected with HTTP 401 before the Function code runs.
 
-## 3. Assign the Graph Permission
+### 3. Assign the Graph Permission
 
 This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
@@ -483,7 +481,7 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
     -ManagedIdentityObjectId $deployment.Outputs.managedIdentityObjectId.Value
 ```
 
-## 4. Publish the Function Code
+### 4. Publish the Function Code
 
 The ZIP archive must contain `host.json` at its root:
 
@@ -503,11 +501,7 @@ Publish-AzWebApp `
 
 Managed Dependencies can take several minutes to make `Az.Accounts` available after the first start.
 
-## 5. Import Devices
-
-The script does not read local CIM or MDM data. `-CsvPath` is always required and the CSV can contain one or more devices. CSV files are excluded from the repository through `.gitignore`.
-
-### Distribute the Import Client to Additional PCs
+### 5. Distribute the Import Client to Additional PCs
 
 The Azure Function itself remains in Azure. An importing PC needs only:
 
@@ -517,12 +511,9 @@ The Azure Function itself remains in Azure. An importing PC needs only:
 - a configured `client.settings.json`
 - HTTPS access to Microsoft Entra sign-in and the Function App
 
-The `src\AutopilotImport` module, Function folders, Bicep template, deployment
-scripts, and `Microsoft.Graph.Authentication` are not required on importing
-PCs. `Microsoft.Graph.Authentication` is used only for administrative setup.
+The `src\AutopilotImport` module, Function folders, Bicep template, deployment scripts, and `Microsoft.Graph.Authentication` are not required on importing PCs. `Microsoft.Graph.Authentication` is used only for administrative setup.
 
-For a PC with access to the PowerShell Gallery, install `Az.Accounts` for the
-current user:
+For a PC with access to the PowerShell Gallery, install `Az.Accounts` for the current user:
 
 ```powershell
 Install-Module Az.Accounts `
@@ -531,9 +522,7 @@ Install-Module Az.Accounts `
         -Force
 ```
 
-For a managed installation available to all users, run the following command
-as an administrator or deploy it through the organization's software
-management system:
+For a managed installation available to all users, run the following command as an administrator or deploy it through the organization's software management system:
 
 ```powershell
 Install-Module Az.Accounts `
@@ -542,8 +531,7 @@ Install-Module Az.Accounts `
         -Force
 ```
 
-In networks without direct PowerShell Gallery access, download the module and
-its dependencies on a connected staging PC:
+In networks without direct PowerShell Gallery access, download the module and its dependencies on a connected staging PC:
 
 ```powershell
 $packagePath = 'C:\AutopilotImportPackage'
@@ -560,8 +548,7 @@ Copy-Item .\client.settings.json `
         -Destination $packagePath
 ```
 
-Copy the package to each target PC and place every directory below `Modules`
-in a PowerShell 7 module path. For a per-machine installation, use:
+Copy the package to each target PC and place every directory below `Modules` in a PowerShell 7 module path. For a per-machine installation, use:
 
 ```powershell
 $packagePath = 'C:\AutopilotImportPackage'
@@ -572,19 +559,11 @@ Get-ChildItem "$packagePath\Modules" -Directory | ForEach-Object {
 }
 ```
 
-This copy step requires local administrator rights. For a per-user
-installation, use `$HOME\Documents\PowerShell\Modules` instead. Distribute the
-same package with Microsoft Intune, Configuration Manager, Group Policy, or
-another software deployment system when many PCs must be maintained. Sign the
-PowerShell script with a trusted code-signing certificate when the target
-environment enforces `AllSigned` or `RemoteSigned`; do not weaken the execution
+This copy step requires local administrator rights. For a per-user installation, use `$HOME\Documents\PowerShell\Modules` instead. Distribute the same package with Microsoft Intune, Configuration Manager, Group Policy, or
+another software deployment system when many PCs must be maintained. Sign the PowerShell script with a trusted code-signing certificate when the target environment enforces `AllSigned` or `RemoteSigned`; do not weaken the execution
 policy as part of deployment.
 
-When Azure DevOps performs the Function deployment, download the
-`autopilot-import-client-settings` pipeline artifact and distribute its
-`client.settings.json` together with the import script. The file contains no
-password, client secret, or access token, but it selects a tenant and Function
-environment and should therefore be managed as environment-specific
+When Azure DevOps performs the Function deployment, download the `autopilot-import-client-settings` pipeline artifact and distribute its `client.settings.json` together with the import script. The file contains no password, client secret, or access token, but it selects a tenant and Function environment and should therefore be managed as environment-specific
 configuration.
 
 The configuration must contain these values:
@@ -606,126 +585,26 @@ The configuration must contain these values:
     API application and the Easy Auth audience.
 - `tenantId` is the Entra tenant in which users authenticate.
 
-Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it
-in a centrally managed location and pass its path with `-ConfigPath`. When the
-script remains in the repository layout under `scripts`, its default is the
-repository-root `client.settings.json`. Explicit `-FunctionUrl`,
-`-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which
-is useful when one PC targets multiple environments.
+Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in a centrally managed location and pass its path with `-ConfigPath`. When the script remains in the repository layout under `scripts`, its default is the repository-root `client.settings.json`. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which is useful when one PC targets multiple environments.
 
-Each operator signs in interactively when the script first needs an access
-token. The user must belong to an Entra group authorized for the requested
-Group Tag in the server-side policy. No local client secret, Azure subscription
-role, Intune role, or Microsoft Graph permission is required. Conditional
-Access and multifactor authentication continue to apply to this sign-in.
+The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
 
-Verify every distributed installation before importing devices:
+## Developer Information
 
-```powershell
-pwsh -NoProfile -Command "Import-Module Az.Accounts; Get-Module Az.Accounts"
-
-pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
-        -CsvPath '.\devices.csv' `
-        -GroupTag 'PAW' `
-        -ConfigPath '.\client.settings.json' `
-        -ValidateOnly
-```
-
-Validate the CSV without signing in or calling the API:
-
-```powershell
-Import-AutopilotDevice `
-    -CsvPath '.\kilispaw3.csv' `
-    -GroupTag 'PAW' `
-    -ValidateOnly
-```
-
-Run the actual import:
-
-```powershell
-Install-Module Az.Accounts -Scope CurrentUser
-
-Import-AutopilotDevice `
-    -CsvPath '.\kilispaw3.csv' `
-    -GroupTag 'PAW'
-```
-
-`-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` remain available as
-optional overrides for values loaded from `client.settings.json`. The manager
-script likewise allows overriding `-SubscriptionId`, `-ResourceGroupName`, and
-`-FunctionAppName`. Use `-ConfigPath` to select a different configuration file.
-
-The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing
-the explicit manager list additionally requires `Az.Resources` and
-`Az.Websites`. The project module dependency is included in the installed
-package.
-
-A successful request returns HTTP 202 with the import ID, authorized Group Tag,
-initial Intune import status, local import time in `importedAt`, and an
-`intuneAvailabilityNote`. Intune processes imports asynchronously, so it may
-take several minutes before a device appears in the Intune admin center. A tag
-without a matching group rule returns HTTP 403.
-
-Use the returned `importId` to verify the asynchronous Intune processing result:
-
-```powershell
-Get-AutopilotImportStatus `
-    -ImportId '82d7266e-4213-4fa1-a5d5-b0ee10d009de'
-```
-
-`unknown`, `pending`, and `partial` are non-final asynchronous states. Wait for
-Intune to report a final result with:
-
-```powershell
-Get-AutopilotImportStatus `
-    -ImportId '82d7266e-4213-4fa1-a5d5-b0ee10d009de' `
-    -Wait
-```
-
-The default timeout is 30 minutes with a 15-second polling interval. Override
-them with `-TimeoutSeconds` and `-PollIntervalSeconds`. The returned `status`
-is the Intune import status. `workflowStatus` remains `pending` until the
-configured Entra extension attribute contains the authorized Group Tag.
-`extensionAttributeStatus`, `extensionAttributeName`, and
-`extensionAttributeValue` expose that second stage. `statusDescription`
-explains the combined state, and `isFinal` becomes true only when the complete
-workflow succeeds or the Intune import ends in an error.
-
-Only `workflowStatus: complete` confirms a successful end-to-end import.
-`status: error` includes `deviceErrorCode` and `deviceErrorName`; synthetic hashes return
-`InvalidZtdHardwareHash` because they do not represent real devices.
-
-## Dynamic Device Group
-
-For the Group Tag `Autopilot-Standard`, use this dynamic membership rule:
-
-```text
-(device.devicePhysicalIds -any (_ -eq "[OrderID]:Autopilot-Standard"))
-```
-
-The device becomes a member after Intune creates the Entra device object and synchronizes its physical IDs. A static group assignment during hash import is unreliable because an Entra device object usually does not exist yet.
-
-## Tests
+### Tests
 
 ```powershell
 Invoke-Pester .\tests\AutopilotImport.Tests.ps1
 ```
 
-The tests cover Group Tag authorization, manager users and groups, the strict
-Owner/Contributor boundary, installer rule parsing, and invalid hardware hashes.
+The tests cover Group Tag authorization, manager users and groups, the strict Owner/Contributor boundary, installer rule parsing, and invalid hardware hashes.
 
-## Versioning
+### Versioning
 
-The project version is stored in `VERSION` and follows
-`1.0.<yyyyMMdd>.<counter>`, for example `1.0.20260811.1`. Every PowerShell
-script, module, and data file contains the same `# Project-Version:` marker.
-The canonical author is stored in `AUTHOR`, and the same files contain the
-matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
+The project version is stored in `VERSION` and follows `1.0.<yyyyMMdd>.<counter>`, for example `1.0.20260811.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
+The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
-After commits are pushed to `main`, the GitHub workflow increments the counter
-by the number of commits in that push and commits the synchronized version
-entries. On a new UTC date, the counter starts at `1`. The workflow-generated
-version commit does not trigger another increment.
+After commits are pushed to `main`, the GitHub workflow increments the counter by the number of commits in that push and commits the synchronized version entries. On a new UTC date, the counter starts at `1`. The workflow-generated version commit does not trigger another increment.
 
 For a local manual increment, run:
 
@@ -733,7 +612,7 @@ For a local manual increment, run:
 .\scripts\Update-ProjectVersion.ps1
 ```
 
-## Operations and Security
+### Operations and Security
 
 - Application Insights logs the correlation ID, import ID, serial number, and object ID of the calling user.
 - Hardware hashes and access tokens are not logged.

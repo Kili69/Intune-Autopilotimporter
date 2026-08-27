@@ -833,6 +833,77 @@ Describe 'Installer Azure resource provider registration' {
     }
 }
 
+Describe 'Installer Azure resource group tags' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Set-ResourceGroupTags'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Initialize-AzureResourceGroup'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'includes tags in the resource group creation request' {
+        Mock Get-AzResourceGroup
+        Mock New-AzResourceGroup {
+            [pscustomobject]@{ ResourceId = '/subscriptions/test/resourceGroups/rg-autopilot' }
+        }
+        Mock Update-AzTag
+
+        Initialize-AzureResourceGroup `
+            -Name 'rg-autopilot' `
+            -Location 'westeurope' `
+            -Tags @{ Environment = 'Production'; Owner = 'Endpoint Team' }
+
+        Should -Invoke New-AzResourceGroup -Times 1 -ParameterFilter {
+            $Name -eq 'rg-autopilot' -and
+            $Location -eq 'westeurope' -and
+            $Tag.Environment -eq 'Production' -and
+            $Tag.Owner -eq 'Endpoint Team'
+        }
+        Should -Invoke Update-AzTag -Times 0
+    }
+
+    It 'merges supplied tags without replacing unrelated tags' {
+        Mock Update-AzTag
+
+        Set-ResourceGroupTags `
+            -ResourceId '/subscriptions/test/resourceGroups/rg-autopilot' `
+            -Tags @{ Environment = 'Production'; Owner = 'Endpoint Team' }
+
+        Should -Invoke Update-AzTag -Times 1 -ParameterFilter {
+            $ResourceId -eq '/subscriptions/test/resourceGroups/rg-autopilot' -and
+            $Operation -eq 'Merge' -and
+            $Tag.Environment -eq 'Production' -and
+            $Tag.Owner -eq 'Endpoint Team'
+        }
+    }
+
+    It 'does not call Azure when no tags were supplied' {
+        Mock Update-AzTag
+
+        Set-ResourceGroupTags `
+            -ResourceId '/subscriptions/test/resourceGroups/rg-autopilot' `
+            -Tags @{}
+
+        Should -Invoke Update-AzTag -Times 0
+    }
+}
+
 Describe 'Tag authorization policy updates' {
     It 'identifies added and removed groups without changing retained groups' {
         $previousPolicy = ConvertTo-TagAuthorizationPolicy -Rules @(

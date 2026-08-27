@@ -41,6 +41,11 @@ Microsoft Entra tenant GUID that owns the API app registration and groups.
 .PARAMETER ResourceGroupName
 Name of the Azure resource group to create or update.
 
+.PARAMETER ResourceGroupTags
+Optional tags to merge into the Azure resource group. Existing tags with other
+names are preserved. Supply a PowerShell hashtable such as
+@{ Environment = 'Production'; Owner = 'Endpoint Team' }.
+
 .PARAMETER Location
 Azure region for the resource group and Function resources, such as westus2.
 
@@ -122,6 +127,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -SubscriptionId '00000000-0000-0000-0000-000000000000' `
     -TenantId '11111111-1111-1111-1111-111111111111' `
     -ResourceGroupName 'rg-autopilot-import' `
+    -ResourceGroupTags @{ Environment = 'Production'; Owner = 'Endpoint Team' } `
     -Location 'westus2' `
     -FunctionAppName 'func-autopilot-contoso' `
     -TagAuthorizationRule `
@@ -164,6 +170,8 @@ param(
     [string] $TenantId,
 
     [string] $ResourceGroupName,
+
+    [hashtable] $ResourceGroupTags,
 
     [string] $Location,
 
@@ -720,6 +728,107 @@ function Ensure-AzureResourceProvider {
     }
 }
 
+function Set-ResourceGroupTags {
+    <#
+    .SYNOPSIS
+    Merges tags into an Azure resource group.
+
+    .DESCRIPTION
+    Applies the requested tags with Azure's Merge operation so tags not
+    supplied by this installer remain unchanged. An empty tag collection is a
+    no-op.
+
+    .PARAMETER ResourceId
+    Azure resource ID of the resource group.
+
+    .PARAMETER Tags
+    Tag names and values to merge into the resource group.
+
+    .OUTPUTS
+    None.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $ResourceId,
+
+        [hashtable] $Tags
+    )
+
+    if (-not $Tags -or $Tags.Count -eq 0) {
+        return
+    }
+
+    $normalizedTags = @{}
+    foreach ($tagName in $Tags.Keys) {
+        $normalizedTagName = [string] $tagName
+        if ([string]::IsNullOrWhiteSpace($normalizedTagName)) {
+            throw 'Resource group tag names must not be empty.'
+        }
+
+        $normalizedTags[$normalizedTagName] = [string] $Tags[$tagName]
+    }
+
+    Update-AzTag `
+        -ResourceId $ResourceId `
+        -Tag $normalizedTags `
+        -Operation Merge `
+        -ErrorAction Stop | Out-Null
+}
+
+function Initialize-AzureResourceGroup {
+    <#
+    .SYNOPSIS
+    Creates an Azure resource group or updates its tags.
+
+    .DESCRIPTION
+    Supplies tags during creation so Azure Policies that require resource group
+    tags can evaluate the initial request successfully. For an existing group,
+    requested tags are merged without removing unrelated tags.
+
+    .PARAMETER Name
+    Name of the Azure resource group.
+
+    .PARAMETER Location
+    Azure region for a new resource group.
+
+    .PARAMETER Tags
+    Optional resource group tags.
+
+    .OUTPUTS
+    The Azure resource group.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Name,
+
+        [Parameter(Mandatory)]
+        [string] $Location,
+
+        [hashtable] $Tags
+    )
+
+    $resourceGroup = Get-AzResourceGroup `
+        -Name $Name `
+        -ErrorAction SilentlyContinue
+    if ($resourceGroup) {
+        Set-ResourceGroupTags `
+            -ResourceId $resourceGroup.ResourceId `
+            -Tags $Tags
+        return $resourceGroup
+    }
+
+    $newResourceGroupParameters = @{
+        Name        = $Name
+        Location    = $Location
+        ErrorAction = 'Stop'
+    }
+    if ($Tags -and $Tags.Count -gt 0) {
+        $newResourceGroupParameters.Tag = $Tags
+    }
+
+    return New-AzResourceGroup @newResourceGroupParameters
+}
+
 #endregion Helper functions
 
 #region Prerequisites
@@ -846,6 +955,13 @@ Write-Host "`nRequested installation" -ForegroundColor Cyan
 Write-Host "  Subscription : $($subscription.Name) ($SubscriptionId)"
 Write-Host "  Tenant       : $TenantId"
 Write-Host "  Resource group: $ResourceGroupName"
+if ($ResourceGroupTags -and $ResourceGroupTags.Count -gt 0) {
+    Write-Host "  Resource group tags: $(
+        @($ResourceGroupTags.Keys | Sort-Object | ForEach-Object {
+            "$_=$($ResourceGroupTags[$_])"
+        }) -join ', '
+    )"
+}
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
@@ -871,10 +987,10 @@ Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
 
 #region Resource group and Entra application
 
-$resourceGroup = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $resourceGroup) {
-    $resourceGroup = New-AzResourceGroup -Name $ResourceGroupName -Location $Location
-}
+$resourceGroup = Initialize-AzureResourceGroup `
+    -Name $ResourceGroupName `
+    -Location $Location `
+    -Tags $ResourceGroupTags
 
 if (-not $SkipEntraAppConfiguration) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'

@@ -44,6 +44,23 @@ Updates the deployment referenced by the newest installed client package.
 .\Update-AutopilotImport.ps1 -WhatIf
 
 Displays the resolved deployment and installer plan without changing it.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 `
+    -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\1.0.20260826.1\client.settings.json' `
+    -InstallMissingModules
+
+Updates the deployment selected by an explicit client configuration and
+installs missing local prerequisites when necessary.
+
+.OUTPUTS
+System.Management.Automation.PSCustomObject. The deployment result returned by
+Install-AutopilotImport.ps1.
+
+.NOTES
+The updating account needs permission to read the Function App configuration,
+update its Azure resources, and read the current Group Tag policy through the
+Function management API.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -67,7 +84,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+#region Update discovery helpers
+
 function Resolve-AutopilotUpdateConfigPath {
+    <#
+    .SYNOPSIS
+    Resolves the client configuration used to identify a deployment.
+
+    .DESCRIPTION
+    Returns an explicitly supplied client.settings.json path. When no path is
+    supplied, searches the default AutopilotImport client module directory and
+    selects the configuration from the highest versioned directory.
+
+    .PARAMETER Path
+    Optional path to a specific client.settings.json file.
+
+    .OUTPUTS
+    System.String. The absolute path to client.settings.json.
+    #>
     param([string] $Path)
 
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
@@ -100,6 +134,25 @@ function Resolve-AutopilotUpdateConfigPath {
 }
 
 function Get-AutopilotClientToolsPath {
+    <#
+    .SYNOPSIS
+    Resolves the destination of the updated portable client package.
+
+    .DESCRIPTION
+    Returns OverridePath when supplied. Otherwise, derives the package root
+    from the expected Modules\AutopilotImport.Client\<version> layout of the
+    selected client settings file.
+
+    .PARAMETER SettingsPath
+    Absolute path to a versioned client.settings.json file.
+
+    .PARAMETER OverridePath
+    Optional client package destination that takes precedence over the path
+    derived from SettingsPath.
+
+    .OUTPUTS
+    System.String. The absolute client tools directory.
+    #>
     param(
         [Parameter(Mandatory)][string] $SettingsPath,
         [string] $OverridePath
@@ -119,6 +172,22 @@ function Get-AutopilotClientToolsPath {
 }
 
 function ConvertTo-UpdateTagAuthorizationRules {
+    <#
+    .SYNOPSIS
+    Converts the deployed Group Tag policy into installer rule strings.
+
+    .DESCRIPTION
+    Validates every policy entry and converts it to the
+    <group-object-id>=<tag1>,<tag2> format accepted by
+    Install-AutopilotImport.ps1. Invalid or empty policies terminate the
+    update before deployment changes are made.
+
+    .PARAMETER Policy
+    Group Tag policy objects returned by Get-AutopilotTagPolicy.
+
+    .OUTPUTS
+    System.String[]. Installer-compatible Group Tag authorization rules.
+    #>
     param([Parameter(Mandatory)][object[]] $Policy)
 
     $rules = @($Policy | ForEach-Object {
@@ -138,6 +207,23 @@ function ConvertTo-UpdateTagAuthorizationRules {
 }
 
 function Get-UpdateRestrictedManagementAdministrativeUnitName {
+    <#
+    .SYNOPSIS
+    Reads the administrative unit preserved by the current policy.
+
+    .DESCRIPTION
+    Returns the single non-empty restricted management administrative unit
+    name stored in the policy. The update stops when policy entries disagree,
+    because choosing one value could silently change deployment behavior.
+
+    .PARAMETER Policy
+    Current Group Tag policy objects. Older policies may omit the
+    restrictedManagementAdministrativeUnitName property.
+
+    .OUTPUTS
+    System.String. The configured administrative unit name, or no output when
+    the existing policy does not configure one.
+    #>
     param([object[]] $Policy = @())
 
     $names = @($Policy | Where-Object {
@@ -153,6 +239,10 @@ function Get-UpdateRestrictedManagementAdministrativeUnitName {
     }
     return $names | Select-Object -First 1
 }
+
+#endregion Update discovery helpers
+
+#region Resolve installed deployment
 
 $projectRoot = $PSScriptRoot
 $installerPath = Join-Path $projectRoot 'Install-AutopilotImport.ps1'
@@ -187,6 +277,10 @@ if (-not [guid]::TryParse($entraClientIdText, [ref] $entraClientId)) {
 $resolvedClientToolsPath = Get-AutopilotClientToolsPath `
     -SettingsPath $resolvedConfigPath `
     -OverridePath $ClientToolsPath
+
+#endregion Resolve installed deployment
+
+#region Read current deployment configuration
 
 if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
     if (-not $InstallMissingModules) {
@@ -260,6 +354,10 @@ $managerPrincipalIds = @(
     Select-Object -Unique
 )
 
+#endregion Read current deployment configuration
+
+#region Invoke idempotent installer
+
 Write-Host "`nResolved update" -ForegroundColor Cyan
 Write-Host "  Configuration : $resolvedConfigPath"
 Write-Host "  Subscription  : $($settings.subscriptionId)"
@@ -304,3 +402,5 @@ if (-not $PSCmdlet.ShouldProcess($target, 'Update Autopilot Import deployment'))
 }
 
 & $installerPath @installerParameters -Confirm:$false
+
+#endregion Invoke idempotent installer
