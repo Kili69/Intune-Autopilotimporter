@@ -149,13 +149,40 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 - An Azure subscription and an active Intune tenant
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
-- For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components
+- For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 - The appropriate Entra ID licensing for dynamic device groups
+
+### Quick Installation Guide
+
+1. Obtain the Azure, Entra ID, and delegated Microsoft Graph permissions listed under [Required Roles and Permissions](#required-roles-and-permissions). The installing administrator needs all applicable permissions for the complete setup.
+2. Download `Intune-Autopilotimport-deployment-<version>.zip` and extract it. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
+3. Start the interactive installation. Missing PowerShell modules and the Bicep CLI are installed when required:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
+```
+
+4. After installation, extract the generated client module package from the current user's Documents directory into the PowerShell 7 module directory:
+
+```powershell
+$documents = [Environment]::GetFolderPath('MyDocuments')
+$moduleRoot = Join-Path $documents 'PowerShell\Modules'
+
+New-Item -Path $moduleRoot -ItemType Directory -Force | Out-Null
+Expand-Archive `
+    -LiteralPath (Join-Path $documents `
+        'Intune-Autopilotimport-psmodule-<version>.zip') `
+    -DestinationPath $moduleRoot `
+    -Force
+```
+
+The archive already contains the required versioned module layout and the generated `client.settings.json`.
 
 ### Required Roles and Permissions
 
 Azure RBAC roles, Entra directory roles, Microsoft Graph permissions, and the application role of this Function serve different purposes. They do not grant one another implicitly.
+For a standard installation, one installing administrator performs the complete setup and therefore needs the applicable Azure roles, Entra directory role, and delegated Microsoft Graph permissions listed below. The scopes remain technically independent even though they are assigned to the same administrator.
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
@@ -164,8 +191,8 @@ Azure RBAC roles, Entra directory roles, Microsoft Graph permissions, and the ap
 | Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
 | Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
 | Installing administrator | Microsoft Graph, delegated | `Application.ReadWrite.All`, `User.Read` | Configures the API application and records the installing user as a permanent Group Tag manager. |
-| Permission administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. This privileged step can be performed by a different administrator. |
-| Permission administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
+| Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
+| Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
@@ -236,7 +263,7 @@ The installer prompts for all values that were not supplied as parameters, valid
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
-To sign out a cached Microsoft Graph account and explicitly select another Entra administrator without changing the Azure PowerShell account, add `-ForceGraphSignIn`. The installer uses device-code authentication so the operator can open the sign-in page in the appropriate browser profile:
+To sign out a cached Microsoft Graph account and sign in again as the installing administrator without changing the Azure PowerShell account, add `-ForceGraphSignIn`. The installer uses device-code authentication so the operator can open the sign-in page in the appropriate browser profile:
 
 ```powershell
 pwsh .\Install-AutopilotImport.ps1 `
@@ -751,7 +778,7 @@ configuration. Do not place `client.settings.json.example` in the module
 directory without replacing all placeholder values and renaming it to
 `client.settings.json`.
 
-## Developer Information
+## Appendix: Developer Information
 
 ### Tests
 
@@ -782,3 +809,19 @@ For a local manual increment, run:
 - Allowed tags are stored in a private Storage blob and changed through the protected management endpoint. Shared-key access is not required; the installer and Function use their Entra identities.
 - The explicit manager list remains in `MANAGER_AUTHORIZATION_POLICY` and can be changed only through Azure by an effective Owner or Contributor.
 - Tag authorization is denied when the Entra group claim is missing. This also applies to group overage for users with a very large number of group memberships.
+
+## Appendix: Bicep CLI in Restricted Environments
+
+The installer uses `winget install Microsoft.Bicep` when `-InstallMissingModules` is specified. If application control, proxy settings, or network restrictions prevent that automatic download, install the standalone Bicep CLI before starting the deployment. Azure PowerShell requires a separately installed `bicep` command; the copy managed internally by Azure CLI is not available to Azure PowerShell.
+
+Use the official [Bicep installation documentation](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install) and download one of these Windows assets from the [latest Bicep release](https://github.com/Azure/bicep/releases/latest):
+
+- `bicep-setup-win-x64.exe`: run the installer. It installs Bicep for the current user and adds it to the user `PATH` without requiring local administrator rights.
+- `bicep-win-x64.exe`: use this standalone binary when installers are blocked. Download it on an approved connected computer, transfer it to the deployment computer, rename it to `bicep.exe`, and place it in a directory permitted by application control and included in `PATH`.
+
+Close and reopen PowerShell after changing the persistent `PATH`, then verify the installation:
+
+```powershell
+Get-Command bicep
+bicep --version
+```
