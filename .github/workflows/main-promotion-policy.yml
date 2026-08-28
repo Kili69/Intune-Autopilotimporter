@@ -1,0 +1,27 @@
+name: Main promotion policy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate-source:
+    name: Validate dev promotion
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require dev as source branch
+        shell: bash
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [[ "$SOURCE_BRANCH" != "dev" ]]; then
+            echo "Pull requests to main must originate from dev."
+            exit 1
+          fi
+
+          echo "Promotion from dev to main is allowed."

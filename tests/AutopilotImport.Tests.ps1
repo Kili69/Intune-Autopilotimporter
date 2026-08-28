@@ -1564,6 +1564,22 @@ Describe 'Deployment package' {
         $workflow | Should -Match 'actions/upload-artifact@v4'
     }
 
+    It 'allows pull requests to main only from dev' {
+        $workflowPath = Join-Path `
+            $PSScriptRoot `
+            '..\.github\workflows\main-promotion-policy.yml'
+        $workflow = Get-Content -LiteralPath $workflowPath -Raw
+
+        $workflow | Should -Match `
+            '(?ms)^  pull_request:\s+branches:\s+- main\s*$'
+        $workflow | Should -Match `
+            '(?m)^    name: Validate dev promotion\s*$'
+        $workflow | Should -Match `
+            '\[\[ "\$SOURCE_BRANCH" != "dev" \]\]'
+        $workflow | Should -Match `
+            'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
+    }
+
     It 'contains installation and runtime files without local configuration' {
         $projectRoot = Join-Path $PSScriptRoot '..'
         $outputDirectory = Join-Path $TestDrive 'artifacts'

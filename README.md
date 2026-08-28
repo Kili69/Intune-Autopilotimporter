@@ -780,6 +780,19 @@ directory without replacing all placeholder values and renaming it to
 
 ## Appendix: Developer Information
 
+### Branch Promotion Policy
+
+Changes to `main` must be promoted through a pull request whose source branch is `dev`. The `Main promotion policy` GitHub Actions workflow rejects pull requests to `main` from any other branch.
+
+To enforce this policy, configure a GitHub ruleset or branch protection rule for `main` with these settings:
+
+- Require a pull request before merging.
+- Require the status check `Validate dev promotion` to pass before merging.
+- Block force pushes and branch deletion.
+- Do not allow direct-push bypasses, or restrict bypass permission to designated repository administrators for emergencies.
+
+The workflow validates the pull request source, while the server-side rule prevents direct pushes from bypassing that validation.
+
 ### Tests
 
 ```powershell
