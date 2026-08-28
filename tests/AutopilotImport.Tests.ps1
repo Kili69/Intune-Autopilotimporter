@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260826.1
+# Project-Version: 1.0.20260828.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1156,7 +1156,7 @@ Describe 'Installer Azure resource provider registration' {
         $functionAst = $installerAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Ensure-AzureResourceProvider'
+            $node.Name -eq 'Register-AzureResourceProvider'
         }, $true) | Select-Object -First 1
         Invoke-Expression $functionAst.Extent.Text
     }
@@ -1165,7 +1165,7 @@ Describe 'Installer Azure resource provider registration' {
         Mock Get-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'Registered' } }
         Mock Register-AzResourceProvider
 
-        Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+        Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
 
         Should -Invoke Register-AzResourceProvider -Times 0
     }
@@ -1174,7 +1174,7 @@ Describe 'Installer Azure resource provider registration' {
         Mock Get-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'NotRegistered' } }
         Mock Register-AzResourceProvider { [pscustomobject]@{ RegistrationState = 'Registered' } }
 
-        Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+        Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
 
         Should -Invoke Register-AzResourceProvider -Times 1 -ParameterFilter {
             $ProviderNamespace -eq 'Microsoft.OperationalInsights'

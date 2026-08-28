@@ -15,6 +15,7 @@ This project closes that authorization gap by validating the requested Group Tag
 ## The solution
 
 The client script reads the serial number and hardware hash from an Autopilot CSV supplied as a parameter.
+
 - `Az.Accounts` requests a user token for the Function API.
 - Azure App Service Authentication, also known as Easy Auth, validates the token.
 - The Function requires a matching group-to-tag rule for the authenticated caller.
@@ -163,7 +164,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
-4. After installation, extract the generated client module package from the current user's Documents directory into the PowerShell 7 module directory:
+1. After installation, extract the generated client module package from the current user's Documents directory into the PowerShell 7 module directory:
 
 ```powershell
 $documents = [Environment]::GetFolderPath('MyDocuments')

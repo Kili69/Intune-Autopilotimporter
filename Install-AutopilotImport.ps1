@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260826.1
+# Project-Version: 1.0.20260828.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -781,7 +781,7 @@ function Assert-AzureDeploymentPermissions {
     }
 }
 
-function Ensure-AzureResourceProvider {
+function Register-AzureResourceProvider {
     <#
     .SYNOPSIS
     Ensures that an Azure resource provider is registered.
@@ -1095,7 +1095,7 @@ if (-not $PSCmdlet.ShouldProcess(
     return
 }
 
-Ensure-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
 
 #endregion Azure context and confirmation
 
