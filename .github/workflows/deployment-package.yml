@@ -1,0 +1,48 @@
+name: Build deployment package
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name Pester | Where-Object Version -ge '5.0.0')) {
+            Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
+          }
+
+      - name: Run tests
+        shell: pwsh
+        run: Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
+
+      - name: Build deployment package
+        id: package
+        shell: pwsh
+        run: |
+          $package = ./scripts/New-DeploymentPackage.ps1
+          "path=$($package.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($package.BaseName)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30

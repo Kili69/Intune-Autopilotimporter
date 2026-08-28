@@ -216,6 +216,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$setupLogPath = Join-Path ([IO.Path]::GetTempPath()) `
+    "Intune-Autopilotimport-install-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N')).log"
+Start-Transcript `
+    -LiteralPath $setupLogPath `
+    -IncludeInvocationHeader `
+    -WhatIf:$false `
+    -Force | Out-Null
+$setupTranscriptActive = $true
+Write-Host "Setup log: $setupLogPath"
+
+try {
 $projectRoot = $PSScriptRoot
 $templatePath = Join-Path $projectRoot 'infra\main.bicep'
 $grantScriptPath = Join-Path $projectRoot 'scripts\Grant-ManagedIdentityGraphPermission.ps1'
@@ -461,6 +472,9 @@ function Install-AutopilotClientTools {
     .PARAMETER ClientSettingsJson
     Installation-derived client configuration written beside the client module.
 
+    .PARAMETER PackageDestinationPath
+    Directory in which the portable PowerShell module ZIP is created.
+
     .OUTPUTS
     System.String. Full path to the installed client.settings.json file.
     #>
@@ -472,7 +486,10 @@ function Install-AutopilotClientTools {
         [string] $ProjectRoot,
 
         [Parameter(Mandatory)]
-        [string] $ClientSettingsJson
+        [string] $ClientSettingsJson,
+
+        [Parameter(Mandatory)]
+        [string] $PackageDestinationPath
     )
 
     $destinationRoot = [IO.Path]::GetFullPath($DestinationPath)
@@ -529,8 +546,13 @@ function Install-AutopilotClientTools {
         } |
         Remove-Item -Recurse -Force
 
-    $modulePackagePath = Join-Path $destinationRoot `
-        "AutopilotImport.Client-$($clientModuleManifest.ModuleVersion).zip"
+    $packageDestinationRoot = [IO.Path]::GetFullPath($PackageDestinationPath)
+    [void] (New-Item `
+        -Path $packageDestinationRoot `
+        -ItemType Directory `
+        -Force)
+    $modulePackagePath = Join-Path $packageDestinationRoot `
+        "Intune-Autopilotimport-psmodule-$($clientModuleManifest.ModuleVersion).zip"
     Compress-Archive `
         -LiteralPath $clientModuleRoot `
         -DestinationPath $modulePackagePath `
@@ -673,6 +695,89 @@ function Format-AzureDeploymentError {
     }
     catch {
         return $ErrorObject | Format-List * -Force | Out-String
+    }
+}
+
+function Test-AzurePermissionPattern {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Action,
+
+        [Parameter(Mandatory)]
+        [string] $Pattern
+    )
+
+    $expression = '^' + [regex]::Escape($Pattern).Replace('\*', '.*') + '$'
+    return $Action -match $expression
+}
+
+function Assert-AzureDeploymentPermissions {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [string] $ResourceGroupName,
+
+        [switch] $ResourceGroupExists
+    )
+
+    $scope = if ($ResourceGroupExists) {
+        "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
+    }
+    else {
+        "/subscriptions/$SubscriptionId"
+    }
+    $requiredActions = @(
+        'Microsoft.Resources/deployments/write'
+        'Microsoft.Storage/storageAccounts/write'
+        'Microsoft.Storage/storageAccounts/blobServices/write'
+        'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.Insights/components/write'
+        'Microsoft.Web/serverfarms/write'
+        'Microsoft.Web/sites/write'
+        'Microsoft.Web/sites/config/write'
+        'Microsoft.Authorization/roleAssignments/write'
+    )
+    if (-not $ResourceGroupExists) {
+        $requiredActions += 'Microsoft.Resources/subscriptions/resourceGroups/write'
+    }
+
+    $permissionsResponse = try {
+        Invoke-AzRestMethod `
+            -Method GET `
+            -Path "$scope/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
+    }
+    catch {
+        Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+    }
+    if ($permissionsResponse.StatusCode -ge 400) {
+        Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+    }
+
+    $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
+    $missingActions = @($requiredActions | Where-Object {
+        $requiredAction = $_
+        -not ($permissionSets | Where-Object {
+            $permission = $_
+            $isAllowed = @($permission.actions | Where-Object {
+                Test-AzurePermissionPattern `
+                    -Action $requiredAction `
+                    -Pattern ([string] $_)
+            }).Count -gt 0
+            $isExcluded = @($permission.notActions | Where-Object {
+                Test-AzurePermissionPattern `
+                    -Action $requiredAction `
+                    -Pattern ([string] $_)
+            }).Count -gt 0
+            $isAllowed -and -not $isExcluded
+        } | Select-Object -First 1)
+    })
+    if ($missingActions.Count -gt 0) {
+        Write-Verbose "Missing Azure deployment actions at '$scope': $($missingActions -join ', ')"
+        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
     }
 }
 
@@ -951,6 +1056,15 @@ catch {
         -TenantId $TenantId
 }
 
+Write-Host 'Validating Azure deployment permissions...'
+$existingResourceGroup = Get-AzResourceGroup `
+    -Name $ResourceGroupName `
+    -ErrorAction SilentlyContinue
+Assert-AzureDeploymentPermissions `
+    -SubscriptionId $SubscriptionId `
+    -ResourceGroupName $ResourceGroupName `
+    -ResourceGroupExists:($null -ne $existingResourceGroup)
+
 Write-Host "`nRequested installation" -ForegroundColor Cyan
 Write-Host "  Subscription : $($subscription.Name) ($SubscriptionId)"
 Write-Host "  Tenant       : $TenantId"
@@ -1122,11 +1236,12 @@ Set-Content `
 $installedClientSettingsPath = Install-AutopilotClientTools `
     -DestinationPath $ClientToolsPath `
     -ProjectRoot $projectRoot `
-    -ClientSettingsJson $clientSettings
+    -ClientSettingsJson $clientSettings `
+    -PackageDestinationPath $documentsPath
 $installedClientModuleVersion = Split-Path $installedClientSettingsPath -Parent |
     Split-Path -Leaf
-$clientModulePackagePath = Join-Path ([IO.Path]::GetFullPath($ClientToolsPath)) `
-    "AutopilotImport.Client-$installedClientModuleVersion.zip"
+$clientModulePackagePath = Join-Path ([IO.Path]::GetFullPath($documentsPath)) `
+    "Intune-Autopilotimport-psmodule-$installedClientModuleVersion.zip"
 Write-Host "Installed AutopilotImport.Client, compatibility scripts, and defaults in '$ClientToolsPath'."
 Write-Host "Created portable PowerShell module package '$clientModulePackagePath'."
 Write-Host 'Extract the archive into a directory listed in $env:PSModulePath to use its commands through module autoloading.'
@@ -1257,6 +1372,7 @@ $result = [pscustomobject]@{
     InstalledClientSettingsPath = $installedClientSettingsPath
     ClientModulePackagePath = $clientModulePackagePath
     ClientToolsPath         = [IO.Path]::GetFullPath($ClientToolsPath)
+    SetupLogPath            = $setupLogPath
 }
 
 Write-Host "`nInstallation completed." -ForegroundColor Green
@@ -1264,3 +1380,39 @@ $result | Format-List
 $result
 
 #endregion Result
+}
+catch {
+    $errorDetails = @(
+        "Timestamp: $(Get-Date -Format 'o')"
+        "Script: $PSCommandPath"
+        "Message: $($_.Exception.Message)"
+        'Error record:'
+        ($_ | Format-List * -Force | Out-String)
+        'Exception:'
+        ($_.Exception | Format-List * -Force | Out-String)
+        'Script stack trace:'
+        $_.ScriptStackTrace
+    ) -join [Environment]::NewLine
+    if ($setupTranscriptActive) {
+        Stop-Transcript -WhatIf:$false | Out-Null
+        $setupTranscriptActive = $false
+    }
+    Add-Content `
+        -LiteralPath $setupLogPath `
+        -Value $errorDetails `
+        -WhatIf:$false `
+        -Encoding utf8
+    Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
+        -ErrorAction Continue
+    if ($errorDetails -match `
+        'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
+        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
+    }
+    throw
+}
+finally {
+    if ($setupTranscriptActive) {
+        Stop-Transcript -WhatIf:$false | Out-Null
+        $setupTranscriptActive = $false
+    }
+}

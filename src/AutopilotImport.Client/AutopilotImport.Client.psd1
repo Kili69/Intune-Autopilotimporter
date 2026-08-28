@@ -9,6 +9,7 @@
     Description       = 'Client commands for the secured Windows Autopilot import Function.'
     PowerShellVersion = '7.2'
     FunctionsToExport = @(
+        'New-AutopilotClientConfiguration'
         'Import-AutopilotDevice'
         'Get-AutopilotImportStatus'
         'Get-AutopilotTagPolicy'

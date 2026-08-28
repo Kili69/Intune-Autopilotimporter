@@ -237,6 +237,156 @@ function Get-CoreModulePath {
     return $modulePath
 }
 
+function New-AutopilotClientConfiguration {
+    <#
+    .SYNOPSIS
+    Creates client.settings.json for an existing Autopilot Import deployment.
+
+    .DESCRIPTION
+    Connects to the specified Azure subscription and reads the Function App's
+    Easy Auth configuration to determine the API application ID URI. It then
+    creates a complete client.settings.json in the current directory or an
+    optional output directory.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the deployed Function App.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the deployed Function App.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant containing the API application.
+
+    .PARAMETER FunctionAppName
+    Name of the deployed Function App.
+
+    .PARAMETER OutputPath
+    Directory in which client.settings.json is created. The default is the
+    current directory.
+
+    .PARAMETER Force
+    Replaces an existing client.settings.json in the output directory.
+
+    .EXAMPLE
+    New-AutopilotClientConfiguration `
+        -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+        -ResourceGroupName 'rg-autopilot-import' `
+        -TenantId '11111111-1111-1111-1111-111111111111' `
+        -FunctionAppName 'func-autopilot-import'
+
+    Creates client.settings.json in the current directory.
+
+    .EXAMPLE
+    New-AutopilotClientConfiguration `
+        -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+        -ResourceGroupName 'rg-autopilot-import' `
+        -TenantId '11111111-1111-1111-1111-111111111111' `
+        -FunctionAppName 'func-autopilot-import' `
+        -OutputPath 'C:\AutopilotImport' `
+        -Force
+
+    Creates or replaces C:\AutopilotImport\client.settings.json.
+
+    .OUTPUTS
+    System.IO.FileInfo. Returns the created client.settings.json file.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateScript({ [guid]::TryParse($_, [ref] ([guid]::Empty)) })]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $ResourceGroupName,
+
+        [Parameter(Mandatory)]
+        [ValidateScript({ [guid]::TryParse($_, [ref] ([guid]::Empty)) })]
+        [string] $TenantId,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $FunctionAppName,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $OutputPath = (Get-Location).Path,
+
+        [switch] $Force
+    )
+
+    Assert-ClientCommand -Name @(
+        'Get-AzContext'
+        'Connect-AzAccount'
+        'Set-AzContext'
+        'Invoke-AzRestMethod'
+    )
+
+    $context = Get-AzContext -ErrorAction SilentlyContinue
+    if (-not $context -or
+        [string] $context.Subscription.Id -ne $SubscriptionId -or
+        [string] $context.Tenant.Id -ne $TenantId) {
+        Connect-AzAccount `
+            -Tenant $TenantId `
+            -Subscription $SubscriptionId | Out-Null
+    }
+    Set-AzContext `
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId | Out-Null
+
+    $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
+    $authenticationResponse = Invoke-AzRestMethod `
+        -Method GET `
+        -Path "$resourceId/config/authsettingsV2?api-version=2023-12-01"
+    if ($authenticationResponse.StatusCode -ge 400) {
+        throw "Unable to read Easy Auth settings for Function App '$FunctionAppName'."
+    }
+
+    $authentication = $authenticationResponse.Content | ConvertFrom-Json
+    $azureAdConfiguration = `
+        $authentication.properties.identityProviders.azureActiveDirectory
+    $clientId = [string] $azureAdConfiguration.registration.clientId
+    $apiApplicationIdUri = [string] @(
+        $azureAdConfiguration.validation.allowedAudiences |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string] $_) -and
+                [string] $_ -ne $clientId
+            } |
+            Select-Object -First 1
+    )[0]
+    if ([string]::IsNullOrWhiteSpace($apiApplicationIdUri) -and
+        -not [string]::IsNullOrWhiteSpace($clientId)) {
+        $apiApplicationIdUri = "api://$clientId"
+    }
+    if ([string]::IsNullOrWhiteSpace($apiApplicationIdUri)) {
+        throw "Function App '$FunctionAppName' does not contain an API application ID URI in its Easy Auth settings."
+    }
+
+    $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
+    $settingsPath = Join-Path $resolvedOutputPath 'client.settings.json'
+    if ((Test-Path -LiteralPath $settingsPath) -and -not $Force) {
+        throw "Client configuration '$settingsPath' already exists. Use -Force to replace it."
+    }
+    if (-not $PSCmdlet.ShouldProcess($settingsPath, 'Create client configuration')) {
+        return
+    }
+
+    New-Item -Path $resolvedOutputPath -ItemType Directory -Force | Out-Null
+    [ordered]@{
+        functionUrl            = "https://$FunctionAppName.azurewebsites.net/api/devices/import"
+        managementUrl          = "https://$FunctionAppName.azurewebsites.net/api/management/tag-policy"
+        apiApplicationIdUri    = $apiApplicationIdUri
+        tenantId               = $TenantId
+        subscriptionId         = $SubscriptionId
+        resourceGroupName      = $ResourceGroupName
+        functionAppName        = $FunctionAppName
+    } | ConvertTo-Json | Set-Content `
+        -LiteralPath $settingsPath `
+        -Encoding utf8NoBOM
+
+    Write-Warning "Copy '$settingsPath' to '$PSScriptRoot\client.settings.json' so the AutopilotImport.Client module uses it by default."
+    Get-Item -LiteralPath $settingsPath
+}
+
 function Import-AutopilotDevice {
     <#
     .SYNOPSIS
@@ -611,6 +761,7 @@ function Remove-AutopilotTagPolicyManager {
 }
 
 Export-ModuleMember -Function @(
+    'New-AutopilotClientConfiguration',
     'Import-AutopilotDevice',
     'Get-AutopilotImportStatus',
     'Get-AutopilotTagPolicy',

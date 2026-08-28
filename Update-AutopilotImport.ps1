@@ -23,6 +23,10 @@ Client package destination. By default, it is derived from ConfigPath.
 .PARAMETER InstallMissingModules
 Allows the installer to install missing PowerShell and Bicep prerequisites.
 
+.PARAMETER Force
+Runs the Azure update without prompting for execution confirmation. WhatIf
+still takes precedence and does not perform the update.
+
 .PARAMETER SkipEntraAppConfiguration
 Skips Entra application configuration during the update.
 
@@ -44,6 +48,11 @@ Updates the deployment referenced by the newest installed client package.
 .\Update-AutopilotImport.ps1 -WhatIf
 
 Displays the resolved deployment and installer plan without changing it.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 -Force
+
+Updates the deployment without prompting for execution confirmation.
 
 .EXAMPLE
 .\Update-AutopilotImport.ps1 `
@@ -72,6 +81,8 @@ param(
 
     [switch] $InstallMissingModules,
 
+    [switch] $Force,
+
     [switch] $SkipEntraAppConfiguration,
 
     [switch] $SkipGraphPermission,
@@ -84,6 +95,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$setupLogPath = Join-Path ([IO.Path]::GetTempPath()) `
+    "Intune-Autopilotimport-update-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N')).log"
+Start-Transcript `
+    -LiteralPath $setupLogPath `
+    -IncludeInvocationHeader `
+    -WhatIf:$false `
+    -Force | Out-Null
+$setupTranscriptActive = $true
+Write-Host "Setup log: $setupLogPath"
+
+try {
 #region Update discovery helpers
 
 function Resolve-AutopilotUpdateConfigPath {
@@ -240,6 +262,121 @@ function Get-UpdateRestrictedManagementAdministrativeUnitName {
     return $names | Select-Object -First 1
 }
 
+function Assert-AutopilotAppSettingsResponse {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Response
+    )
+
+    if ($Response.StatusCode -lt 400) {
+        return
+    }
+
+    $responseError = $Response.Content | ConvertFrom-Json
+    Write-Verbose "Function App settings lookup failed: $($responseError.error.message)"
+    throw 'Unable to read the Function App settings. Grant the updating account the Microsoft.Web/sites/config/list/action permission and try again. Run with -Verbose for details.'
+}
+
+function Test-AzurePermissionPattern {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Action,
+
+        [Parameter(Mandatory)]
+        [string] $Pattern
+    )
+
+    $expression = '^' + [regex]::Escape($Pattern).Replace('\*', '.*') + '$'
+    return $Action -match $expression
+}
+
+function Assert-AzureUpdatePermissions {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [string] $ResourceGroupName
+    )
+
+    $scope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
+    $requiredActions = @(
+        'Microsoft.Resources/deployments/write'
+        'Microsoft.Storage/storageAccounts/write'
+        'Microsoft.Storage/storageAccounts/blobServices/write'
+        'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.Insights/components/write'
+        'Microsoft.Web/serverfarms/write'
+        'Microsoft.Web/sites/write'
+        'Microsoft.Web/sites/config/write'
+        'Microsoft.Authorization/roleAssignments/write'
+    )
+    $permissionsResponse = try {
+        Invoke-AzRestMethod `
+            -Method GET `
+            -Path "$scope/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
+    }
+    catch {
+        Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+    }
+    if ($permissionsResponse.StatusCode -ge 400) {
+        Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+    }
+
+    $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
+    $missingActions = @($requiredActions | Where-Object {
+        $requiredAction = $_
+        -not ($permissionSets | Where-Object {
+            $permission = $_
+            $isAllowed = @($permission.actions | Where-Object {
+                Test-AzurePermissionPattern `
+                    -Action $requiredAction `
+                    -Pattern ([string] $_)
+            }).Count -gt 0
+            $isExcluded = @($permission.notActions | Where-Object {
+                Test-AzurePermissionPattern `
+                    -Action $requiredAction `
+                    -Pattern ([string] $_)
+            }).Count -gt 0
+            $isAllowed -and -not $isExcluded
+        } | Select-Object -First 1)
+    })
+    if ($missingActions.Count -gt 0) {
+        $missingCapabilities = @($missingActions | ForEach-Object {
+            switch ($_) {
+                'Microsoft.Resources/deployments/write' { 'ARM deployments' }
+                'Microsoft.Storage/storageAccounts/write' { 'Storage accounts' }
+                'Microsoft.Storage/storageAccounts/blobServices/write' { 'Blob services' }
+                'Microsoft.Storage/storageAccounts/blobServices/containers/write' { 'Blob containers' }
+                'Microsoft.Insights/components/write' { 'Application Insights' }
+                'Microsoft.Web/serverfarms/write' { 'App Service plans' }
+                'Microsoft.Web/sites/write' { 'Function Apps' }
+                'Microsoft.Web/sites/config/write' { 'Function App configuration' }
+                'Microsoft.Authorization/roleAssignments/write' { 'Azure role assignments' }
+            }
+        } | Select-Object -Unique)
+        $roleAssignmentMissing = $missingActions -contains `
+            'Microsoft.Authorization/roleAssignments/write'
+        $requiredRoles = if ($roleAssignmentMissing) {
+            'Owner, or Contributor plus Role Based Access Control Administrator or User Access Administrator'
+        }
+        else {
+            'Contributor or Owner'
+        }
+        $permissionDetails = "Azure update stopped before deployment. Target scope: $scope. Missing Azure actions: $($missingActions -join ', '). Assign $requiredRoles at this resource group or its subscription. After the assignment becomes effective, run Connect-AzAccount again and rerun the update."
+        Write-Verbose $permissionDetails
+        $permissionException = [UnauthorizedAccessException]::new(
+            "Missing Azure permissions for: $($missingCapabilities -join ', ')."
+        )
+        $permissionException.Data['AutopilotUpdatePermissionError'] = $true
+        $permissionException.Data['PermissionDetails'] = $permissionDetails
+        throw $permissionException
+    }
+}
+
 #endregion Update discovery helpers
 
 #region Resolve installed deployment
@@ -296,8 +433,10 @@ Import-Module 'Az.Accounts' -ErrorAction Stop
 
 Import-Module $clientModulePath -Force
 $policyResponse = Get-AutopilotTagPolicy -ConfigPath $resolvedConfigPath
-$tagAuthorizationRules = ConvertTo-UpdateTagAuthorizationRules `
-    -Policy @($policyResponse.policy)
+$tagAuthorizationRules = @(
+    ConvertTo-UpdateTagAuthorizationRules `
+        -Policy @($policyResponse.policy)
+)
 $restrictedManagementAdministrativeUnitName = `
     Get-UpdateRestrictedManagementAdministrativeUnitName `
         -Policy @($policyResponse.policy)
@@ -319,6 +458,11 @@ Set-AzContext `
     -Subscription $settings.subscriptionId `
     -WhatIf:$false | Out-Null
 
+Write-Host 'Validating Azure update permissions...'
+Assert-AzureUpdatePermissions `
+    -SubscriptionId $settings.subscriptionId `
+    -ResourceGroupName $settings.resourceGroupName
+
 $resourceId = "/subscriptions/$($settings.subscriptionId)/resourceGroups/$($settings.resourceGroupName)/providers/Microsoft.Web/sites/$($settings.functionAppName)"
 $siteResponse = Invoke-AzRestMethod `
     -Method GET `
@@ -335,10 +479,7 @@ $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
     -WhatIf:$false
-if ($appSettingsResponse.StatusCode -ge 400) {
-    $appSettingsError = $appSettingsResponse.Content | ConvertFrom-Json
-    throw "Function App settings lookup failed. Updating while preserving manager configuration requires Microsoft.Web/sites/config/list/action. $($appSettingsError.error.message)"
-}
+Assert-AutopilotAppSettingsResponse -Response $appSettingsResponse
 $appSettings = $appSettingsResponse.Content | ConvertFrom-Json
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
@@ -397,10 +538,52 @@ if ($WhatIfPreference) {
     & $installerPath @installerParameters -WhatIf
     return
 }
-if (-not $PSCmdlet.ShouldProcess($target, 'Update Autopilot Import deployment')) {
+if (-not $Force -and
+    -not $PSCmdlet.ShouldProcess($target, 'Update Autopilot Import deployment')) {
     return
 }
 
 & $installerPath @installerParameters -Confirm:$false
 
 #endregion Invoke idempotent installer
+}
+catch {
+    $isUpdatePermissionError = `
+        $_.Exception.Data['AutopilotUpdatePermissionError'] -eq $true
+    $errorDetails = @(
+        "Timestamp: $(Get-Date -Format 'o')"
+        "Script: $PSCommandPath"
+        "Message: $($_.Exception.Message)"
+        if ($isUpdatePermissionError) {
+            "Permission details: $($_.Exception.Data['PermissionDetails'])"
+        }
+        'Error record:'
+        ($_ | Format-List * -Force | Out-String)
+        'Exception:'
+        ($_.Exception | Format-List * -Force | Out-String)
+        'Script stack trace:'
+        $_.ScriptStackTrace
+    ) -join [Environment]::NewLine
+    if ($setupTranscriptActive) {
+        Stop-Transcript -WhatIf:$false | Out-Null
+        $setupTranscriptActive = $false
+    }
+    Add-Content `
+        -LiteralPath $setupLogPath `
+        -Value $errorDetails `
+        -WhatIf:$false `
+        -Encoding utf8
+    if ($isUpdatePermissionError) {
+        Write-Error $_.Exception.Message -ErrorAction Continue
+        return
+    }
+    Write-Error "Update failed. Detailed error information was written to '$setupLogPath'." `
+        -ErrorAction Continue
+    throw
+}
+finally {
+    if ($setupTranscriptActive) {
+        Stop-Transcript -WhatIf:$false | Out-Null
+        $setupTranscriptActive = $false
+    }
+}

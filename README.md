@@ -268,7 +268,7 @@ After the Azure resources are deployed, the installer creates a portable client 
 The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module loads these values automatically, while
 explicitly supplied parameters take precedence. The scripts are thin compatibility wrappers over the module commands.
 
-The installer also creates `AutopilotImport.Client-<version>.zip` in the client tools directory. The ZIP contains the versioned module and its `client.settings.json`, with the folder layout required by PowerShell module autoloading. Transfer the archive to another computer and extract it into the current user's PowerShell module directory:
+During installation and update, the installer creates `Intune-Autopilotimport-psmodule-<version>.zip` in the current user's Documents directory. An existing archive with the same version is replaced. The ZIP contains the current versioned PowerShell modules and `client.settings.json`, with the folder layout required by PowerShell module autoloading. Transfer the archive to another computer and extract it into the current user's PowerShell module directory:
 
 ```powershell
 $moduleRoot = Join-Path `
@@ -276,12 +276,16 @@ $moduleRoot = Join-Path `
     'PowerShell\Modules'
 New-Item -Path $moduleRoot -ItemType Directory -Force | Out-Null
 Expand-Archive `
-    -LiteralPath '.\AutopilotImport.Client-<version>.zip' `
+    -LiteralPath (Join-Path `
+        ([Environment]::GetFolderPath('MyDocuments')) `
+        'Intune-Autopilotimport-psmodule-<version>.zip') `
     -DestinationPath $moduleRoot `
     -Force
 ```
 
 After extraction, commands such as `Import-AutopilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
+
+Each installation writes an activity transcript to the current user's temporary directory. The file name uses the pattern `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log`. The console displays the full path when setup starts. If installation stops with an error, the transcript is closed before the log is extended with the complete PowerShell error record, exception properties, and script stack trace.
 
 Import the newest installed module version from a custom tools directory:
 
@@ -293,10 +297,32 @@ $module = Get-ChildItem `
 Import-Module $module.FullName
 ```
 
-The module exports `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
+The module exports `New-AutopilotClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
 `Get-AutopilotTagPolicy`,
 `Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
 `Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
+
+If `client.settings.json` is missing for an existing deployment, create it with
+the client module:
+
+```powershell
+New-AutopilotClientConfiguration `
+    -SubscriptionId '<Subscription-ID>' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -TenantId '<Tenant-ID>' `
+    -FunctionAppName '<Function-App-Name>'
+```
+
+By default, the file is created as `client.settings.json` in the current
+directory. Use `-OutputPath 'C:\Configuration'` to select another directory,
+and `-Force` to replace an existing file. The command reads the API Application
+ID URI from the deployed Function App's Easy Auth configuration and prints the
+module directory into which the file must be copied. The final file must be
+named `client.settings.json` next to `AutopilotImport.Client.psm1`, normally at:
+
+```text
+Documents\PowerShell\Modules\AutopilotImport.Client\<version>\client.settings.json
+```
 
 The installer prompts for:
 
@@ -419,6 +445,14 @@ Apply the update:
 .\Update-AutopilotImport.ps1
 ```
 
+To run the update without the execution confirmation, use `-Force`:
+
+```powershell
+.\Update-AutopilotImport.ps1 -Force
+```
+
+`-WhatIf` still takes precedence when combined with `-Force` and does not perform the update.
+
 By default, the script selects the newest installed `client.settings.json` under `Documents\PowerShell\Scripts\AutopilotImport`. Select another installed deployment explicitly when required:
 
 ```powershell
@@ -429,8 +463,25 @@ By default, the script selects the newest installed `client.settings.json` under
 The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and the versioned client package.
 
-The updating administrator needs the same Azure and Entra permissions as an installer. Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure
-`Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
+Each invocation creates a new log file. An update writes its activity to `Intune-Autopilotimport-update-<timestamp>-<unique-id>.log`, and the installer invoked by the update writes its own `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log` in the current user's temporary directory. If either script stops with an error, its transcript is closed before detailed error and stack information is appended to avoid file-lock conflicts.
+
+The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `Role Based Access Control Administrator` or `User Access Administrator`, because the Bicep template also maintains Storage role assignments. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
+
+Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
+
+#### Deployment Package
+
+GitHub Actions builds a versioned deployment package for every push to `main` and every pull request targeting `main`. The workflow runs the Pester suite first and then publishes `Intune-Autopilotimport-deployment-<version>` as a workflow artifact with a retention period of 30 days. The downloaded artifact contains the ZIP file of the same name.
+
+The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
+
+The workflow is prepared on `dev` but normal pushes to `dev` do not run it. It can be tested there manually with the GitHub Actions `workflow_dispatch` trigger or built locally:
+
+```powershell
+.\scripts\New-DeploymentPackage.ps1
+```
+
+The local package is written to `artifacts\Intune-Autopilotimport-deployment-<version>.zip` by default.
 
 #### Manual Bicep Deployment
 
@@ -588,6 +639,117 @@ The configuration must contain these values:
 Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in a centrally managed location and pass its path with `-ConfigPath`. When the script remains in the repository layout under `scripts`, its default is the repository-root `client.settings.json`. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which is useful when one PC targets multiple environments.
 
 The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
+
+## Troubleshooting
+
+### PowerShell Module or Client Configuration Does Not Work
+
+Run all commands in PowerShell 7 (`pwsh`), not Windows PowerShell 5.1. Confirm
+the active version first:
+
+```powershell
+$PSVersionTable.PSVersion
+```
+
+The major version must be `7`, and the version must be `7.2` or later. Check
+whether PowerShell can find the client module and which version it selects:
+
+```powershell
+$module = Get-Module -ListAvailable AutopilotImport.Client |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+$module | Format-List Name, Version, ModuleBase, Path
+```
+
+If no module is returned, extract the portable client package into a
+PowerShell 7 module directory. For a per-user installation, the resulting
+layout must be:
+
+```text
+Documents\PowerShell\Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psd1
+Documents\PowerShell\Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psm1
+Documents\PowerShell\Modules\AutopilotImport.Client\<version>\AutopilotImport.psm1
+Documents\PowerShell\Modules\AutopilotImport.Client\<version>\client.settings.json
+```
+
+Inspect the active module paths if the module is installed elsewhere:
+
+```powershell
+$env:PSModulePath -split [IO.Path]::PathSeparator
+```
+
+When the module exists but commands are missing or an older version is loaded,
+remove the loaded copy and import the newest manifest explicitly:
+
+```powershell
+Remove-Module AutopilotImport.Client -Force -ErrorAction SilentlyContinue
+Import-Module $module.Path -Force -Verbose
+Get-Command -Module AutopilotImport.Client
+```
+
+Install the required authentication dependency when `Get-AzContext`,
+`Connect-AzAccount`, or `Get-AzAccessToken` is unavailable:
+
+```powershell
+Install-Module Az.Accounts `
+    -Scope CurrentUser `
+    -Repository PSGallery `
+    -Force
+```
+
+The default configuration must be named `client.settings.json` and must be in
+the same directory as `AutopilotImport.Client.psm1`. Check the file selected by
+the newest module version:
+
+```powershell
+$settingsPath = Join-Path $module.ModuleBase 'client.settings.json'
+Test-Path $settingsPath
+Get-Content $settingsPath -Raw | ConvertFrom-Json |
+    Format-List functionUrl, managementUrl, apiApplicationIdUri, tenantId,
+        subscriptionId, resourceGroupName, functionAppName
+```
+
+If the file is missing, invalid JSON, or points to the wrong Function App,
+recreate it from the deployed Azure resources. The signed-in account must be
+able to read the Function App's Easy Auth configuration:
+
+```powershell
+$createdSettings = New-AutopilotClientConfiguration `
+    -SubscriptionId '<Subscription-ID>' `
+    -ResourceGroupName '<Resource-Group-Name>' `
+    -TenantId '<Tenant-ID>' `
+    -FunctionAppName '<Function-App-Name>' `
+    -OutputPath $PWD `
+    -Force
+
+Copy-Item `
+    -LiteralPath $createdSettings.FullName `
+    -Destination $module.ModuleBase `
+    -Force
+```
+
+After replacing the configuration, reload the module so subsequent commands
+use the new file:
+
+```powershell
+Remove-Module AutopilotImport.Client -Force -ErrorAction SilentlyContinue
+Import-Module $module.Path -Force
+```
+
+To test a configuration before copying it into the module directory, pass it
+explicitly to a read-only command:
+
+```powershell
+Get-AutopilotTagPolicy -ConfigPath $createdSettings.FullName
+```
+
+If multiple module versions are installed, each version has its own
+`client.settings.json`. Update the directory reported by `$module.ModuleBase`,
+or remove obsolete versions to prevent PowerShell from loading an unexpected
+configuration. Do not place `client.settings.json.example` in the module
+directory without replacing all placeholder values and renaming it to
+`client.settings.json`.
 
 ## Developer Information
 

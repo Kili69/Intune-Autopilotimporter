@@ -108,6 +108,127 @@ Describe 'Client import result metadata' {
     }
 }
 
+Describe 'Client configuration creation' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+    }
+
+    BeforeEach {
+        Mock Get-AzContext -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Subscription = [pscustomobject]@{
+                    Id = '11111111-1111-1111-1111-111111111111'
+                }
+                Tenant = [pscustomobject]@{
+                    Id = '22222222-2222-2222-2222-222222222222'
+                }
+            }
+        }
+        Mock Connect-AzAccount -ModuleName AutopilotImport.Client
+        Mock Set-AzContext -ModuleName AutopilotImport.Client
+        Mock Invoke-AzRestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    properties = @{
+                        identityProviders = @{
+                            azureActiveDirectory = @{
+                                registration = @{
+                                    clientId = '33333333-3333-3333-3333-333333333333'
+                                }
+                                validation = @{
+                                    allowedAudiences = @(
+                                        'api://33333333-3333-3333-3333-333333333333'
+                                        '33333333-3333-3333-3333-333333333333'
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } | ConvertTo-Json -Depth 8
+            }
+        }
+    }
+
+    It 'creates client.settings.json in an optional directory' {
+        $outputPath = Join-Path $TestDrive 'configuration'
+        $warnings = @()
+        $settingsFile = New-AutopilotClientConfiguration `
+            -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+            -ResourceGroupName 'rg-autopilot-import' `
+            -TenantId '22222222-2222-2222-2222-222222222222' `
+            -FunctionAppName 'func-autopilot-import' `
+            -OutputPath $outputPath `
+            -WarningVariable warnings
+
+        $settingsFile.FullName | Should -Be `
+            (Join-Path $outputPath 'client.settings.json')
+        $settings = Get-Content -LiteralPath $settingsFile.FullName -Raw |
+            ConvertFrom-Json
+        $settings.functionUrl | Should -Be `
+            'https://func-autopilot-import.azurewebsites.net/api/devices/import'
+        $settings.managementUrl | Should -Be `
+            'https://func-autopilot-import.azurewebsites.net/api/management/tag-policy'
+        $settings.apiApplicationIdUri | Should -Be `
+            'api://33333333-3333-3333-3333-333333333333'
+        $settings.tenantId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $settings.subscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $settings.resourceGroupName | Should -Be 'rg-autopilot-import'
+        $settings.functionAppName | Should -Be 'func-autopilot-import'
+        $warnings | Out-String | Should -Match `
+            'AutopilotImport.Client.*client.settings.json'
+    }
+
+    It 'creates client.settings.json in the current directory by default' {
+        $currentDirectory = Join-Path $TestDrive 'current'
+        New-Item -Path $currentDirectory -ItemType Directory | Out-Null
+        Push-Location $currentDirectory
+        try {
+            $settingsFile = New-AutopilotClientConfiguration `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-autopilot-import' `
+                -TenantId '22222222-2222-2222-2222-222222222222' `
+                -FunctionAppName 'func-autopilot-import' `
+                -WarningAction SilentlyContinue
+
+            $settingsFile.FullName | Should -Be `
+                (Join-Path $currentDirectory 'client.settings.json')
+        }
+        finally {
+            Pop-Location
+        }
+
+        Should -Invoke Invoke-AzRestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'GET' -and
+                $Path -match '/resourceGroups/rg-autopilot-import/' -and
+                $Path -match '/sites/func-autopilot-import/config/authsettingsV2'
+            } `
+            -Times 1
+    }
+
+    It 'does not replace an existing client configuration without Force' {
+        $settingsPath = Join-Path $TestDrive 'client.settings.json'
+        'existing' | Set-Content -LiteralPath $settingsPath
+
+        {
+            New-AutopilotClientConfiguration `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-autopilot-import' `
+                -TenantId '22222222-2222-2222-2222-222222222222' `
+                -FunctionAppName 'func-autopilot-import' `
+                -OutputPath $TestDrive
+        } | Should -Throw '*already exists*Use -Force*'
+
+        Get-Content -LiteralPath $settingsPath -Raw | Should -BeLike 'existing*'
+    }
+}
+
 Describe 'Client import status metadata' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
@@ -592,9 +713,14 @@ Describe 'Installer client tools package' {
 
     It 'installs compatibility scripts and a versioned client module with defaults' {
         $destinationPath = Join-Path $TestDrive 'AutopilotImport'
+        $documentsPath = Join-Path $TestDrive 'Documents'
         $moduleVersion = [string] (Import-PowerShellDataFile `
             (Join-Path $projectRoot `
                 'src\AutopilotImport.Client\AutopilotImport.Client.psd1')).ModuleVersion
+        [void] (New-Item -Path $documentsPath -ItemType Directory -Force)
+        $modulePackagePath = Join-Path $documentsPath `
+            "Intune-Autopilotimport-psmodule-$moduleVersion.zip"
+        'outdated package' | Set-Content -LiteralPath $modulePackagePath
         $previousModulePath = Join-Path $destinationPath `
             'Modules\AutopilotImport.Client\1.0.20260812.1'
         [void] (New-Item -Path $previousModulePath -ItemType Directory -Force)
@@ -613,7 +739,8 @@ Describe 'Installer client tools package' {
         $settingsPath = Install-AutopilotClientTools `
             -DestinationPath $destinationPath `
             -ProjectRoot $projectRoot `
-            -ClientSettingsJson $settings
+            -ClientSettingsJson $settings `
+            -PackageDestinationPath $documentsPath
 
         $modulePath = Join-Path $destinationPath `
             "Modules\AutopilotImport.Client\$moduleVersion"
@@ -635,15 +762,29 @@ Describe 'Installer client tools package' {
             '33333333-3333-3333-3333-333333333333'
         $previousModulePath | Should -Not -Exist
 
-        $modulePackagePath = Join-Path $destinationPath `
-            "AutopilotImport.Client-$moduleVersion.zip"
         $modulePackagePath | Should -Exist
         $archive = [IO.Compression.ZipFile]::OpenRead($modulePackagePath)
         try {
             @($archive.Entries.FullName) | Should -Contain `
                 "AutopilotImport.Client/$moduleVersion/AutopilotImport.Client.psd1"
             @($archive.Entries.FullName) | Should -Contain `
+                "AutopilotImport.Client/$moduleVersion/AutopilotImport.Client.psm1"
+            @($archive.Entries.FullName) | Should -Contain `
+                "AutopilotImport.Client/$moduleVersion/AutopilotImport.psm1"
+            @($archive.Entries.FullName) | Should -Contain `
                 "AutopilotImport.Client/$moduleVersion/client.settings.json"
+            $settingsEntry = $archive.GetEntry(
+                "AutopilotImport.Client/$moduleVersion/client.settings.json")
+            $reader = [IO.StreamReader]::new($settingsEntry.Open())
+            try {
+                $archivedSettings = $reader.ReadToEnd() | ConvertFrom-Json
+                $archivedSettings.functionAppName | Should -Be 'func-test'
+                $archivedSettings.subscriptionId | Should -Be `
+                    '33333333-3333-3333-3333-333333333333'
+            }
+            finally {
+                $reader.Dispose()
+            }
         }
         finally {
             $archive.Dispose()
@@ -672,7 +813,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-        (Get-Command -Module AutopilotImport.Client).Count | Should -Be 7
+        (Get-Command -Module AutopilotImport.Client).Count | Should -Be 8
         Remove-Module AutopilotImport.Client
     }
 }
@@ -692,7 +833,10 @@ Describe 'Update script deployment discovery' {
                 'Resolve-AutopilotUpdateConfigPath',
                 'Get-AutopilotClientToolsPath',
                 'ConvertTo-UpdateTagAuthorizationRules',
-                'Get-UpdateRestrictedManagementAdministrativeUnitName'
+                'Get-UpdateRestrictedManagementAdministrativeUnitName',
+                'Assert-AutopilotAppSettingsResponse',
+                'Test-AzurePermissionPattern',
+                'Assert-AzureUpdatePermissions'
             )) {
             $functionAst = $updateAst.FindAll({
                 param($node)
@@ -731,6 +875,28 @@ Describe 'Update script deployment discovery' {
             '11111111-1111-1111-1111-111111111111=PAW-CSM,BG-Default'
     }
 
+    It 'keeps a single preserved installer rule as an array' {
+        $assignmentAst = $updateAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq '$tagAuthorizationRules'
+        }, $true) | Select-Object -Last 1
+
+        $assignmentAst.Extent.Text | Should -Match `
+            '(?s)\$tagAuthorizationRules\s*=\s*@\('
+    }
+
+    It 'supports forcing an update without an execution confirmation' {
+        $forceParameter = $updateAst.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'Force' }
+        $forceParameter.StaticType | Should -Be ([switch])
+
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)if\s*\(\s*-not\s+\$Force\s+-and\s+-not\s+\$PSCmdlet\.ShouldProcess'
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)if\s*\(\$WhatIfPreference\).*?return.*?if\s*\(\s*-not\s+\$Force'
+    }
+
     It 'supports an existing policy without RMAU metadata' {
         $policy = [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
@@ -751,6 +917,189 @@ Describe 'Update script deployment discovery' {
 
         Get-UpdateRestrictedManagementAdministrativeUnitName `
             -Policy $policy | Should -Be 'RMAU-Autopilot'
+    }
+
+    It 'reports a concise Function App settings permission error' {
+        $response = [pscustomobject]@{
+            StatusCode = 403
+            Content = @{
+                error = @{
+                    message = "The client 'user@example.com' with object id '1234' does not have authorization."
+                }
+            } | ConvertTo-Json
+        }
+
+        $errorRecord = {
+            Assert-AutopilotAppSettingsResponse -Response $response
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Microsoft.Web/sites/config/list/action permission'
+        $errorRecord.Exception.Message | Should -Not -Match 'user@example.com|1234'
+    }
+
+    It 'shows Function App settings response details only with Verbose' {
+        $response = [pscustomobject]@{
+            StatusCode = 403
+            Content = @{
+                error = @{
+                    message = "The client 'user@example.com' with object id '1234' does not have authorization."
+                }
+            } | ConvertTo-Json
+        }
+
+        $verboseOutput = try {
+            Assert-AutopilotAppSettingsResponse -Response $response -Verbose 4>&1
+        }
+        catch {
+        }
+
+        $verboseOutput | Out-String | Should -Match 'user@example.com|1234'
+    }
+
+    It 'reports only missing Azure capabilities without Verbose' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @(
+                            'Microsoft.Resources/*'
+                            'Microsoft.Authorization/*'
+                        )
+                        notActions = @()
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test'
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Be `
+            'Missing Azure permissions for: Storage accounts, Blob services, Blob containers, Application Insights, App Service plans, Function Apps, Function App configuration.'
+        $errorRecord.Exception.Message | Should -Not -Match `
+            'subscriptions|Microsoft\.|Assign|Connect-AzAccount'
+        $errorRecord.Exception.Data['AutopilotUpdatePermissionError'] |
+            Should -BeTrue
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
+            '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-test'
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
+            'Assign Contributor or Owner'
+    }
+
+    It 'requires an additional role administrator when role assignments are missing' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('Microsoft.Resources/*')
+                        notActions = @()
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test'
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
+            'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+    }
+}
+
+Describe 'Azure deployment permission validation' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        foreach ($functionName in @(
+                'Test-AzurePermissionPattern'
+                'Assert-AzureDeploymentPermissions'
+            )) {
+            $functionAst = $installerAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
+    It 'accepts wildcard permissions at the resource group scope' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('*')
+                        notActions = @()
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -ResourceGroupExists
+        } | Should -Not -Throw
+
+        Should -Invoke Invoke-AzRestMethod -ParameterFilter {
+            $Path -match '/resourceGroups/rg-test/providers/Microsoft.Authorization/permissions'
+        }
+    }
+
+    It 'rejects permissions excluded through NotActions' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('*')
+                        notActions = @('Microsoft.Authorization/*')
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -ResourceGroupExists
+        } | Should -Throw '*Azure deployment permissions are insufficient*'
+    }
+
+    It 'uses a concise error when permissions cannot be queried' {
+        Mock Invoke-AzRestMethod {
+            throw "AuthorizationFailed for client 'user@example.com'"
+        }
+
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -ResourceGroupExists
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Azure deployment permissions could not be verified'
+        $errorRecord.Exception.Message | Should -Not -Match 'user@example.com'
     }
 }
 
@@ -1093,6 +1442,59 @@ Describe 'Intune Role Administrator authorization' {
     }
 }
 
+Describe 'Storage Account update compatibility' {
+    It 'does not redeclare immutable infrastructure encryption' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $template = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'infra\main.bicep') `
+            -Raw
+
+        $template | Should -Not -Match 'requireInfrastructureEncryption'
+    }
+}
+
+Describe 'Setup activity logging' {
+    It 'logs installation and update activity in the temporary directory' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+
+        foreach ($scriptName in @(
+                'Install-AutopilotImport.ps1'
+                'Update-AutopilotImport.ps1'
+            )) {
+            $content = Get-Content `
+                -LiteralPath (Join-Path $projectRoot $scriptName) `
+                -Raw
+
+            $content | Should -Match '\[IO\.Path\]::GetTempPath\(\)'
+            $content | Should -Match 'Start-Transcript'
+            $content | Should -Match '\[guid\]::NewGuid\(\)'
+            $content | Should -Match 'Format-List \* -Force'
+            $content | Should -Match 'Add-Content'
+            $content | Should -Match 'Script stack trace:'
+            $content | Should -Match 'Stop-Transcript'
+            $content | Should -Match `
+                'Stop-Transcript[\s\S]+\$setupTranscriptActive = \$false[\s\S]+Add-Content'
+        }
+    }
+
+    It 'creates a separate transcript for each script invocation' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+        $update = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Update-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match `
+            'Intune-Autopilotimport-install-.+NewGuid'
+        $update | Should -Match `
+            'Intune-Autopilotimport-update-.+NewGuid'
+        $installer | Should -Not -Match 'INTUNE_AUTOPILOTIMPORT_SETUP_LOG'
+        $update | Should -Not -Match 'INTUNE_AUTOPILOTIMPORT_SETUP_LOG'
+    }
+}
+
 Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -1142,6 +1544,72 @@ Describe 'Project metadata entries' {
             )
             $markers.Count | Should -Be 1
             $markers[0].Groups['author'].Value | Should -Be $projectAuthor
+        }
+    }
+}
+
+Describe 'Deployment package' {
+    It 'runs automatically for main but not for dev pushes' {
+        $workflowPath = Join-Path `
+            $PSScriptRoot `
+            '..\.github\workflows\deployment-package.yml'
+        $workflow = Get-Content -LiteralPath $workflowPath -Raw
+
+        $workflow | Should -Match `
+            '(?ms)^  push:\s+branches:\s+- main\s*$'
+        $workflow | Should -Match `
+            '(?ms)^  pull_request:\s+branches:\s+- main\s*$'
+        $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
+        $workflow | Should -Not -Match '(?m)^\s+- dev\s*$'
+        $workflow | Should -Match 'actions/upload-artifact@v4'
+    }
+
+    It 'contains installation and runtime files without local configuration' {
+        $projectRoot = Join-Path $PSScriptRoot '..'
+        $outputDirectory = Join-Path $TestDrive 'artifacts'
+        $package = & (Join-Path `
+            $projectRoot `
+            'scripts\New-DeploymentPackage.ps1') `
+            -ProjectRoot $projectRoot `
+            -OutputDirectory $outputDirectory
+        $packageRoot = "Intune-Autopilotimport-deployment-$((Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'VERSION') `
+            -Raw).Trim())"
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
+        try {
+            $entries = @($archive.Entries.FullName)
+            foreach ($requiredEntry in @(
+                    'README.md'
+                    'Install-AutopilotImport.ps1'
+                    'Update-AutopilotImport.ps1'
+                    'infra/main.bicep'
+                    'src/AutopilotImport/AutopilotImport.psm1'
+                    'src/AutopilotImport.Client/AutopilotImport.Client.psd1'
+                    'scripts/Ensure-EntraApiApplication.ps1'
+                    'scripts/Grant-ManagedIdentityGraphPermission.ps1'
+                    'scripts/Import-AutopilotDevice.ps1'
+                    'scripts/Set-TagAuthorizationPolicy.ps1'
+                    'scripts/Set-TagPolicyManagers.ps1'
+                )) {
+                $entries | Should -Contain "$packageRoot/$requiredEntry"
+            }
+            $entries | Where-Object {
+                $_ -match `
+                    '(^|/)(client\.settings\.json|local\.settings\.json|tests|\.git)(/|$)'
+            } | Should -BeNullOrEmpty
+                    foreach ($developmentScript in @(
+                        'scripts/New-DeploymentPackage.ps1'
+                        'scripts/New-SyntheticAutopilotTestCsv.ps1'
+                        'scripts/Update-ProjectVersion.ps1'
+                    )) {
+                    $entries | Should -Not -Contain `
+                        "$packageRoot/$developmentScript"
+                    }
+        }
+        finally {
+            $archive.Dispose()
         }
     }
 }
