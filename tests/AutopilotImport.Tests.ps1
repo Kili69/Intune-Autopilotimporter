@@ -179,6 +179,8 @@ Describe 'Client configuration creation' {
             '11111111-1111-1111-1111-111111111111'
         $settings.resourceGroupName | Should -Be 'rg-autopilot-import'
         $settings.functionAppName | Should -Be 'func-autopilot-import'
+        $settings.webUrl | Should -Be `
+            'https://func-autopilot-import.azurewebsites.net/api/ui/index.html'
         $warnings | Out-String | Should -Match `
             'AutopilotImport.Client.*client.settings.json'
     }
@@ -469,6 +471,34 @@ Describe 'Group-based tag authorization' {
                 -Policy $policy `
                 -RequestedGroupTag 'Untrusted-Tag' } |
             Should -Throw
+    }
+
+    It 'returns all unique tags authorized through caller groups' {
+        $principal.claims += @{
+            typ = 'groups'
+            val = '22222222-2222-2222-2222-222222222222'
+        }
+
+        $tags = @(Get-AuthorizedGroupTags -Principal $principal -Policy $policy)
+
+        $tags | Should -Be @(
+            'Autopilot-Kiosk'
+            'Autopilot-Privileged'
+            'Autopilot-Standard'
+        )
+    }
+
+    It 'returns no tags for a caller without matching groups' {
+        $unknownPrincipal = [pscustomobject]@{
+            claims = @(@{
+                typ = 'groups'
+                val = '33333333-3333-3333-3333-333333333333'
+            })
+        }
+
+        @(Get-AuthorizedGroupTags `
+            -Principal $unknownPrincipal `
+            -Policy $policy).Count | Should -Be 0
     }
 }
 
@@ -1503,7 +1533,10 @@ Describe 'Project metadata entries' {
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object {
+                    $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+                    $_.FullName -notmatch '[\\/]web[\\/]node_modules[\\/]'
+                }
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1534,7 +1567,10 @@ Describe 'Project metadata entries' {
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object {
+                    $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+                    $_.FullName -notmatch '[\\/]web[\\/]node_modules[\\/]'
+                }
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1604,10 +1640,15 @@ Describe 'Deployment package' {
                     'src/AutopilotImport/AutopilotImport.psm1'
                     'src/AutopilotImport.Client/AutopilotImport.Client.psd1'
                     'scripts/Ensure-EntraApiApplication.ps1'
+                    'scripts/Ensure-EntraWebApplication.ps1'
                     'scripts/Grant-ManagedIdentityGraphPermission.ps1'
                     'scripts/Import-AutopilotDevice.ps1'
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
+                    'GetAuthorizedTags/function.json'
+                    'WebFrontend/function.json'
+                    'web/package.json'
+                    'web/src/main.ts'
                 )) {
                 $entries | Should -Contain "$packageRoot/$requiredEntry"
             }

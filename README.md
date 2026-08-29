@@ -44,6 +44,21 @@ flowchart TB
 
 ## Howto use the AutopilotImporter
 
+### Web frontend
+
+After installation, open the `webUrl` reported by the installer or stored in
+`client.settings.json`. The page itself contains no tenant data and may load
+without authentication. Import functions become available only after the user
+signs in with a Microsoft Entra account.
+
+The browser validates the CSV locally, requests the Group Tags authorized for
+the signed-in user's Entra groups, and sends each validated device to the same
+secured Function API used by the PowerShell module. The hardware hashes are not
+stored by the frontend. Import and extension-attribute status are refreshed
+automatically until each device reaches a final state.
+
+The PowerShell module remains available and uses the same authorization policy.
+
 The installer deploys `AutopilotImport.Client` and a matching `client.settings.json`. The module reads the Function URL, API Application ID URI, and tenant from that file. It exports the commands used for importing and monitoring devices. (see installation)
 
 ### Import a device hash
@@ -151,6 +166,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
+- Node.js 22 and npm for building the web frontend during installation or update
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 - The appropriate Entra ID licensing for dynamic device groups
 
@@ -234,6 +250,9 @@ The installer configures:
 - Pre-authorization for Microsoft Azure PowerShell
 - Security-group claims for endpoint-level authorization
 - An enterprise application that allows authenticated tenant users to reach endpoint-level authorization
+- A separate single-tenant SPA registration named `Autopilot Import Web`
+- Authorization Code Flow with PKCE for the SPA, without a client secret
+- SPA preauthorization for the `DeviceHash.Import` scope and the exact deployed frontend redirect URI
 
 Use `-EntraClientId '<Client-ID>'` to select a specific existing application. Without this parameter, the installer searches by `-EntraApplicationName`, which defaults to `Autopilot Import API`.
 
@@ -426,6 +445,7 @@ Create a variable group named `autopilot-import-deployment` with these values:
 | `location` | `westeurope` | Azure region |
 | `functionAppName` | `func-autopilot-contoso` | Globally unique Function App name |
 | `entraClientId` | `22222222-2222-2222-2222-222222222222` | Client ID of the preconfigured API app registration |
+| `webClientId` | `55555555-5555-5555-5555-555555555555` | Client ID of the preconfigured SPA app registration |
 | `installerPrincipalId` | `33333333-3333-3333-3333-333333333333` | Object ID of the user or group that remains a permanent Group Tag manager |
 | `tagAuthorizationRulesJson` | `["44444444-4444-4444-4444-444444444444=Standard,Kiosk"]` | JSON array containing the complete group-to-tag policy |
 | `tagManagerPrincipalIdsJson` | `[]` | JSON array of additional manager user or group object IDs |
@@ -434,7 +454,7 @@ Authorize the pipeline to use this variable group. None of these values is a cre
 
 The Entra API application and the managed identity's Microsoft Graph permissions remain intentionally outside the pipeline because they require privileged tenant permissions that should not be assigned to a deployment service connection.
 
-Before the first pipeline deployment, create or configure the Entra API application once from an administrator workstation and supply the returned client ID through `entraClientId`:
+Before the first pipeline deployment, create or configure the Entra API and SPA applications once from an administrator workstation. Supply their returned client IDs through `entraClientId` and `webClientId`:
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
@@ -442,7 +462,14 @@ $entraApplication = .\scripts\Ensure-EntraApiApplication.ps1 `
     -TenantId '<Tenant-ID>' `
     -DisplayName 'Autopilot Import API' `
     -Confirm:$false
-$entraApplication
+$webApplication = .\scripts\Ensure-EntraWebApplication.ps1 `
+    -TenantId '<Tenant-ID>' `
+    -ApiApplicationObjectId $entraApplication.ApplicationObjectId `
+    -ApiClientId $entraApplication.ClientId `
+    -ApiScopeId $entraApplication.ScopeId `
+    -RedirectUri 'https://<function-app-name>.azurewebsites.net/api/ui/index.html' `
+    -Confirm:$false
+$entraApplication, $webApplication
 ```
 
 After the first pipeline deployment has created the Function managed identity, a Privileged Role Administrator or Global Administrator runs the idempotent permission script once:
@@ -522,6 +549,7 @@ $resourceGroupName = 'rg-autopilot-import'
 $location = 'westeurope'
 $functionAppName = '<globally-unique-name>'
 $entraClientId = '<Application-Client-ID>'
+$webClientId = '<Web-Application-Client-ID>'
 $tagPolicy = @(
     @{
         groupId = '11111111-1111-1111-1111-111111111111'
@@ -543,11 +571,12 @@ $deployment = New-AzResourceGroupDeployment `
     -TemplateFile .\infra\main.bicep `
     -functionAppName $functionAppName `
     -entraClientId $entraClientId `
+    -webClientId $webClientId `
     -tagAuthorizationPolicy $tagPolicy `
     -managerAuthorizationPolicy $managerPolicy
 ```
 
-The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated requests are rejected with HTTP 401 before the Function code runs.
+The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated API requests are rejected with HTTP 401 before the Function code runs. Only `/api/ui/*` is excluded so that the static sign-in page and its public runtime configuration can load; no import or policy data is exposed there.
 
 ### 3. Assign the Graph Permission
 
@@ -565,9 +594,14 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 The ZIP archive must contain `host.json` at its root:
 
 ```powershell
+Push-Location .\web
+npm ci
+npm run build
+Pop-Location
+
 $package = Join-Path $PWD 'autopilot-import.zip'
 Compress-Archive `
-    -Path .\host.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\ManageTagPolicy, .\src `
+    -Path .\host.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
     -DestinationPath $package `
     -Force
 

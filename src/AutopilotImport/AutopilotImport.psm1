@@ -645,6 +645,50 @@ function Resolve-AuthorizedGroupTag {
     )
 }
 
+function Get-AuthorizedGroupTags {
+    <#
+    .SYNOPSIS
+    Returns all Group Tags authorized for the caller's Entra groups.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing Entra security-group claims.
+
+    .PARAMETER Policy
+    Collection of rules with groupId and tags properties.
+
+    .OUTPUTS
+    System.String values sorted by their configured Group Tag names.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [Parameter(Mandatory)]
+        [object[]] $Policy
+    )
+
+    $groupClaimTypes = @(
+        'groups',
+        'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+    )
+    $callerGroupIds = @($Principal.claims | Where-Object {
+        $_.typ -in $groupClaimTypes
+    } | ForEach-Object {
+        [string] $_.val
+    })
+
+    return @($Policy | Where-Object {
+        [string] $_.groupId -in $callerGroupIds
+    } | ForEach-Object {
+        @($_.tags)
+    } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string] $_)
+    } | ForEach-Object {
+        ([string] $_).Trim()
+    } | Sort-Object -Unique)
+}
+
 function ConvertTo-AutopilotImportPayload {
     <#
     .SYNOPSIS
@@ -727,5 +771,6 @@ Export-ModuleMember -Function @(
     'ConvertFrom-ClientPrincipalHeader',
     'Test-ClientPrincipalRole',
     'Resolve-AuthorizedGroupTag',
+    'Get-AuthorizedGroupTags',
     'ConvertTo-AutopilotImportPayload'
 )

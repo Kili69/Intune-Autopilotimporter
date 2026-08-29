@@ -379,6 +379,7 @@ function New-AutopilotClientConfiguration {
         subscriptionId         = $SubscriptionId
         resourceGroupName      = $ResourceGroupName
         functionAppName        = $FunctionAppName
+        webUrl                 = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
     } | ConvertTo-Json | Set-Content `
         -LiteralPath $settingsPath `
         -Encoding utf8NoBOM

@@ -488,6 +488,13 @@ if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
 }
 $managerPolicy = $appSettings.properties.MANAGER_AUTHORIZATION_POLICY |
     ConvertFrom-Json
+$webClientId = [guid]::Empty
+if (-not [guid]::TryParse(
+        [string] $appSettings.properties.WEB_CLIENT_ID,
+        [ref] $webClientId) -and
+    $SkipEntraAppConfiguration) {
+    throw 'The deployed Function does not contain a valid WEB_CLIENT_ID. Run the update without -SkipEntraAppConfiguration once.'
+}
 $managerPrincipalIds = @(
     @($managerPolicy.installerPrincipalId) +
     @($managerPolicy.additionalPrincipalIds) |
@@ -519,6 +526,7 @@ $installerParameters = @{
     Location                    = [string] $site.location
     FunctionAppName             = [string] $settings.functionAppName
     EntraClientId               = $entraClientId.ToString()
+    WebClientId                 = $webClientId
     ApiAudience                 = $apiAudience
     TagAuthorizationRule        = $tagAuthorizationRules
     RestrictedManagementAdministrativeUnitName = `
