@@ -52,7 +52,7 @@ param(
     [ValidatePattern('^https://')]
     [string] $RedirectUri,
 
-    [guid] $ClientId,
+    [guid] $ClientId = [guid]::Empty,
 
     [string] $DisplayName = 'Autopilot Import Web',
 
@@ -66,6 +66,10 @@ function Get-GraphItems {
     param([object] $Response)
 
     if ($null -eq $Response) { return @() }
+    if ($Response -is [System.Collections.IDictionary] -and
+        $Response.Contains('value')) {
+        return @($Response['value'])
+    }
     if ($Response.PSObject.Properties.Name -contains 'value') {
         return @($Response.value)
     }

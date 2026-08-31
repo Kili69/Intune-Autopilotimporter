@@ -29,10 +29,10 @@ function Send-Response {
     )
 
     $headers = @{} + $securityHeaders
-    $headers['Content-Type'] = $ContentType
     $headers['Cache-Control'] = $CacheControl
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
         StatusCode = $StatusCode
+        ContentType = $ContentType
         Headers    = $headers
         Body       = $Body
     })
@@ -107,9 +107,16 @@ $cacheControl = if ($extension -eq '.html') {
 else {
     'public, max-age=31536000, immutable'
 }
+$textExtensions = @('.html', '.js', '.css', '.svg', '.json')
+$body = if ($extension -in $textExtensions) {
+    [IO.File]::ReadAllText($resolvedPath, [Text.Encoding]::UTF8)
+}
+else {
+    [IO.File]::ReadAllBytes($resolvedPath)
+}
 
 Send-Response `
     -StatusCode OK `
     -ContentType $contentType `
     -CacheControl $cacheControl `
-    -Body ([IO.File]::ReadAllBytes($resolvedPath))
+    -Body $body

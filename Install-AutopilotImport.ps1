@@ -1155,23 +1155,8 @@ elseif ($InstallerPrincipalId -eq [guid]::Empty) {
     throw 'InstallerPrincipalId is required when SkipEntraAppConfiguration is used.'
 }
 else {
-    Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    $graphConnectParameters = @{
-        TenantId  = $TenantId
-        Scopes    = @('User.Read')
-        NoWelcome = $true
-    }
-    if ($ForceGraphSignIn) {
-        Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
-        $graphConnectParameters.UseDeviceCode = $true
-        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
-    }
-    Connect-MgGraph @graphConnectParameters
-    $installingUser = Invoke-MgGraphRequest `
-        -Method GET `
-        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
-    $installingUserObjectId = [guid] $installingUser.id
-    Write-Host "Microsoft Graph account: $($installingUser.userPrincipalName)"
+    $installingUserObjectId = $InstallerPrincipalId
+    Write-Host "Preserving installer principal: $installingUserObjectId"
 }
 
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
@@ -1470,6 +1455,13 @@ catch {
         -Encoding utf8
     Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
         -ErrorAction Continue
+    $isMicrosoftGraphAuthorizationError =
+        [string] $_.FullyQualifiedErrorId -match 'Microsoft\.Graph' -or
+        [string] $_.TargetObject -match 'graph\.microsoft\.com'
+    if ($isMicrosoftGraphAuthorizationError -and
+        $errorDetails -match 'Authorization_RequestDenied|Forbidden') {
+        throw 'Microsoft Graph application update permissions are insufficient. Assign the updating account the Application Administrator or Cloud Application Administrator Microsoft Entra role, then sign in again and rerun the update.'
+    }
     if ($errorDetails -match `
         'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
         throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'

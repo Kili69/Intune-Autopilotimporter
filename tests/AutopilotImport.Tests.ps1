@@ -865,6 +865,7 @@ Describe 'Update script deployment discovery' {
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Get-UpdateRestrictedManagementAdministrativeUnitName',
                 'Assert-AutopilotAppSettingsResponse',
+                'Get-UpdateWebClientId',
                 'Test-AzurePermissionPattern',
                 'Assert-AzureUpdatePermissions'
             )) {
@@ -927,6 +928,26 @@ Describe 'Update script deployment discovery' {
             '(?s)if\s*\(\$WhatIfPreference\).*?return.*?if\s*\(\s*-not\s+\$Force'
     }
 
+    It 'supports a fresh Graph sign-in after Entra role changes' {
+        $forceGraphSignInParameter = $updateAst.ParamBlock.Parameters |
+            Where-Object {
+                $_.Name.VariablePath.UserPath -eq 'ForceGraphSignIn'
+            }
+
+        $forceGraphSignInParameter.StaticType | Should -Be ([switch])
+        $updateAst.Extent.Text | Should -Match `
+            'ForceGraphSignIn\s*=\s*\$ForceGraphSignIn'
+    }
+
+    It 'passes preserved identities when Entra configuration is skipped' {
+        $webClientIdParameter = $updateAst.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'WebClientId' }
+
+        $webClientIdParameter.StaticType | Should -Be ([guid])
+        $updateAst.Extent.Text | Should -Match `
+            'InstallerPrincipalId\s*=\s*\$installerPrincipalId'
+    }
+
     It 'supports an existing policy without RMAU metadata' {
         $policy = [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
@@ -987,6 +1008,30 @@ Describe 'Update script deployment discovery' {
         $verboseOutput | Out-String | Should -Match 'user@example.com|1234'
     }
 
+    It 'allows an older deployment without a web client ID to be updated' {
+        $webClientId = Get-UpdateWebClientId -Properties ([pscustomobject]@{})
+
+        $webClientId | Should -Be ([guid]::Empty)
+    }
+
+    It 'requires a deployed web client ID when Entra configuration is skipped' {
+        {
+            Get-UpdateWebClientId `
+                -Properties ([pscustomobject]@{}) `
+                -SkipEntraAppConfiguration
+        } | Should -Throw '*valid WEB_CLIENT_ID*'
+    }
+
+    It 'preserves a valid deployed web client ID' {
+        $expected = [guid]'22222222-2222-2222-2222-222222222222'
+        $properties = [pscustomobject]@{
+            WEB_CLIENT_ID = $expected.ToString()
+        }
+
+        Get-UpdateWebClientId -Properties $properties |
+            Should -Be $expected
+    }
+
     It 'reports only missing Azure capabilities without Verbose' {
         Mock Invoke-AzRestMethod {
             [pscustomobject]@{
@@ -1043,6 +1088,41 @@ Describe 'Update script deployment discovery' {
         $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
             'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+    }
+}
+
+Describe 'Entra web application Graph responses' {
+    BeforeAll {
+        $scriptPath = Join-Path `
+            $PSScriptRoot `
+            '..\scripts\Ensure-EntraWebApplication.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $scriptAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Get-GraphItems'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'unwraps dictionary collection responses from Microsoft Graph' {
+        $application = @{
+            id          = 'application-object-id'
+            appId       = '22222222-2222-2222-2222-222222222222'
+            displayName = 'Autopilot Import Web'
+        }
+        $response = @{ value = @($application) }
+
+        $items = @(Get-GraphItems -Response $response)
+
+        $items.Count | Should -Be 1
+        $items[0].displayName | Should -Be 'Autopilot Import Web'
     }
 }
 
@@ -1170,6 +1250,30 @@ Describe 'Installer Azure deployment diagnostics' {
         $formattedError | Should -Match 'RequestDisallowedByPolicy'
         $formattedError | Should -Match 'func-autopilot-test'
         $formattedError | Should -Match 'Require approved Function plans'
+    }
+}
+
+Describe 'Installer Entra deployment diagnostics' {
+    It 'distinguishes Microsoft Graph authorization from Azure RBAC failures' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match 'Microsoft\\\.Graph'
+        $installer | Should -Match 'graph\\\.microsoft\\\.com'
+        $installer | Should -Match `
+            'Application Administrator or Cloud Application Administrator'
+    }
+
+    It 'does not authenticate to Graph when Entra configuration is skipped' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match `
+            '(?s)elseif \(\$InstallerPrincipalId -eq \[guid\]::Empty\).*?else \{\s*\$installingUserObjectId = \$InstallerPrincipalId\s*Write-Host'
     }
 }
 
@@ -1522,6 +1626,28 @@ Describe 'Setup activity logging' {
             'Intune-Autopilotimport-update-.+NewGuid'
         $installer | Should -Not -Match 'INTUNE_AUTOPILOTIMPORT_SETUP_LOG'
         $update | Should -Not -Match 'INTUNE_AUTOPILOTIMPORT_SETUP_LOG'
+    }
+}
+
+Describe 'Web frontend response types' {
+    It 'serves textual assets as strings so Azure preserves their MIME types' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -Raw
+
+        $frontendFunction | Should -Match `
+            "\$textExtensions = @\('\.html', '\.js', '\.css', '\.svg', '\.json'\)"
+        $frontendFunction | Should -Match `
+            '\[IO\.File\]::ReadAllText\(\$resolvedPath, \[Text\.Encoding\]::UTF8\)'
+        $frontendFunction | Should -Match `
+            "'\.html' = 'text/html; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            "'\.js'\s+= 'text/javascript; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            'ContentType\s*=\s*\$ContentType'
+        $frontendFunction | Should -Not -Match `
+            "Headers\['Content-Type'\]"
     }
 }
 

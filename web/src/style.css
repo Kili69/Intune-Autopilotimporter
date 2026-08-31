@@ -29,6 +29,13 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 .brand small { color: #6c7890; font-size: 11px; margin-top: 1px; text-transform: uppercase; letter-spacing: .12em; }
 .account-area { display: flex; gap: 16px; align-items: center; }
 .account-name { color: #56647d; font-size: 14px; }
+.language-switch { display: flex; padding: 3px; gap: 2px; background: #eef4fb; border-radius: 9px; }
+.language-switch button {
+  border: 0; border-radius: 6px; padding: 6px 8px; color: #607089; background: transparent;
+  font-size: 11px; font-weight: 800; cursor: pointer;
+}
+.language-switch button[aria-pressed="true"] { color: #fff; background: #176ce0; }
+.language-switch button:focus-visible { outline: 2px solid rgba(31, 111, 235, .35); outline-offset: 1px; }
 
 .hero {
   width: min(1180px, calc(100% - 40px)); margin: auto; padding: 80px 0; display: grid;
@@ -44,6 +51,13 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 }
 .security-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: #3ed598; font-size: 25px; font-weight: 800; }
 .security-card h2 { margin: 22px 0 18px; }
+.device-hash-intro, .device-hash-note { color: #ccd7ee; line-height: 1.5; }
+.device-hash-intro { margin: 0 0 14px; }
+.device-hash-note { margin: 16px 0 0; font-size: 13px; }
+.security-card code, .security-card kbd {
+  color: #fff; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 5px; padding: 2px 5px; overflow-wrap: anywhere;
+}
 .security-card ul { list-style: none; margin: 0; padding: 0; color: #ccd7ee; }
 .security-card li { padding: 11px 0 11px 28px; border-top: 1px solid rgba(255,255,255,.1); position: relative; }
 .security-card li::before { content: "•"; position: absolute; left: 8px; color: #65dcae; }
