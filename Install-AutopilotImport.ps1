@@ -307,6 +307,42 @@ function Read-DeploymentValue {
     return $enteredValue.Trim()
 }
 
+function Test-BuiltWebFrontend {
+    <#
+    .SYNOPSIS
+    Tests whether the packaged web frontend contains all referenced assets.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $ProjectRoot
+    )
+
+    $webRoot = Join-Path $ProjectRoot 'WebFrontend\wwwroot'
+    $indexPath = Join-Path $webRoot 'index.html'
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+        return $false
+    }
+
+    $index = Get-Content -LiteralPath $indexPath -Raw
+    $assetMatches = [regex]::Matches(
+        $index,
+        '(?:src|href)=["''](?:/api/ui/)?(?<path>assets/[^"'']+)["'']'
+    )
+    if ($assetMatches.Count -eq 0) {
+        return $false
+    }
+
+    return @($assetMatches | Where-Object {
+        $relativePath = $_.Groups['path'].Value.Replace(
+            '/',
+            [IO.Path]::DirectorySeparatorChar
+        )
+        -not (Test-Path `
+            -LiteralPath (Join-Path $webRoot $relativePath) `
+            -PathType Leaf)
+    }).Count -eq 0
+}
+
 function Test-FunctionAppName {
     <#
     .SYNOPSIS
@@ -1050,6 +1086,14 @@ if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)
 
 #region Azure context and confirmation
 
+$npmCommand = $null
+if (-not $SkipPublish) {
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCommand -and -not (Test-BuiltWebFrontend -ProjectRoot $projectRoot)) {
+        throw 'Publishing requires Node.js and npm, or a deployment package containing a complete prebuilt WebFrontend\wwwroot bundle. Install Node.js 22 or download the release deployment package.'
+    }
+}
+
 $contextMatches = $currentContext -and
     $currentContext.Subscription.Id -eq $SubscriptionId -and
     $currentContext.Tenant.Id -eq $TenantId
@@ -1335,24 +1379,25 @@ if (-not $SkipGraphPermission) {
 }
 
 if (-not $SkipPublish) {
-    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
-    if (-not $npmCommand) {
-        throw 'Node.js and npm are required to build the web frontend.'
-    }
-    Write-Host 'Building web frontend...'
-    Push-Location (Join-Path $projectRoot 'web')
-    try {
-        & $npmCommand.Source ci
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm ci failed with exit code $LASTEXITCODE."
+    if ($npmCommand) {
+        Write-Host 'Building web frontend...'
+        Push-Location (Join-Path $projectRoot 'web')
+        try {
+            & $npmCommand.Source ci
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm ci failed with exit code $LASTEXITCODE."
+            }
+            & $npmCommand.Source run build
+            if ($LASTEXITCODE -ne 0) {
+                throw "Web frontend build failed with exit code $LASTEXITCODE."
+            }
         }
-        & $npmCommand.Source run build
-        if ($LASTEXITCODE -ne 0) {
-            throw "Web frontend build failed with exit code $LASTEXITCODE."
+        finally {
+            Pop-Location
         }
     }
-    finally {
-        Pop-Location
+    else {
+        Write-Warning 'Node.js and npm are unavailable. Publishing the complete prebuilt web frontend included in this deployment package.'
     }
 
     $packagePath = Join-Path ([IO.Path]::GetTempPath()) "autopilot-import-$([guid]::NewGuid()).zip"

@@ -31,6 +31,13 @@ jobs:
         shell: pwsh
         run: Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
 
+      - name: Build web frontend
+        working-directory: web
+        shell: pwsh
+        run: |
+          npm ci
+          npm run build
+
       - name: Build deployment package
         id: package
         shell: pwsh

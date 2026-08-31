@@ -1510,6 +1510,49 @@ Describe 'Installer optional web client application' {
     }
 }
 
+Describe 'Installer packaged web frontend fallback' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Test-BuiltWebFrontend'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'accepts the complete frontend bundle in the repository' {
+        Test-BuiltWebFrontend -ProjectRoot (Join-Path $PSScriptRoot '..') |
+            Should -BeTrue
+    }
+
+    It 'rejects a bundle whose index references a missing asset' {
+        $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
+        New-Item -Path $webRoot -ItemType Directory -Force | Out-Null
+        Set-Content `
+            -LiteralPath (Join-Path $webRoot 'index.html') `
+            -Value '<script src="/api/ui/assets/missing.js"></script>'
+
+        Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
+    }
+
+    It 'rebuilds the frontend in CI before creating the deployment package' {
+        $workflow = Get-Content `
+            -LiteralPath (Join-Path $PSScriptRoot '..\.github\workflows\deployment-package.yml') `
+            -Raw
+
+        $workflow | Should -Match `
+            '(?s)Build web frontend.*?npm ci.*?npm run build.*?Build deployment package'
+    }
+}
+
 Describe 'Azure deployment permission validation' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
