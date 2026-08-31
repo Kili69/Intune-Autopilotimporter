@@ -74,6 +74,39 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-BuiltWebFrontend {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Root
+    )
+
+    $webRoot = Join-Path $Root 'WebFrontend\wwwroot'
+    $indexPath = Join-Path $webRoot 'index.html'
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+        throw "The prebuilt web frontend is missing: $indexPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
+    }
+
+    $index = Get-Content -LiteralPath $indexPath -Raw
+    $assetMatches = [regex]::Matches(
+        $index,
+        '(?:src|href)=["''](?:/api/ui/)?(?<path>assets/[^"'']+)["'']'
+    )
+    if ($assetMatches.Count -eq 0) {
+        throw "The prebuilt web frontend index does not reference any assets: $indexPath"
+    }
+
+    foreach ($assetMatch in $assetMatches) {
+        $relativePath = $assetMatch.Groups['path'].Value.Replace(
+            '/',
+            [IO.Path]::DirectorySeparatorChar
+        )
+        $assetPath = Join-Path $webRoot $relativePath
+        if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+            throw "The prebuilt web frontend asset is missing: $assetPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
+        }
+    }
+}
+
 # Use the central project version for both the archive and its root directory.
 $projectVersion = (Get-Content `
     -LiteralPath (Join-Path $ProjectRoot 'VERSION') `
@@ -87,6 +120,8 @@ $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) `
     "$packageName-$([guid]::NewGuid().ToString('N'))"
 $packageRoot = Join-Path $stagingRoot $packageName
 $packagePath = Join-Path $OutputDirectory "$packageName.zip"
+
+Assert-BuiltWebFrontend -Root $ProjectRoot
 
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(

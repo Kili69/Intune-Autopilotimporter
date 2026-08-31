@@ -2371,11 +2371,15 @@ Describe 'Deployment package' {
                     'GetAuthorizedTags/function.json'
                     'proxies.json'
                     'WebFrontend/function.json'
+                    'WebFrontend/wwwroot/index.html'
                     'web/package.json'
                     'web/src/main.ts'
                 )) {
                 $entries | Should -Contain "$packageRoot/$requiredEntry"
             }
+            $entries | Where-Object {
+                $_ -match '/WebFrontend/wwwroot/assets/.+\.(css|js)$'
+            } | Should -Not -BeNullOrEmpty
             $entries | Where-Object {
                 $_ -match `
                     '(^|/)(client\.settings\.json|local\.settings\.json|tests|\.git)(/|$)'

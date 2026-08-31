@@ -325,7 +325,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
-- Node.js 22 and npm when installing or updating directly from a source checkout. The release deployment package contains a CI-built frontend and does not require Node.js on the installation computer.
+- Node.js 22 and npm are required only to rebuild modified frontend sources. Release packages and repository source archives contain a prebuilt frontend, so installation and update do not require Node.js on the target computer.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 - The appropriate Entra ID licensing for dynamic device groups
 
