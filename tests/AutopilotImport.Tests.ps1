@@ -108,6 +108,39 @@ Describe 'Client import result metadata' {
     }
 }
 
+Describe 'Client CSV input validation' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+    }
+
+    It 'explains when the CSV file does not exist' {
+        $missingPath = Join-Path $TestDrive 'missing.csv'
+
+        {
+            Import-AutopilotDevice `
+                -CsvPath $missingPath `
+                -GroupTag 'EUD' `
+                -ValidateOnly
+        } | Should -Throw `
+            "The Autopilot CSV file '$missingPath' does not exist or is not a file. Verify the path and try again."
+    }
+
+    It 'explains when the CSV file is empty' {
+        $emptyPath = Join-Path $TestDrive 'empty.csv'
+        [IO.File]::WriteAllBytes($emptyPath, [byte[]]::new(0))
+
+        {
+            Import-AutopilotDevice `
+                -CsvPath $emptyPath `
+                -GroupTag 'EUD' `
+                -ValidateOnly
+        } | Should -Throw `
+            "The Autopilot CSV file '$emptyPath' is empty. Export the device data again and try again."
+    }
+}
+
 Describe 'Client configuration creation' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
@@ -1807,6 +1840,23 @@ Describe 'Tag policy manager authorization' {
         Test-TagPolicyManagerPrincipal `
             -Principal $principal `
             -ManagerPolicy $managerPolicy |
+            Should -Be $false
+    }
+
+    It 'ignores null and malformed optional manager IDs' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '33333333-3333-3333-3333-333333333333' }
+            )
+        }
+        $policyWithEmptyManagers = [pscustomobject]@{
+            installerPrincipalId   = '11111111-1111-1111-1111-111111111111'
+            additionalPrincipalIds = @($null, '', 'not-a-guid')
+        }
+
+        Test-TagPolicyManagerPrincipal `
+            -Principal $principal `
+            -ManagerPolicy $policyWithEmptyManagers |
             Should -Be $false
     }
 }

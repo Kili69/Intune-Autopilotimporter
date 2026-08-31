@@ -74,7 +74,6 @@ from client.settings.json.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string] $CsvPath,
 
     [ValidatePattern('^https://')]

@@ -405,7 +405,6 @@ function Import-AutopilotDevice {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [ValidateScript({ Test-Path $_ -PathType Leaf })]
         [string] $CsvPath,
         [Parameter(Mandatory)]
         [ValidateLength(1, 128)]
@@ -418,6 +417,14 @@ function Import-AutopilotDevice {
         [string] $ConfigPath,
         [switch] $ValidateOnly
     )
+
+    if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) {
+        throw "The Autopilot CSV file '$CsvPath' does not exist or is not a file. Verify the path and try again."
+    }
+    $csvFile = Get-Item -LiteralPath $CsvPath
+    if ($csvFile.Length -eq 0) {
+        throw "The Autopilot CSV file '$($csvFile.FullName)' is empty. Export the device data again and try again."
+    }
 
     $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath -Overrides @{
         functionUrl = $FunctionUrl

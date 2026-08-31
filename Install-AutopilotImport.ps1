@@ -1186,9 +1186,9 @@ Write-Host "  Web client ID: $WebClientId"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
-$additionalManagerPrincipalIds = ConvertTo-AdditionalManagerPrincipalIds `
+$additionalManagerPrincipalIds = @(ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
-    -InstallingUserObjectId $installingUserObjectId
+    -InstallingUserObjectId $installingUserObjectId)
 $managerAuthorizationPolicy = [ordered]@{
     installerPrincipalId          = $installingUserObjectId.ToString()
     additionalPrincipalIds        = $additionalManagerPrincipalIds

@@ -418,7 +418,10 @@ function Test-TagPolicyManagerPrincipal {
         Where-Object { $ManagerPolicy.PSObject.Properties.Name -contains $_ } |
         ForEach-Object { @($ManagerPolicy.$_) })
     $allowedPrincipalIds = @($configuredPrincipalIds | ForEach-Object {
-        ([guid] $_).ToString()
+        $parsedId = [guid]::Empty
+        if ([guid]::TryParse([string] $_, [ref] $parsedId)) {
+            $parsedId.ToString()
+        }
     } | Select-Object -Unique)
     $callerPrincipalIds = @($Principal.claims | Where-Object {
         $_.typ -in @(
