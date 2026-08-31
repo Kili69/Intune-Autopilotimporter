@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json.schemastore.org/proxies",
+  "proxies": {
+    "RootRedirect": {
+      "matchCondition": {
+        "methods": [
+          "GET"
+        ],
+        "route": "/"
+      },
+      "responseOverrides": {
+        "response.statusCode": "302",
+        "response.statusReason": "Found",
+        "response.body": "Redirecting to the Autopilot Import web frontend.",
+        "response.headers.Cache-Control": "no-store",
+        "response.headers.Location": "/api/ui/index.html",
+        "response.headers.Referrer-Policy": "no-referrer",
+        "response.headers.X-Content-Type-Options": "nosniff"
+      }
+    }
+  }
+}

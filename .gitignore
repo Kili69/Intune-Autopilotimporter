@@ -7,3 +7,7 @@ client.settings.json
 *.zip
 *.log
 *.csv
+web/node_modules/
+WebFrontend/wwwroot/
+testResults.xml
+*.tsbuildinfo

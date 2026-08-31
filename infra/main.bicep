@@ -9,6 +9,9 @@ param location string = resourceGroup().location
 @description('Client ID of the Entra app registration that protects the Function API.')
 param entraClientId string
 
+@description('Client ID of the single-page application used by the web frontend.')
+param webClientId string = ''
+
 @description('Application ID URI configured under Expose an API.')
 param apiAudience string = 'api://${entraClientId}'
 
@@ -134,6 +137,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: '7.4'
         }
         {
+          name: 'AzureWebJobsDisableHomepage'
+          value: 'true'
+        }
+        {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableProxies'
+        }
+        {
           name: 'WEBSITE_RUN_FROM_PACKAGE'
           value: '1'
         }
@@ -152,6 +163,18 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'DEVICE_TAG_EXTENSION_ATTRIBUTE'
           value: deviceTagExtensionAttribute
+        }
+        {
+          name: 'WEB_CLIENT_ID'
+          value: webClientId
+        }
+        {
+          name: 'API_AUDIENCE'
+          value: apiAudience
+        }
+        {
+          name: 'TENANT_ID'
+          value: tenant().tenantId
         }
       ]
     }
@@ -199,6 +222,10 @@ resource authentication 'Microsoft.Web/sites/config@2023-12-01' = {
     globalValidation: {
       requireAuthentication: true
       unauthenticatedClientAction: 'Return401'
+      excludedPaths: [
+        '/'
+        '/api/ui/*'
+      ]
     }
     identityProviders: {
       azureActiveDirectory: {
@@ -213,9 +240,9 @@ resource authentication 'Microsoft.Web/sites/config@2023-12-01' = {
             entraClientId
           ]
           defaultAuthorizationPolicy: {
-            allowedApplications: [
-              azurePowerShellClientId
-            ]
+            allowedApplications: empty(webClientId)
+              ? [azurePowerShellClientId]
+              : [azurePowerShellClientId, webClientId]
           }
         }
       }
@@ -233,5 +260,6 @@ resource authentication 'Microsoft.Web/sites/config@2023-12-01' = {
 
 output functionUrl string = 'https://${functionApp.properties.defaultHostName}/api/devices/import'
 output managementUrl string = 'https://${functionApp.properties.defaultHostName}/api/management/tag-policy'
+output webUrl string = 'https://${functionApp.properties.defaultHostName}/api/ui/index.html'
 output managedIdentityObjectId string = functionApp.identity.principalId
 output storageAccountName string = storageAccount.name

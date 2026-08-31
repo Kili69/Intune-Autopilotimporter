@@ -6,22 +6,14 @@
       "direction": "in",
       "name": "Request",
       "methods": [
-        "get",
-        "post"
+        "get"
       ],
-      "route": "api/devices/import"
+      "route": "api/devices/tags"
     },
     {
       "type": "http",
       "direction": "out",
       "name": "Response"
-    },
-    {
-      "type": "queue",
-      "direction": "out",
-      "name": "DeviceAttributeUpdate",
-      "queueName": "device-attribute-updates",
-      "connection": "AzureWebJobsStorage"
     },
     {
       "type": "blob",

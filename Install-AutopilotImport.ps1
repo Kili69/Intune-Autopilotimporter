@@ -63,6 +63,14 @@ application if it does not exist.
 Display name used to find or create the Entra API app registration. The default
 is Autopilot Import API.
 
+.PARAMETER WebClientId
+Optional Application Client ID of the Entra SPA registration used by the web
+frontend. When omitted, the installer finds or creates it by display name.
+
+.PARAMETER EntraWebApplicationName
+Display name used to find or create the SPA registration. The default is
+Autopilot Import Web.
+
 .PARAMETER InstallerPrincipalId
 Entra object ID of the user or group that remains a permanent Group Tag
 manager. This parameter is required with SkipEntraAppConfiguration so that
@@ -181,6 +189,10 @@ param(
 
     [string] $EntraApplicationName = 'Autopilot Import API',
 
+    [guid] $WebClientId,
+
+    [string] $EntraWebApplicationName = 'Autopilot Import Web',
+
     [guid] $InstallerPrincipalId,
 
     [string] $ApiAudience,
@@ -231,6 +243,8 @@ $projectRoot = $PSScriptRoot
 $templatePath = Join-Path $projectRoot 'infra\main.bicep'
 $grantScriptPath = Join-Path $projectRoot 'scripts\Grant-ManagedIdentityGraphPermission.ps1'
 $ensureEntraAppScriptPath = Join-Path $projectRoot 'scripts\Ensure-EntraApiApplication.ps1'
+$ensureEntraWebAppScriptPath = Join-Path $projectRoot `
+    'scripts\Ensure-EntraWebApplication.ps1'
 $autopilotImportModulePath = Join-Path $projectRoot 'src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $autopilotImportModulePath -Force
 
@@ -544,7 +558,15 @@ function Install-AutopilotClientTools {
             [IO.Path]::GetFullPath($_.FullName).TrimEnd('\') -ne `
                 $normalizedModuleDestination
         } |
-        Remove-Item -Recurse -Force
+        ForEach-Object {
+            $oldModulePath = $_.FullName
+            try {
+                Remove-Item -LiteralPath $oldModulePath -Recurse -Force -ErrorAction Stop
+            }
+            catch [System.IO.IOException] {
+                Write-Warning "Older client module '$oldModulePath' is in use and could not be removed. Close PowerShell sessions using that version and remove it later."
+            }
+        }
 
     $packageDestinationRoot = [IO.Path]::GetFullPath($PackageDestinationPath)
     [void] (New-Item `
@@ -1079,6 +1101,7 @@ if ($ResourceGroupTags -and $ResourceGroupTags.Count -gt 0) {
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  Entra app    : $EntraApplicationName"
+Write-Host "  Entra web app: $EntraWebApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
@@ -1118,31 +1141,30 @@ if (-not $SkipEntraAppConfiguration) {
     $ApiAudience = $entraApplication.ApplicationIdUri
     $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
     Write-Host "Microsoft Graph account: $($entraApplication.InstallingUserPrincipalName)"
+
+    $webApplication = & $ensureEntraWebAppScriptPath `
+        -TenantId $TenantId `
+        -ApiApplicationObjectId $entraApplication.ApplicationObjectId `
+        -ApiClientId $entraApplication.ClientId `
+        -ApiScopeId $entraApplication.ScopeId `
+        -RedirectUri "https://$FunctionAppName.azurewebsites.net/api/ui/index.html" `
+        -ClientId $WebClientId `
+        -DisplayName $EntraWebApplicationName `
+        -Confirm:$false
+    $WebClientId = [guid] $webApplication.ClientId
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
+}
+elseif ($WebClientId -eq [guid]::Empty) {
+    throw 'WebClientId is required when SkipEntraAppConfiguration is used.'
 }
 elseif ($InstallerPrincipalId -eq [guid]::Empty) {
     throw 'InstallerPrincipalId is required when SkipEntraAppConfiguration is used.'
 }
 else {
-    Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
-    $graphConnectParameters = @{
-        TenantId  = $TenantId
-        Scopes    = @('User.Read')
-        NoWelcome = $true
-    }
-    if ($ForceGraphSignIn) {
-        Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
-        $graphConnectParameters.UseDeviceCode = $true
-        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
-    }
-    Connect-MgGraph @graphConnectParameters
-    $installingUser = Invoke-MgGraphRequest `
-        -Method GET `
-        -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
-    $installingUserObjectId = [guid] $installingUser.id
-    Write-Host "Microsoft Graph account: $($installingUser.userPrincipalName)"
+    $installingUserObjectId = $InstallerPrincipalId
+    Write-Host "Preserving installer principal: $installingUserObjectId"
 }
 
 if ([string]::IsNullOrWhiteSpace($ApiAudience)) {
@@ -1160,6 +1182,7 @@ Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
+Write-Host "  Web client ID: $WebClientId"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
@@ -1183,6 +1206,7 @@ $deploymentParameters = @{
     functionAppName   = $FunctionAppName
     location          = $Location
     entraClientId     = $EntraClientId
+    webClientId       = $WebClientId.ToString()
     apiAudience       = $ApiAudience
     tagAuthorizationPolicy = $tagAuthorizationPolicyJson
     managerAuthorizationPolicy = $managerAuthorizationPolicyJson
@@ -1217,6 +1241,7 @@ if ($deployment.ProvisioningState -ne 'Succeeded') {
 
 $functionUrl = [string] $deployment.Outputs.functionUrl.Value
 $managementUrl = [string] $deployment.Outputs.managementUrl.Value
+$webUrl = [string] $deployment.Outputs.webUrl.Value
 $managedIdentityObjectId = [guid] $deployment.Outputs.managedIdentityObjectId.Value
 $storageAccountName = [string] $deployment.Outputs.storageAccountName.Value
 $clientSettings = [ordered]@{
@@ -1227,6 +1252,8 @@ $clientSettings = [ordered]@{
     subscriptionId         = $SubscriptionId
     resourceGroupName      = $ResourceGroupName
     functionAppName        = $FunctionAppName
+    webUrl                 = $webUrl
+    webClientId            = $WebClientId.ToString()
 } | ConvertTo-Json
 $clientSettingsPath = Join-Path $projectRoot 'client.settings.json'
 Set-Content `
@@ -1304,16 +1331,39 @@ if (-not $SkipGraphPermission) {
 }
 
 if (-not $SkipPublish) {
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCommand) {
+        throw 'Node.js and npm are required to build the web frontend.'
+    }
+    Write-Host 'Building web frontend...'
+    Push-Location (Join-Path $projectRoot 'web')
+    try {
+        & $npmCommand.Source ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed with exit code $LASTEXITCODE."
+        }
+        & $npmCommand.Source run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "Web frontend build failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
     $packagePath = Join-Path ([IO.Path]::GetTempPath()) "autopilot-import-$([guid]::NewGuid()).zip"
     try {
         Compress-Archive `
             -Path @(
                 (Join-Path $projectRoot 'host.json'),
+                (Join-Path $projectRoot 'proxies.json'),
                 (Join-Path $projectRoot 'requirements.psd1'),
                 (Join-Path $projectRoot 'profile.ps1'),
                 (Join-Path $projectRoot 'ImportDevice'),
                 (Join-Path $projectRoot 'ProcessDeviceAttribute'),
                 (Join-Path $projectRoot 'ManageTagPolicy'),
+                (Join-Path $projectRoot 'GetAuthorizedTags'),
+                (Join-Path $projectRoot 'WebFrontend'),
                 (Join-Path $projectRoot 'src')
             ) `
             -DestinationPath $packagePath `
@@ -1348,6 +1398,14 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
     if ($smokeResponse.StatusCode -ne 401) {
         throw "Smoke test expected HTTP 401 without a token, but received $($smokeResponse.StatusCode)."
     }
+
+    $webSmokeResponse = Invoke-WebRequest `
+        -Method Get `
+        -Uri $webUrl `
+        -SkipHttpErrorCheck
+    if ($webSmokeResponse.StatusCode -ne 200) {
+        throw "Web frontend smoke test expected HTTP 200, but received $($webSmokeResponse.StatusCode)."
+    }
 }
 
 #endregion Smoke test
@@ -1361,6 +1419,8 @@ $result = [pscustomobject]@{
     FunctionAppName         = $FunctionAppName
     FunctionUrl             = $functionUrl
     ManagementUrl           = $managementUrl
+    WebUrl                  = $webUrl
+    WebClientId             = $WebClientId.ToString()
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
@@ -1404,6 +1464,13 @@ catch {
         -Encoding utf8
     Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
         -ErrorAction Continue
+    $isMicrosoftGraphAuthorizationError =
+        [string] $_.FullyQualifiedErrorId -match 'Microsoft\.Graph' -or
+        [string] $_.TargetObject -match 'graph\.microsoft\.com'
+    if ($isMicrosoftGraphAuthorizationError -and
+        $errorDetails -match 'Authorization_RequestDenied|Forbidden') {
+        throw 'Microsoft Graph application update permissions are insufficient. Assign the updating account the Application Administrator or Cloud Application Administrator Microsoft Entra role, then sign in again and rerun the update.'
+    }
     if ($errorDetails -match `
         'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
         throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'

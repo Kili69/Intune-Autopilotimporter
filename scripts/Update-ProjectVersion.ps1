@@ -65,6 +65,8 @@ $versionPath = Join-Path $projectRoot 'VERSION'
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
 $moduleVersionPattern = "(?m)^(\s*ModuleVersion\s*=\s*)'\d+\.\d+\.\d{8}\.\d+'"
+$scriptInfoVersionPattern = `
+    '(?m)^(\.VERSION\s+)\d+\.\d+\.\d{8}\.\d+\r?$'
 
 $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($currentVersion -notmatch $versionPattern) {
@@ -101,6 +103,19 @@ foreach ($file in $powerShellFiles) {
         "# Project-Version: $newVersion",
         1
     )
+    if ($content -match '(?m)^<#PSScriptInfo\s*$') {
+        if ([regex]::Matches(
+                $content,
+                $scriptInfoVersionPattern).Count -ne 1) {
+            throw "'$($file.FullName)' must contain exactly one PSScriptInfo VERSION entry."
+        }
+        $updatedContent = [regex]::Replace(
+            $updatedContent,
+            $scriptInfoVersionPattern,
+            "`$1$newVersion",
+            1
+        )
+    }
     if ($PSCmdlet.ShouldProcess($file.FullName, "Set project version to $newVersion")) {
         Set-Content -LiteralPath $file.FullName -Value $updatedContent -NoNewline
     }

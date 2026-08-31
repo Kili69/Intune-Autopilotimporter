@@ -5,5 +5,7 @@
   "tenantId": "<tenant-id>",
   "subscriptionId": "<subscription-id>",
   "resourceGroupName": "<resource-group-name>",
-  "functionAppName": "<function-app-name>"
+  "functionAppName": "<function-app-name>",
+  "webUrl": "https://<function-app>.azurewebsites.net/api/ui/index.html",
+  "webClientId": "<web-application-client-id>"
 }

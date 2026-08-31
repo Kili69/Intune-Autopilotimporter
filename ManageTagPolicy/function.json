@@ -9,7 +9,7 @@
         "get",
         "put"
       ],
-      "route": "management/tag-policy"
+      "route": "api/management/tag-policy"
     },
     {
       "type": "http",

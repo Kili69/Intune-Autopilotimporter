@@ -298,6 +298,7 @@ if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
     ServicePrincipalObjectId = if ($servicePrincipal) { [string] $servicePrincipal.id } else { $null }
     ApplicationIdUri         = $applicationIdUri
     Scope                    = $scopeValue
+    ScopeId                  = $scopeId
     InstallingUserObjectId   = [string] $installingUser.id
     InstallingUserPrincipalName = [string] $installingUser.userPrincipalName
 }

@@ -179,6 +179,8 @@ Describe 'Client configuration creation' {
             '11111111-1111-1111-1111-111111111111'
         $settings.resourceGroupName | Should -Be 'rg-autopilot-import'
         $settings.functionAppName | Should -Be 'func-autopilot-import'
+        $settings.webUrl | Should -Be `
+            'https://func-autopilot-import.azurewebsites.net/api/ui/index.html'
         $warnings | Out-String | Should -Match `
             'AutopilotImport.Client.*client.settings.json'
     }
@@ -769,6 +771,34 @@ Describe 'Group-based tag authorization' {
                 -RequestedGroupTag 'Untrusted-Tag' } |
             Should -Throw
     }
+
+    It 'returns all unique tags authorized through caller groups' {
+        $principal.claims += @{
+            typ = 'groups'
+            val = '22222222-2222-2222-2222-222222222222'
+        }
+
+        $tags = @(Get-AuthorizedGroupTags -Principal $principal -Policy $policy)
+
+        $tags | Should -Be @(
+            'Autopilot-Kiosk'
+            'Autopilot-Privileged'
+            'Autopilot-Standard'
+        )
+    }
+
+    It 'returns no tags for a caller without matching groups' {
+        $unknownPrincipal = [pscustomobject]@{
+            claims = @(@{
+                typ = 'groups'
+                val = '33333333-3333-3333-3333-333333333333'
+            })
+        }
+
+        @(Get-AuthorizedGroupTags `
+            -Principal $unknownPrincipal `
+            -Policy $policy).Count | Should -Be 0
+    }
 }
 
 Describe 'Installer tag authorization rules' {
@@ -1134,6 +1164,7 @@ Describe 'Update script deployment discovery' {
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Get-UpdateRestrictedManagementAdministrativeUnitName',
                 'Assert-AutopilotAppSettingsResponse',
+                'Get-UpdateWebClientId',
                 'Test-AzurePermissionPattern',
                 'Assert-AzureUpdatePermissions'
             )) {
@@ -1201,6 +1232,26 @@ Describe 'Update script deployment discovery' {
             '(?s)if\s*\(\$WhatIfPreference\).*?return.*?if\s*\(\s*-not\s+\$Force'
     }
 
+    It 'supports a fresh Graph sign-in after Entra role changes' {
+        $forceGraphSignInParameter = $updateAst.ParamBlock.Parameters |
+            Where-Object {
+                $_.Name.VariablePath.UserPath -eq 'ForceGraphSignIn'
+            }
+
+        $forceGraphSignInParameter.StaticType | Should -Be ([switch])
+        $updateAst.Extent.Text | Should -Match `
+            'ForceGraphSignIn\s*=\s*\$ForceGraphSignIn'
+    }
+
+    It 'passes preserved identities when Entra configuration is skipped' {
+        $webClientIdParameter = $updateAst.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'WebClientId' }
+
+        $webClientIdParameter.StaticType | Should -Be ([guid])
+        $updateAst.Extent.Text | Should -Match `
+            'InstallerPrincipalId\s*=\s*\$installerPrincipalId'
+    }
+
     It 'supports an existing policy without RMAU metadata' {
         $policy = [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
@@ -1261,6 +1312,30 @@ Describe 'Update script deployment discovery' {
         $verboseOutput | Out-String | Should -Match 'user@example.com|1234'
     }
 
+    It 'allows an older deployment without a web client ID to be updated' {
+        $webClientId = Get-UpdateWebClientId -Properties ([pscustomobject]@{})
+
+        $webClientId | Should -Be ([guid]::Empty)
+    }
+
+    It 'requires a deployed web client ID when Entra configuration is skipped' {
+        {
+            Get-UpdateWebClientId `
+                -Properties ([pscustomobject]@{}) `
+                -SkipEntraAppConfiguration
+        } | Should -Throw '*valid WEB_CLIENT_ID*'
+    }
+
+    It 'preserves a valid deployed web client ID' {
+        $expected = [guid]'22222222-2222-2222-2222-222222222222'
+        $properties = [pscustomobject]@{
+            WEB_CLIENT_ID = $expected.ToString()
+        }
+
+        Get-UpdateWebClientId -Properties $properties |
+            Should -Be $expected
+    }
+
     It 'reports only missing Azure capabilities without Verbose' {
         Mock Invoke-AzRestMethod {
             [pscustomobject]@{
@@ -1317,6 +1392,41 @@ Describe 'Update script deployment discovery' {
         $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
             'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+    }
+}
+
+Describe 'Entra web application Graph responses' {
+    BeforeAll {
+        $scriptPath = Join-Path `
+            $PSScriptRoot `
+            '..\scripts\Ensure-EntraWebApplication.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $scriptAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Get-GraphItems'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'unwraps dictionary collection responses from Microsoft Graph' {
+        $application = @{
+            id          = 'application-object-id'
+            appId       = '22222222-2222-2222-2222-222222222222'
+            displayName = 'Autopilot Import Web'
+        }
+        $response = @{ value = @($application) }
+
+        $items = @(Get-GraphItems -Response $response)
+
+        $items.Count | Should -Be 1
+        $items[0].displayName | Should -Be 'Autopilot Import Web'
     }
 }
 
@@ -1444,6 +1554,30 @@ Describe 'Installer Azure deployment diagnostics' {
         $formattedError | Should -Match 'RequestDisallowedByPolicy'
         $formattedError | Should -Match 'func-autopilot-test'
         $formattedError | Should -Match 'Require approved Function plans'
+    }
+}
+
+Describe 'Installer Entra deployment diagnostics' {
+    It 'distinguishes Microsoft Graph authorization from Azure RBAC failures' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match 'Microsoft\\\.Graph'
+        $installer | Should -Match 'graph\\\.microsoft\\\.com'
+        $installer | Should -Match `
+            'Application Administrator or Cloud Application Administrator'
+    }
+
+    It 'does not authenticate to Graph when Entra configuration is skipped' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match `
+            '(?s)elseif \(\$InstallerPrincipalId -eq \[guid\]::Empty\).*?else \{\s*\$installingUserObjectId = \$InstallerPrincipalId\s*Write-Host'
     }
 }
 
@@ -1757,6 +1891,18 @@ Describe 'Storage Account update compatibility' {
     }
 }
 
+Describe 'Updater web client ID fallback' {
+    It 'checks whether WebClientId was supplied before comparing it as a GUID' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $updater = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Update-AutopilotImport.ps1') `
+            -Raw
+
+        $updater | Should -Match `
+            '\$PSBoundParameters\.ContainsKey\(''WebClientId''\)\s+-and\s+\$WebClientId -ne \[guid\]::Empty'
+    }
+}
+
 Describe 'Setup activity logging' {
     It 'logs installation and update activity in the temporary directory' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -1799,6 +1945,157 @@ Describe 'Setup activity logging' {
     }
 }
 
+Describe 'Web frontend response types' {
+    It 'keeps the device hash card level at every viewport width' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $style = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'web\src\style.css') `
+            -Raw
+
+        $style | Should -Not -Match 'transform:\s*rotate\('
+    }
+
+    It 'serves textual assets as strings so Azure preserves their MIME types' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -Raw
+
+        $frontendFunction | Should -Match `
+            "\$textExtensions = @\('\.html', '\.js', '\.css', '\.svg', '\.json'\)"
+        $frontendFunction | Should -Match `
+            '\[IO\.File\]::ReadAllText\(\$resolvedPath, \[Text\.Encoding\]::UTF8\)'
+        $frontendFunction | Should -Match `
+            "'\.html' = 'text/html; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            "'\.js'\s+= 'text/javascript; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            'ContentType\s*=\s*\$ContentType'
+        $frontendFunction | Should -Not -Match `
+            "Headers\['Content-Type'\]"
+    }
+
+    It 'uses the requested HTTPS origin for custom domain runtime URLs' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -Raw
+
+        $frontendFunction | Should -Match `
+            '\$Request\.Url'
+        $frontendFunction | Should -Match `
+            'GetLeftPart\(\[UriPartial\]::Authority\)'
+        $frontendFunction | Should -Match `
+            'redirectUri\s*=\s*"\$origin/api/ui/index\.html"'
+        $frontendFunction | Should -Match `
+            'importUrl\s*=\s*"\$origin/api/devices/import"'
+    }
+
+    It 'redirects the Function hostname root while preserving existing API URLs' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $hostConfiguration = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'host.json') `
+            -Raw |
+            ConvertFrom-Json
+
+        $hostConfiguration.extensions.http.routePrefix | Should -Be ''
+        $infrastructure = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'infra\main.bicep') `
+            -Raw
+        $infrastructure | Should -Match `
+            "name:\s*'AzureWebJobsDisableHomepage'\s+value:\s*'true'"
+        $infrastructure | Should -Match `
+            "name:\s*'AzureWebJobsFeatureFlags'\s+value:\s*'EnableProxies'"
+        $expectedRoutes = @{
+            'ImportDevice'      = 'api/devices/import'
+            'GetAuthorizedTags' = 'api/devices/tags'
+            'ManageTagPolicy'   = 'api/management/tag-policy'
+            'WebFrontend'       = 'api/ui/{*path}'
+        }
+        foreach ($functionName in $expectedRoutes.Keys) {
+            $functionConfiguration = Get-Content `
+                -LiteralPath (Join-Path `
+                    $projectRoot `
+                    "$functionName\function.json") `
+                -Raw |
+                ConvertFrom-Json
+            $httpTrigger = @($functionConfiguration.bindings | Where-Object {
+                $_.type -eq 'httpTrigger'
+            }) | Select-Object -First 1
+
+            $httpTrigger.route | Should -Be $expectedRoutes[$functionName]
+        }
+
+        $proxyConfiguration = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'proxies.json') `
+            -Raw |
+            ConvertFrom-Json
+        $rootProxy = $proxyConfiguration.proxies.RootRedirect
+        $rootProxy.matchCondition.methods | Should -Be 'GET'
+        $rootProxy.matchCondition.route | Should -Be '/'
+        $rootProxy.responseOverrides.'response.statusCode' | Should -Be '302'
+        $rootProxy.responseOverrides.'response.headers.Location' |
+            Should -Be '/api/ui/index.html'
+    }
+}
+
+Describe 'OOBE web importer helper script' {
+    BeforeAll {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $helperPath = Join-Path $projectRoot `
+            'scripts\Start-IntuneAutopilotImporter.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $helperAst = [Management.Automation.Language.Parser]::ParseFile(
+            $helperPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $parseErrors.Count | Should -Be 0
+        foreach ($functionName in @(
+                'Resolve-AutopilotImporterWebUrl'
+                'Get-AutopilotImporterConfigUrl'
+            )) {
+            $functionAst = $helperAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
+    It 'has valid PowerShell Gallery metadata matching the project version' {
+        $scriptInfo = Test-ScriptFileInfo -Path $helperPath
+        $projectVersion = (Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'VERSION') `
+            -Raw).Trim()
+
+        $scriptInfo.Name | Should -Be 'Start-IntuneAutopilotImporter'
+        [string] $scriptInfo.Version | Should -Be $projectVersion
+        $scriptInfo.ProjectUri | Should -Be `
+            'https://github.com/anluca_microsoft/Intune-Autopilotimporter'
+    }
+
+    It 'normalizes a Function App root URL to the frontend page' {
+        $webUrl = Resolve-AutopilotImporterWebUrl `
+            -Url 'https://func-example.azurewebsites.net'
+
+        $webUrl.AbsoluteUri | Should -Be `
+            'https://func-example.azurewebsites.net/api/ui/index.html'
+        (Get-AutopilotImporterConfigUrl -WebUri $webUrl).AbsoluteUri |
+            Should -Be `
+                'https://func-example.azurewebsites.net/api/ui/config'
+    }
+
+    It 'rejects an insecure frontend URL' {
+        {
+            Resolve-AutopilotImporterWebUrl `
+                -Url 'http://func-example.azurewebsites.net'
+        } | Should -Throw '*absolute HTTPS URL*'
+    }
+}
+
 Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -1807,7 +2104,10 @@ Describe 'Project metadata entries' {
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object {
+                    $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+                    $_.FullName -notmatch '[\\/]web[\\/]node_modules[\\/]'
+                }
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1832,13 +2132,27 @@ Describe 'Project metadata entries' {
         [string] $manifest.ModuleVersion | Should -Be $projectVersion
     }
 
+    It 'updates PowerShell Gallery script metadata with the project version' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $versionScript = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'scripts\Update-ProjectVersion.ps1') `
+            -Raw
+
+        $versionScript | Should -Match 'scriptInfoVersionPattern'
+        $versionScript | Should -Match 'PSScriptInfo VERSION entry'
+    }
+
     It 'uses the central author in every PowerShell file' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
         $projectAuthor = (Get-Content (Join-Path $projectRoot 'AUTHOR') -Raw).Trim()
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object {
+                    $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+                    $_.FullName -notmatch '[\\/]web[\\/]node_modules[\\/]'
+                }
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1908,10 +2222,17 @@ Describe 'Deployment package' {
                     'src/AutopilotImport/AutopilotImport.psm1'
                     'src/AutopilotImport.Client/AutopilotImport.Client.psd1'
                     'scripts/Ensure-EntraApiApplication.ps1'
+                    'scripts/Ensure-EntraWebApplication.ps1'
                     'scripts/Grant-ManagedIdentityGraphPermission.ps1'
                     'scripts/Import-AutopilotDevice.ps1'
+                    'scripts/Start-IntuneAutopilotImporter.ps1'
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
+                    'GetAuthorizedTags/function.json'
+                    'proxies.json'
+                    'WebFrontend/function.json'
+                    'web/package.json'
+                    'web/src/main.ts'
                 )) {
                 $entries | Should -Contain "$packageRoot/$requiredEntry"
             }

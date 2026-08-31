@@ -27,6 +27,14 @@ Allows the installer to install missing PowerShell and Bicep prerequisites.
 Runs the Azure update without prompting for execution confirmation. WhatIf
 still takes precedence and does not perform the update.
 
+.PARAMETER ForceGraphSignIn
+Forces a fresh Microsoft Graph device-code sign-in. Use this after assigning
+new Microsoft Entra roles or when interactive browser authentication is hidden.
+
+.PARAMETER WebClientId
+Client ID of the existing Entra web application. Overrides WEB_CLIENT_ID from
+the deployed Function App settings when supplied.
+
 .PARAMETER SkipEntraAppConfiguration
 Skips Entra application configuration during the update.
 
@@ -82,6 +90,10 @@ param(
     [switch] $InstallMissingModules,
 
     [switch] $Force,
+
+    [switch] $ForceGraphSignIn,
+
+    [guid] $WebClientId,
 
     [switch] $SkipEntraAppConfiguration,
 
@@ -276,6 +288,35 @@ function Assert-AutopilotAppSettingsResponse {
     $responseError = $Response.Content | ConvertFrom-Json
     Write-Verbose "Function App settings lookup failed: $($responseError.error.message)"
     throw 'Unable to read the Function App settings. Grant the updating account the Microsoft.Web/sites/config/list/action permission and try again. Run with -Verbose for details.'
+}
+
+function Get-UpdateWebClientId {
+    <#
+    .SYNOPSIS
+    Reads the optional web client ID from deployed Function App settings.
+
+    .DESCRIPTION
+    Returns an empty GUID when an older deployment has no WEB_CLIENT_ID so
+    the installer can create or discover the Entra web application. When
+    Entra application configuration is skipped, a valid existing ID is
+    required.
+    #>
+    [OutputType([guid])]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Properties,
+
+        [switch] $SkipEntraAppConfiguration
+    )
+
+    $webClientId = [guid]::Empty
+    $webClientIdProperty = $Properties.PSObject.Properties['WEB_CLIENT_ID']
+    $hasValidWebClientId = $null -ne $webClientIdProperty -and
+        [guid]::TryParse([string] $webClientIdProperty.Value, [ref] $webClientId)
+    if (-not $hasValidWebClientId -and $SkipEntraAppConfiguration) {
+        throw 'The deployed Function does not contain a valid WEB_CLIENT_ID. Run the update without -SkipEntraAppConfiguration once.'
+    }
+    return $webClientId
 }
 
 function Test-AzurePermissionPattern {
@@ -490,8 +531,22 @@ if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
 }
 $managerPolicy = $appSettings.properties.MANAGER_AUTHORIZATION_POLICY |
     ConvertFrom-Json
+$webClientId = if ($PSBoundParameters.ContainsKey('WebClientId') -and
+    $WebClientId -ne [guid]::Empty) {
+    $WebClientId
+}
+else {
+    Get-UpdateWebClientId `
+        -Properties $appSettings.properties `
+        -SkipEntraAppConfiguration:$SkipEntraAppConfiguration
+}
+$installerPrincipalId = [guid]::Empty
+if ($managerPolicy.PSObject.Properties['installerPrincipalId']) {
+    [guid]::TryParse(
+        [string] $managerPolicy.installerPrincipalId,
+        [ref] $installerPrincipalId) | Out-Null
+}
 $managerPrincipalIds = @(
-    @($managerPolicy.installerPrincipalId) +
     @($managerPolicy.additionalPrincipalIds) |
     Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
     Select-Object -Unique
@@ -521,6 +576,8 @@ $installerParameters = @{
     Location                    = [string] $site.location
     FunctionAppName             = [string] $settings.functionAppName
     EntraClientId               = $entraClientId.ToString()
+    WebClientId                 = $webClientId
+    InstallerPrincipalId        = $installerPrincipalId
     ApiAudience                 = $apiAudience
     TagAuthorizationRule        = $tagAuthorizationRules
     RestrictedManagementAdministrativeUnitName = `
@@ -529,6 +586,7 @@ $installerParameters = @{
     TagManagerPrincipalId       = @($managerPrincipalIds)
     ClientToolsPath             = $resolvedClientToolsPath
     InstallMissingModules       = $InstallMissingModules
+    ForceGraphSignIn            = $ForceGraphSignIn
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission
     SkipPublish                 = $SkipPublish

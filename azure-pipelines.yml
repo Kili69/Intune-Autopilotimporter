@@ -20,6 +20,15 @@ stages:
       - job: Pester
         steps:
           - checkout: self
+          - task: NodeTool@0
+            displayName: Use Node.js 22
+            inputs:
+              versionSpec: '22.x'
+          - script: |
+              npm ci
+              npm run check
+            workingDirectory: web
+            displayName: Test and build web frontend
           - task: PowerShell@2
             displayName: Run Pester tests
             inputs:
@@ -72,6 +81,7 @@ stages:
                         -Location '$(location)' `
                         -FunctionAppName '$(functionAppName)' `
                         -EntraClientId '$(entraClientId)' `
+                        -WebClientId '$(webClientId)' `
                         -InstallerPrincipalId '$(installerPrincipalId)' `
                         -TagAuthorizationRule $tagAuthorizationRules `
                         -TagManagerPrincipalId $tagManagerPrincipalIds `
