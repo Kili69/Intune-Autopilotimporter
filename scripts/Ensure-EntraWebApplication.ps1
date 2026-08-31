@@ -76,6 +76,37 @@ function Get-GraphItems {
     return @($Response)
 }
 
+function ConvertTo-ValidPermissionIds {
+    param(
+        [AllowNull()]
+        [object[]] $PermissionIds,
+
+        [Parameter(Mandatory)]
+        [string[]] $ValidPermissionIds
+    )
+
+    $validIds = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($validPermissionId in $ValidPermissionIds) {
+        $parsedId = [guid]::Empty
+        if ([guid]::TryParse($validPermissionId, [ref] $parsedId)) {
+            [void] $validIds.Add($parsedId.ToString())
+        }
+    }
+
+    $result = [Collections.Generic.List[string]]::new()
+    foreach ($permissionId in @($PermissionIds)) {
+        $parsedId = [guid]::Empty
+        if ([guid]::TryParse([string] $permissionId, [ref] $parsedId) -and
+            $validIds.Contains($parsedId.ToString()) -and
+            -not $result.Contains($parsedId.ToString())) {
+            $result.Add($parsedId.ToString())
+        }
+    }
+    return $result.ToArray()
+}
+
 $connectParameters = @{
     TenantId  = $TenantId
     Scopes    = @('Application.ReadWrite.All', 'User.Read')
@@ -185,26 +216,36 @@ if (-not $servicePrincipal -and
 
 $apiApplication = Invoke-MgGraphRequest `
     -Method GET `
-    -Uri "https://graph.microsoft.com/v1.0/applications/${ApiApplicationObjectId}?`$select=id,api"
+    -Uri "https://graph.microsoft.com/v1.0/applications/${ApiApplicationObjectId}?`$select=id,api,appRoles"
+$apiScopeIdString = $ApiScopeId.ToString()
+$apiScope = @($apiApplication.api.oauth2PermissionScopes | Where-Object {
+    [string] $_.id -eq $apiScopeIdString -and $_.isEnabled
+} | Select-Object -First 1)
+if ($apiScope.Count -eq 0) {
+    throw "Delegated permission scope '$apiScopeIdString' is not enabled on API application '$ApiApplicationObjectId'."
+}
+$validPermissionIds = @(
+    $apiApplication.api.oauth2PermissionScopes |
+        ForEach-Object { [string] $_.id }
+    $apiApplication.appRoles |
+        ForEach-Object { [string] $_.id }
+)
 $otherPreAuthorizedApplications = @($apiApplication.api.preAuthorizedApplications |
     Where-Object { [string] $_.appId -ne [string] $application.appId } |
     ForEach-Object {
-        $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+        $permissionIds = @(ConvertTo-ValidPermissionIds `
+            -PermissionIds $_.delegatedPermissionIds `
+            -ValidPermissionIds $validPermissionIds)
+        if ($permissionIds.Count -gt 0) {
+            @{
+                appId                  = [string] $_.appId
+                delegatedPermissionIds = $permissionIds
+            }
+        }
     })
-$existingWebPreAuthorization = @($apiApplication.api.preAuthorizedApplications |
-    Where-Object { [string] $_.appId -eq [string] $application.appId } |
-    Select-Object -First 1)
-$existingDelegatedPermissionIds = if ($existingWebPreAuthorization.Count -gt 0) {
-    @($existingWebPreAuthorization[0].delegatedPermissionIds)
-}
-else {
-    @()
-}
-$delegatedPermissionIds = @(
-    $existingDelegatedPermissionIds + $ApiScopeId.ToString() |
-        ForEach-Object { [string] $_ } |
-        Select-Object -Unique
-)
+# The target SPA must always receive the enabled scope selected above. Do not
+# derive this entry from existing preauthorization data, which can be empty.
+$delegatedPermissionIds = @([string] $apiScope[0].id)
 $preAuthorizationBody = @{
     api = @{
         requestedAccessTokenVersion = $apiApplication.api.requestedAccessTokenVersion

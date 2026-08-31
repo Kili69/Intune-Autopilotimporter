@@ -1413,6 +1413,12 @@ Describe 'Entra web application Graph responses' {
             $node.Name -eq 'Get-GraphItems'
         }, $true) | Select-Object -First 1
         Invoke-Expression $functionAst.Extent.Text
+        $permissionFunctionAst = $scriptAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'ConvertTo-ValidPermissionIds'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $permissionFunctionAst.Extent.Text
     }
 
     It 'unwraps dictionary collection responses from Microsoft Graph' {
@@ -1427,6 +1433,33 @@ Describe 'Entra web application Graph responses' {
 
         $items.Count | Should -Be 1
         $items[0].displayName | Should -Be 'Autopilot Import Web'
+    }
+
+    It 'keeps only well-formed permission IDs exposed by the API' {
+        $scopeId = '11111111-1111-1111-1111-111111111111'
+        $roleId = '22222222-2222-2222-2222-222222222222'
+
+        $permissionIds = @(ConvertTo-ValidPermissionIds `
+            -PermissionIds @(
+                $scopeId,
+                'not-a-guid',
+                '33333333-3333-3333-3333-333333333333',
+                $roleId,
+                $scopeId,
+                $null
+            ) `
+            -ValidPermissionIds @($scopeId, $roleId))
+
+        $permissionIds | Should -Be @($scopeId, $roleId)
+    }
+
+    It 'always assigns the validated API scope to the target SPA' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should -Match `
+            '\$delegatedPermissionIds\s*=\s*@\(\[string\]\s*\$apiScope\[0\]\.id\)'
+        $scriptText | Should -Not -Match `
+            '\$existingDelegatedPermissionIds\s*\+\s*\$apiScopeIdString'
     }
 }
 
