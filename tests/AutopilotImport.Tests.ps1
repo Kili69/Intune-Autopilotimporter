@@ -1496,6 +1496,20 @@ Describe 'Entra web application Graph responses' {
     }
 }
 
+Describe 'Installer optional web client application' {
+    It 'does not pass a null client ID to the web application script' {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'if \(\$null -ne \$WebClientId -and \$WebClientId -ne \[guid\]::Empty\)'
+        $installer | Should -Match `
+            '\$webApplicationParameters\.ClientId = \$WebClientId'
+        $installer | Should -Not -Match `
+            '(?m)^\s*-ClientId \$WebClientId `\s*$'
+    }
+}
+
 Describe 'Azure deployment permission validation' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'

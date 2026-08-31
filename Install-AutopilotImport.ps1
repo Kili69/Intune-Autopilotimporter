@@ -1142,15 +1142,19 @@ if (-not $SkipEntraAppConfiguration) {
     $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
     Write-Host "Microsoft Graph account: $($entraApplication.InstallingUserPrincipalName)"
 
-    $webApplication = & $ensureEntraWebAppScriptPath `
-        -TenantId $TenantId `
-        -ApiApplicationObjectId $entraApplication.ApplicationObjectId `
-        -ApiClientId $entraApplication.ClientId `
-        -ApiScopeId $entraApplication.ScopeId `
-        -RedirectUri "https://$FunctionAppName.azurewebsites.net/api/ui/index.html" `
-        -ClientId $WebClientId `
-        -DisplayName $EntraWebApplicationName `
-        -Confirm:$false
+    $webApplicationParameters = @{
+        TenantId               = $TenantId
+        ApiApplicationObjectId = $entraApplication.ApplicationObjectId
+        ApiClientId            = $entraApplication.ClientId
+        ApiScopeId             = $entraApplication.ScopeId
+        RedirectUri            = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
+        DisplayName            = $EntraWebApplicationName
+        Confirm                = $false
+    }
+    if ($null -ne $WebClientId -and $WebClientId -ne [guid]::Empty) {
+        $webApplicationParameters.ClientId = $WebClientId
+    }
+    $webApplication = & $ensureEntraWebAppScriptPath @webApplicationParameters
     $WebClientId = [guid] $webApplication.ClientId
 }
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
