@@ -88,21 +88,52 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Resolve-AutopilotImporterWebUrl {
+    <#
+    .SYNOPSIS
+    Validates and normalizes the Autopilot Import frontend URL.
+
+    .DESCRIPTION
+    Accepts the Function App root URL, the /api/ui route, or the complete
+    /api/ui/index.html URL. The function normalizes all supported forms to the
+    complete frontend document URL and removes query strings and fragments.
+
+    Only absolute HTTPS URLs are accepted because the frontend handles a
+    Microsoft Entra authorization code flow and must not expose authentication
+    data over an unencrypted connection.
+
+    .PARAMETER Url
+    Candidate frontend URL. If it is empty, the operator is prompted for a URL.
+
+    .OUTPUTS
+    System.Uri containing the normalized frontend URL.
+
+    .EXAMPLE
+    Resolve-AutopilotImporterWebUrl `
+        -Url 'https://func-example.azurewebsites.net'
+
+    Returns https://func-example.azurewebsites.net/api/ui/index.html.
+    #>
     [CmdletBinding()]
     param(
         [string] $Url
     )
 
+    # Prompt only when the caller did not provide a usable value. Keeping the
+    # prompt inside this function makes URL handling reusable in tests.
     if ([string]::IsNullOrWhiteSpace($Url)) {
         $Url = Read-Host 'Autopilot Import web URL'
     }
 
+    # TryCreate prevents malformed input from producing less helpful exceptions.
+    # HTTPS is mandatory for both the browser frontend and Entra authentication.
     $parsedUrl = $null
     if (-not [uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref] $parsedUrl) -or
         $parsedUrl.Scheme -ne 'https') {
         throw 'WebUrl must be an absolute HTTPS URL.'
     }
 
+    # UriBuilder safely changes only the path while preserving the scheme,
+    # hostname, optional port, and any custom DNS alias supplied by the caller.
     $builder = [UriBuilder]::new($parsedUrl)
     if ($builder.Path -eq '/' -or [string]::IsNullOrWhiteSpace($builder.Path)) {
         $builder.Path = '/api/ui/index.html'
@@ -114,12 +145,30 @@ function Resolve-AutopilotImporterWebUrl {
             [StringComparison]::OrdinalIgnoreCase)) {
         throw 'WebUrl must identify the Function App root, /api/ui, or /api/ui/index.html.'
     }
+
+    # Query parameters and fragments are not part of the configured SPA redirect
+    # URI and could make frontend validation target an unexpected resource.
     $builder.Query = ''
     $builder.Fragment = ''
     return $builder.Uri
 }
 
 function Get-AutopilotImporterConfigUrl {
+    <#
+    .SYNOPSIS
+    Derives the public runtime configuration endpoint from the frontend URL.
+
+    .DESCRIPTION
+    Resolves the relative path ./config against /api/ui/index.html. This yields
+    /api/ui/config on the same scheme, host, and port, including when the
+    Function App is accessed through a custom DNS name.
+
+    .PARAMETER WebUri
+    Normalized URI returned by Resolve-AutopilotImporterWebUrl.
+
+    .OUTPUTS
+    System.Uri for the frontend runtime configuration endpoint.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -130,9 +179,28 @@ function Get-AutopilotImporterConfigUrl {
 }
 
 function Get-MicrosoftEdgePath {
+    <#
+    .SYNOPSIS
+    Locates the Microsoft Edge executable on the local Windows installation.
+
+    .DESCRIPTION
+    Checks the standard per-machine 32-bit and 64-bit installation directories,
+    followed by the current user's local application directory. Returning an
+    explicit executable path avoids relying on PATH or on the CMD-specific
+    start command syntax, neither of which is reliable during Windows OOBE.
+
+    .OUTPUTS
+    System.String containing the first existing msedge.exe path.
+
+    .NOTES
+    Throws a terminating error listing every candidate when Edge cannot be
+    found. The caller therefore never attempts to start an unknown executable.
+    #>
     [CmdletBinding()]
     param()
 
+    # Command substitutions let missing environment variables contribute no
+    # value. The subsequent filter removes null or empty candidate entries.
     $candidates = @(
         $(if (${env:ProgramFiles(x86)}) {
             Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'
@@ -145,6 +213,7 @@ function Get-MicrosoftEdgePath {
         })
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) }
 
+    # Prefer the conventional system installation over a per-user installation.
     $edgePath = $candidates | Where-Object {
         Test-Path -LiteralPath $_ -PathType Leaf
     } | Select-Object -First 1
@@ -155,13 +224,37 @@ function Get-MicrosoftEdgePath {
 }
 
 function Get-LocalAutopilotDeviceInformation {
+    <#
+    .SYNOPSIS
+    Reads the local device identity required by Windows Autopilot.
+
+    .DESCRIPTION
+    Reads the BIOS serial number from Win32_BIOS and the Autopilot hardware hash
+    from the MDM Bridge WMI provider. The MDM_DevDetail_Ext01 class exposes the
+    DeviceHardwareData value generated by Windows for the current device.
+
+    Administrative elevation is required to query the MDM Bridge namespace.
+    The function validates that both values are present and confirms that the
+    hardware hash is non-empty Base64 before constructing the CSV row.
+
+    No network request is made and no device identity is uploaded by this
+    function.
+
+    .OUTPUTS
+    PSCustomObject whose ordered properties match the standard Windows
+    Autopilot CSV column names.
+    #>
     [CmdletBinding()]
     param()
 
+    # Fail early on non-Windows platforms where the required CIM providers do
+    # not exist, even if PowerShell itself is available.
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'Autopilot hardware hash collection is supported only on Windows.'
     }
 
+    # Querying root/cimv2/mdm/dmmap normally requires an elevated token. An
+    # explicit check produces a clearer error than a later CIM access failure.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole(
@@ -169,9 +262,15 @@ function Get-LocalAutopilotDeviceInformation {
         throw 'Run this script from an elevated PowerShell session.'
     }
 
+    # Win32_BIOS provides the manufacturer-programmed serial number used to
+    # identify the device in Intune and Windows Autopilot.
     $serialNumber = [string] (Get-CimInstance `
         -ClassName Win32_BIOS `
         -ErrorAction Stop).SerialNumber
+
+    # The MDM Bridge provider exposes DeviceHardwareData only for the Ext device
+    # detail instance. This is the same source used by standard Autopilot hash
+    # collection tooling.
     $deviceDetail = Get-CimInstance `
         -Namespace 'root/cimv2/mdm/dmmap' `
         -ClassName 'MDM_DevDetail_Ext01' `
@@ -185,6 +284,9 @@ function Get-LocalAutopilotDeviceInformation {
     if ([string]::IsNullOrWhiteSpace($hardwareHash)) {
         throw 'Windows did not return Autopilot DeviceHardwareData.'
     }
+
+    # Validate the payload without decoding or rewriting it. Exporting the
+    # original Base64 text preserves the value expected by the Intune API.
     try {
         $hashBytes = [Convert]::FromBase64String($hardwareHash)
     }
@@ -195,6 +297,9 @@ function Get-LocalAutopilotDeviceInformation {
         throw 'Windows returned an empty Autopilot hardware hash.'
     }
 
+    # Ordered properties guarantee the conventional Autopilot CSV column order.
+    # Group Tag and Assigned User remain blank so the operator can select or
+    # review deployment metadata in the authenticated web frontend.
     [pscustomobject][ordered]@{
         'Device Serial Number' = $serialNumber.Trim()
         'Windows Product ID'   = ''
@@ -204,10 +309,14 @@ function Get-LocalAutopilotDeviceInformation {
     }
 }
 
+# Normalize user input before performing any web, device, or filesystem work.
 $resolvedWebUrl = Resolve-AutopilotImporterWebUrl -Url $WebUrl
 $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
 
 if (-not $SkipWebValidation) {
+    # The configuration endpoint is intentionally public: it contains tenant and
+    # application identifiers, but no secret or access token. Reading it verifies
+    # that the supplied URL points to a configured Autopilot Import deployment.
     $configUrl = Get-AutopilotImporterConfigUrl -WebUri $resolvedWebUrl
     Write-Verbose "Validating frontend configuration at '$configUrl'."
     try {
@@ -220,6 +329,9 @@ if (-not $SkipWebValidation) {
     catch {
         throw "The Autopilot Import frontend configuration could not be read from '$configUrl': $($_.Exception.Message)"
     }
+
+    # These values are the minimum required for frontend authentication and API
+    # calls. Validate their presence without attempting an interactive sign-in.
     foreach ($propertyName in @('clientId', 'authority', 'scope', 'importUrl')) {
         if (-not $runtimeConfig.PSObject.Properties[$propertyName] -or
             [string]::IsNullOrWhiteSpace([string] $runtimeConfig.$propertyName)) {
@@ -228,6 +340,9 @@ if (-not $SkipWebValidation) {
     }
 }
 
+# ShouldProcess provides standard -WhatIf behavior. In WhatIf mode the script
+# may validate the public frontend, but it never queries the local hardware hash,
+# writes a CSV, accesses the clipboard, or starts Microsoft Edge.
 if (-not $PSCmdlet.ShouldProcess(
         $resolvedOutputPath,
         'Collect the Autopilot hardware hash and create the CSV')) {
@@ -235,6 +350,8 @@ if (-not $PSCmdlet.ShouldProcess(
     return
 }
 
+# Create the destination directory when necessary, collect one device record,
+# and export it with headers compatible with Windows Autopilot CSV imports.
 $outputDirectory = Split-Path $resolvedOutputPath -Parent
 New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
 $device = Get-LocalAutopilotDeviceInformation
@@ -245,6 +362,9 @@ $device | Export-Csv `
     -Force
 $csvFile = Get-Item -LiteralPath $resolvedOutputPath
 
+# Clipboard integration is best-effort because Set-Clipboard might be absent or
+# unavailable in restricted OOBE sessions. CSV creation remains successful when
+# clipboard access fails, and the path is still printed for manual selection.
 try {
     Set-Clipboard -Value $csvFile.FullName -ErrorAction Stop
     Write-Host "Autopilot CSV created: $($csvFile.FullName)"
@@ -254,6 +374,9 @@ catch {
     Write-Host "Autopilot CSV created: $($csvFile.FullName)"
 }
 
+# Resolve Edge only after CSV creation so a browser discovery failure never
+# prevents collection of the device identity. InPrivate is the default to reduce
+# persistence of operator accounts and browser state on a newly provisioned PC.
 $edgePath = Get-MicrosoftEdgePath
 $edgeArguments = @()
 if (-not $NoInPrivate) {
@@ -262,4 +385,6 @@ if (-not $NoInPrivate) {
 $edgeArguments += $resolvedWebUrl.AbsoluteUri
 Start-Process -FilePath $edgePath -ArgumentList $edgeArguments
 
+# Return FileInfo for callers that want to log, copy, or otherwise process the
+# generated file. Host messages above are informational and are not pipeline data.
 $csvFile

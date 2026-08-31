@@ -137,6 +137,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: '7.4'
         }
         {
+          name: 'AzureWebJobsDisableHomepage'
+          value: 'true'
+        }
+        {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableProxies'
+        }
+        {
           name: 'WEBSITE_RUN_FROM_PACKAGE'
           value: '1'
         }
@@ -215,6 +223,7 @@ resource authentication 'Microsoft.Web/sites/config@2023-12-01' = {
       requireAuthentication: true
       unauthenticatedClientAction: 'Return401'
       excludedPaths: [
+        '/'
         '/api/ui/*'
       ]
     }

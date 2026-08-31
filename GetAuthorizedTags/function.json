@@ -8,7 +8,7 @@
       "methods": [
         "get"
       ],
-      "route": "devices/tags"
+      "route": "api/devices/tags"
     },
     {
       "type": "http",

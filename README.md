@@ -736,7 +736,7 @@ $deployment = New-AzResourceGroupDeployment `
     -managerAuthorizationPolicy $managerPolicy
 ```
 
-The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated API requests are rejected with HTTP 401 before the Function code runs. Only `/api/ui/*` is excluded so that the static sign-in page and its public runtime configuration can load; no import or policy data is exposed there.
+The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated API requests are rejected with HTTP 401 before the Function code runs. Only `/` and `/api/ui/*` are excluded: the root returns an HTTP redirect to the frontend, while the static sign-in page and its public runtime configuration can load without authentication. No import or policy data is exposed through these paths.
 
 ### 3. Assign the Graph Permission
 
@@ -761,7 +761,7 @@ Pop-Location
 
 $package = Join-Path $PWD 'autopilot-import.zip'
 Compress-Archive `
-    -Path .\host.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
+    -Path .\host.json, .\proxies.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
     -DestinationPath $package `
     -Force
 

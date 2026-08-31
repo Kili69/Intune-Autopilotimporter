@@ -13,6 +13,9 @@
     "enabled": true
   },
   "extensions": {
+    "http": {
+      "routePrefix": ""
+    },
     "queues": {
       "maxDequeueCount": 24,
       "visibilityTimeout": "00:05:00"

@@ -47,7 +47,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 .eyebrow { color: #1668dc; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .15em; }
 .security-card {
   background: linear-gradient(150deg, #10295f, #0b1632); color: white; border-radius: 24px; padding: 34px;
-  box-shadow: 0 28px 70px rgba(14, 33, 70, .24); transform: rotate(1deg);
+  box-shadow: 0 28px 70px rgba(14, 33, 70, .24);
 }
 .security-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: #3ed598; font-size: 25px; font-weight: 800; }
 .security-card h2 { margin: 22px 0 18px; }
@@ -113,7 +113,6 @@ footer { color: #8792a5; text-align: center; padding: 24px; font-size: 12px; }
 @media (max-width: 820px) {
   .hero, .step-grid { grid-template-columns: 1fr; }
   .hero { gap: 42px; padding: 50px 0; }
-  .security-card { transform: none; }
   .topbar { padding: 0 20px; }
   .account-name { display: none; }
 }

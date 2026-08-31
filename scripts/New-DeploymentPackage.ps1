@@ -94,6 +94,7 @@ $packageEntries = @(
     'README.md'
     'VERSION'
     'host.json'
+    'proxies.json'
     'requirements.psd1'
     'profile.ps1'
     'client.settings.json.example'

@@ -9,7 +9,7 @@
         "get",
         "post"
       ],
-      "route": "devices/import"
+      "route": "api/devices/import"
     },
     {
       "type": "http",

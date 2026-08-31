@@ -8,7 +8,7 @@
       "methods": [
         "get"
       ],
-      "route": "ui/{*path}"
+      "route": "api/ui/{*path}"
     },
     {
       "type": "http",

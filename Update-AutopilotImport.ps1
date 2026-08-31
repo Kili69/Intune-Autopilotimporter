@@ -531,7 +531,8 @@ if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
 }
 $managerPolicy = $appSettings.properties.MANAGER_AUTHORIZATION_POLICY |
     ConvertFrom-Json
-$webClientId = if ($WebClientId -ne [guid]::Empty) {
+$webClientId = if ($PSBoundParameters.ContainsKey('WebClientId') -and
+    $WebClientId -ne [guid]::Empty) {
     $WebClientId
 }
 else {

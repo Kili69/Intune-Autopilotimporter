@@ -558,7 +558,15 @@ function Install-AutopilotClientTools {
             [IO.Path]::GetFullPath($_.FullName).TrimEnd('\') -ne `
                 $normalizedModuleDestination
         } |
-        Remove-Item -Recurse -Force
+        ForEach-Object {
+            $oldModulePath = $_.FullName
+            try {
+                Remove-Item -LiteralPath $oldModulePath -Recurse -Force -ErrorAction Stop
+            }
+            catch [System.IO.IOException] {
+                Write-Warning "Older client module '$oldModulePath' is in use and could not be removed. Close PowerShell sessions using that version and remove it later."
+            }
+        }
 
     $packageDestinationRoot = [IO.Path]::GetFullPath($PackageDestinationPath)
     [void] (New-Item `
@@ -1348,6 +1356,7 @@ if (-not $SkipPublish) {
         Compress-Archive `
             -Path @(
                 (Join-Path $projectRoot 'host.json'),
+                (Join-Path $projectRoot 'proxies.json'),
                 (Join-Path $projectRoot 'requirements.psd1'),
                 (Join-Path $projectRoot 'profile.ps1'),
                 (Join-Path $projectRoot 'ImportDevice'),

@@ -1891,6 +1891,18 @@ Describe 'Storage Account update compatibility' {
     }
 }
 
+Describe 'Updater web client ID fallback' {
+    It 'checks whether WebClientId was supplied before comparing it as a GUID' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $updater = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Update-AutopilotImport.ps1') `
+            -Raw
+
+        $updater | Should -Match `
+            '\$PSBoundParameters\.ContainsKey\(''WebClientId''\)\s+-and\s+\$WebClientId -ne \[guid\]::Empty'
+    }
+}
+
 Describe 'Setup activity logging' {
     It 'logs installation and update activity in the temporary directory' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -1934,6 +1946,15 @@ Describe 'Setup activity logging' {
 }
 
 Describe 'Web frontend response types' {
+    It 'keeps the device hash card level at every viewport width' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $style = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'web\src\style.css') `
+            -Raw
+
+        $style | Should -Not -Match 'transform:\s*rotate\('
+    }
+
     It 'serves textual assets as strings so Azure preserves their MIME types' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
         $frontendFunction = Get-Content `
@@ -1968,6 +1989,53 @@ Describe 'Web frontend response types' {
             'redirectUri\s*=\s*"\$origin/api/ui/index\.html"'
         $frontendFunction | Should -Match `
             'importUrl\s*=\s*"\$origin/api/devices/import"'
+    }
+
+    It 'redirects the Function hostname root while preserving existing API URLs' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $hostConfiguration = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'host.json') `
+            -Raw |
+            ConvertFrom-Json
+
+        $hostConfiguration.extensions.http.routePrefix | Should -Be ''
+        $infrastructure = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'infra\main.bicep') `
+            -Raw
+        $infrastructure | Should -Match `
+            "name:\s*'AzureWebJobsDisableHomepage'\s+value:\s*'true'"
+        $infrastructure | Should -Match `
+            "name:\s*'AzureWebJobsFeatureFlags'\s+value:\s*'EnableProxies'"
+        $expectedRoutes = @{
+            'ImportDevice'      = 'api/devices/import'
+            'GetAuthorizedTags' = 'api/devices/tags'
+            'ManageTagPolicy'   = 'api/management/tag-policy'
+            'WebFrontend'       = 'api/ui/{*path}'
+        }
+        foreach ($functionName in $expectedRoutes.Keys) {
+            $functionConfiguration = Get-Content `
+                -LiteralPath (Join-Path `
+                    $projectRoot `
+                    "$functionName\function.json") `
+                -Raw |
+                ConvertFrom-Json
+            $httpTrigger = @($functionConfiguration.bindings | Where-Object {
+                $_.type -eq 'httpTrigger'
+            }) | Select-Object -First 1
+
+            $httpTrigger.route | Should -Be $expectedRoutes[$functionName]
+        }
+
+        $proxyConfiguration = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'proxies.json') `
+            -Raw |
+            ConvertFrom-Json
+        $rootProxy = $proxyConfiguration.proxies.RootRedirect
+        $rootProxy.matchCondition.methods | Should -Be 'GET'
+        $rootProxy.matchCondition.route | Should -Be '/'
+        $rootProxy.responseOverrides.'response.statusCode' | Should -Be '302'
+        $rootProxy.responseOverrides.'response.headers.Location' |
+            Should -Be '/api/ui/index.html'
     }
 }
 
@@ -2161,6 +2229,7 @@ Describe 'Deployment package' {
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
                     'GetAuthorizedTags/function.json'
+                    'proxies.json'
                     'WebFrontend/function.json'
                     'web/package.json'
                     'web/src/main.ts'
