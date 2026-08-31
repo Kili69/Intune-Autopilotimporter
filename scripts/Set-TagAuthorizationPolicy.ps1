@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260828.1
+# Project-Version: 1.0.20260831.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -18,8 +18,8 @@ client configuration file. Replacing the policy supports WhatIf and requires
 confirmation because the complete existing policy is overwritten.
 
 .PARAMETER List
-Returns the currently configured Group Tag authorization policy without
-changing it.
+Returns the currently configured Group Tag authorization policy with Entra
+group display names without changing it.
 
 .PARAMETER TagAuthorizationRule
 Complete set of authorization rules in the form
@@ -48,14 +48,16 @@ Path to the client.settings.json file used to resolve values not supplied as
 parameters.
 
 .OUTPUTS
-PSCustomObject returned by the tag-policy management endpoint. The Set
-parameter set returns no output when WhatIf prevents the update.
+Policy rule objects containing GroupName, Tags, and GroupId when List is
+specified. GroupId remains available for pipeline use but is omitted from the
+default console view. The Set parameter set returns no output when WhatIf
+prevents the update.
 
 .EXAMPLE
 .\Set-TagAuthorizationPolicy.ps1 -List `
     -ConfigPath '.\client.settings.json'
 
-Returns the current Group Tag authorization policy.
+Returns the current Group Tag authorization policy with Entra group names.
 
 .EXAMPLE
 .\Set-TagAuthorizationPolicy.ps1 `

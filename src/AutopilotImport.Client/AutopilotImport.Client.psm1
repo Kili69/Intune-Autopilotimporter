@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260828.1
+# Project-Version: 1.0.20260831.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 Set-StrictMode -Version Latest
@@ -578,13 +578,27 @@ function Get-AutopilotImportStatus {
 }
 
 function Get-AutopilotTagPolicy {
-    <# .SYNOPSIS Returns the current group-to-tag policy. #>
+    <#
+    .SYNOPSIS
+    Returns the current group-to-tag policy with Entra group display names.
+
+    .DESCRIPTION
+    Retrieves the current policy and resolves each group object ID through
+    Microsoft Graph. The default console view shows GroupName and Tags while
+    GroupId remains available as an object property for pipeline use.
+
+    .PARAMETER Raw
+    Returns the unchanged response from the management API without resolving
+    group display names. Use this switch for automation that relies on the
+    response envelope and its policy property.
+    #>
     [CmdletBinding()]
     param(
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
         [string] $TenantId,
-        [string] $ConfigPath
+        [string] $ConfigPath,
+        [switch] $Raw
     )
 
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
@@ -594,7 +608,370 @@ function Get-AutopilotTagPolicy {
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
-    Invoke-RestMethod -Method Get -Uri $url.TrimEnd('/') -Authentication Bearer -Token $token
+    $response = Invoke-RestMethod -Method Get -Uri $url.TrimEnd('/') `
+        -Authentication Bearer -Token $token
+    if ($Raw) {
+        return $response
+    }
+
+    $policy = @($response.policy)
+    if ($policy.Count -eq 0) {
+        return
+    }
+
+    $graphToken = Get-ClientAccessToken `
+        $resolvedTenantId `
+        'https://graph.microsoft.com/'
+    foreach ($rule in $policy) {
+        $groupId = [string] $rule.groupId
+        try {
+            $escapedGroupId = [uri]::EscapeDataString($groupId)
+            $group = Invoke-RestMethod `
+                -Method Get `
+                -Uri "https://graph.microsoft.com/v1.0/groups/${escapedGroupId}?`$select=id,displayName" `
+                -Authentication Bearer `
+                -Token $graphToken `
+                -ErrorAction Stop
+            $groupName = [string] $group.displayName
+            if ([string]::IsNullOrWhiteSpace($groupName)) {
+                throw 'Microsoft Graph returned an empty display name.'
+            }
+        }
+        catch {
+            Write-Warning "Could not resolve Entra group '$groupId': $($_.Exception.Message)"
+            $groupName = '[Unresolved group]'
+        }
+
+        $result = [pscustomobject][ordered]@{
+            GroupName = $groupName
+            Tags      = @($rule.tags)
+            GroupId   = $groupId
+        }
+        if ($rule.PSObject.Properties['restrictedManagementAdministrativeUnitName']) {
+            $result | Add-Member `
+                -NotePropertyName RestrictedManagementAdministrativeUnitName `
+                -NotePropertyValue ([string] $rule.restrictedManagementAdministrativeUnitName)
+        }
+        if ($response.PSObject.Properties['correlationId']) {
+            $result | Add-Member `
+                -NotePropertyName CorrelationId `
+                -NotePropertyValue ([string] $response.correlationId)
+        }
+
+        $defaultProperties = [Collections.Generic.List[string]]::new()
+        $defaultProperties.Add('GroupName')
+        $defaultProperties.Add('Tags')
+        if ($result.PSObject.Properties['RestrictedManagementAdministrativeUnitName']) {
+            $defaultProperties.Add('RestrictedManagementAdministrativeUnitName')
+        }
+        $displayPropertySet = [Management.Automation.PSPropertySet]::new(
+            'DefaultDisplayPropertySet',
+            [string[]] $defaultProperties
+        )
+        $result | Add-Member `
+            -MemberType MemberSet `
+            -Name PSStandardMembers `
+            -Value ([Management.Automation.PSMemberInfo[]] @($displayPropertySet))
+        $result
+    }
+}
+
+function Add-AutopilotTagPolicy {
+    <#
+    .SYNOPSIS
+    Adds an Entra group and its allowed Group Tags to the policy.
+
+    .DESCRIPTION
+    Accepts either an Entra group object ID or an exact group display name.
+    Existing rules are preserved and tags for an existing group are merged.
+    When no restricted management administrative unit is specified, the
+    currently configured MAU is preserved.
+
+    .PARAMETER Group
+    Entra group object ID or exact display name. If multiple groups have the
+    same display name, use the object ID to select one unambiguously.
+
+    .PARAMETER GroupTag
+    One or more allowed Autopilot Group Tags for the group.
+
+    .PARAMETER RestrictedManagementAdministrativeUnitName
+    Optional display name of the restricted management administrative unit.
+    The policy format applies this MAU to all rules. If omitted, the current
+    policy value is retained.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('GroupId', 'GroupName')]
+        [string] $Group,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('Tag')]
+        [string[]] $GroupTag,
+
+        [Alias('Mau')]
+        [ValidateLength(1, 256)]
+        [string] $RestrictedManagementAdministrativeUnitName,
+
+        [ValidatePattern('^https://')][string] $ManagementUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+
+    $tags = @($GroupTag | ForEach-Object { $_.Trim() } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    } | Select-Object -Unique)
+    if ($tags.Count -eq 0) {
+        throw 'Specify at least one Group Tag.'
+    }
+    foreach ($tag in $tags) {
+        if ($tag.Length -gt 128) {
+            throw "Group Tag '$tag' must not exceed 128 characters."
+        }
+        if ($tag.Contains(',')) {
+            throw "Group Tag '$tag' must not contain a comma."
+        }
+    }
+
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        managementUrl = $ManagementUrl
+        apiApplicationIdUri = $ApiApplicationIdUri
+        tenantId = $TenantId
+    }
+    $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
+
+    $parsedGroupId = [guid]::Empty
+    $groupDisplayName = $null
+    if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
+        $resolvedGroupId = $parsedGroupId.ToString()
+    }
+    else {
+        $graphToken = Get-ClientAccessToken `
+            $resolvedTenantId `
+            'https://graph.microsoft.com/'
+        $escapedName = $Group.Trim().Replace("'", "''")
+        $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+        $groupResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
+            -Authentication Bearer `
+            -Token $graphToken `
+            -ErrorAction Stop
+        $matchingGroups = @($groupResponse.value)
+        if ($matchingGroups.Count -eq 0) {
+            throw "Entra group '$Group' was not found. Specify its exact display name or object ID."
+        }
+        if ($matchingGroups.Count -gt 1) {
+            throw "Multiple Entra groups are named '$Group'. Specify the group object ID instead."
+        }
+        $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
+        $groupDisplayName = [string] $matchingGroups[0].displayName
+    }
+
+    $currentResponse = Invoke-RestMethod `
+        -Method Get `
+        -Uri $url.TrimEnd('/') `
+        -Authentication Bearer `
+        -Token $apiToken `
+        -ErrorAction Stop
+    $currentPolicy = @($currentResponse.policy)
+    $rulesByGroup = [ordered]@{}
+    foreach ($rule in $currentPolicy) {
+        $currentGroupId = ([guid] $rule.groupId).ToString()
+        $rulesByGroup[$currentGroupId] = @($rule.tags)
+    }
+    $rulesByGroup[$resolvedGroupId] = @(
+        @($rulesByGroup[$resolvedGroupId]) + $tags |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+            Select-Object -Unique
+    )
+
+    if ($PSBoundParameters.ContainsKey(
+            'RestrictedManagementAdministrativeUnitName')) {
+        $mauName = $RestrictedManagementAdministrativeUnitName.Trim()
+    }
+    else {
+        $configuredMauNames = @($currentPolicy |
+            ForEach-Object {
+                if ($_.PSObject.Properties[
+                        'restrictedManagementAdministrativeUnitName']) {
+                    $_.restrictedManagementAdministrativeUnitName
+                }
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+            Select-Object -Unique)
+        $mauName = if ($configuredMauNames.Count -gt 0) {
+            [string] $configuredMauNames[0]
+        }
+        else {
+            ''
+        }
+    }
+    $rules = @($rulesByGroup.Keys | ForEach-Object {
+        "$_=$(@($rulesByGroup[$_]) -join ',')"
+    })
+    $body = @{
+        rules = $rules
+        restrictedManagementAdministrativeUnitName = $mauName
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
+        $resolvedGroupId
+    }
+    else {
+        "$groupDisplayName ($resolvedGroupId)"
+    }
+    if (-not $PSCmdlet.ShouldProcess(
+            $target,
+            "Add Group Tags '$($tags -join ', ')' to the Autopilot policy")) {
+        return
+    }
+
+    Invoke-RestMethod `
+        -Method Put `
+        -Uri $url.TrimEnd('/') `
+        -Authentication Bearer `
+        -Token $apiToken `
+        -ContentType 'application/json' `
+        -Body $body `
+        -ErrorAction Stop
+}
+
+function Remove-AutopilotTagPolicy {
+    <#
+    .SYNOPSIS
+    Removes an Entra group from the Group Tag policy.
+
+    .DESCRIPTION
+    Accepts either an Entra group object ID or an exact group display name.
+    The selected group's complete rule is removed while all other rules and
+    the currently configured restricted management administrative unit are
+    preserved.
+
+    .PARAMETER Group
+    Entra group object ID or exact display name. If multiple groups have the
+    same display name, use the object ID to select one unambiguously.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('GroupId', 'GroupName')]
+        [string] $Group,
+
+        [ValidatePattern('^https://')][string] $ManagementUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        managementUrl = $ManagementUrl
+        apiApplicationIdUri = $ApiApplicationIdUri
+        tenantId = $TenantId
+    }
+    $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
+
+    $parsedGroupId = [guid]::Empty
+    $groupDisplayName = $null
+    if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
+        $resolvedGroupId = $parsedGroupId.ToString()
+    }
+    else {
+        $graphToken = Get-ClientAccessToken `
+            $resolvedTenantId `
+            'https://graph.microsoft.com/'
+        $escapedName = $Group.Trim().Replace("'", "''")
+        $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+        $groupResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
+            -Authentication Bearer `
+            -Token $graphToken `
+            -ErrorAction Stop
+        $matchingGroups = @($groupResponse.value)
+        if ($matchingGroups.Count -eq 0) {
+            throw "Entra group '$Group' was not found. Specify its exact display name or object ID."
+        }
+        if ($matchingGroups.Count -gt 1) {
+            throw "Multiple Entra groups are named '$Group'. Specify the group object ID instead."
+        }
+        $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
+        $groupDisplayName = [string] $matchingGroups[0].displayName
+    }
+
+    $currentResponse = Invoke-RestMethod `
+        -Method Get `
+        -Uri $url.TrimEnd('/') `
+        -Authentication Bearer `
+        -Token $apiToken `
+        -ErrorAction Stop
+    $currentPolicy = @($currentResponse.policy)
+    $matchingRule = @($currentPolicy | Where-Object {
+        ([guid] $_.groupId).ToString() -eq $resolvedGroupId
+    })
+    if ($matchingRule.Count -eq 0) {
+        throw "Entra group '$Group' does not have a Group Tag policy rule."
+    }
+
+    $remainingPolicy = @($currentPolicy | Where-Object {
+        ([guid] $_.groupId).ToString() -ne $resolvedGroupId
+    })
+    if ($remainingPolicy.Count -eq 0) {
+        throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
+    }
+    $rules = @($remainingPolicy | ForEach-Object {
+        "$(([guid] $_.groupId).ToString())=$(@($_.tags) -join ',')"
+    })
+    $configuredMauNames = @($remainingPolicy |
+        ForEach-Object {
+            if ($_.PSObject.Properties[
+                    'restrictedManagementAdministrativeUnitName']) {
+                $_.restrictedManagementAdministrativeUnitName
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+        Select-Object -Unique)
+    $mauName = if ($configuredMauNames.Count -gt 0) {
+        [string] $configuredMauNames[0]
+    }
+    else {
+        ''
+    }
+    $body = @{
+        rules = $rules
+        restrictedManagementAdministrativeUnitName = $mauName
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
+        $resolvedGroupId
+    }
+    else {
+        "$groupDisplayName ($resolvedGroupId)"
+    }
+    if (-not $PSCmdlet.ShouldProcess(
+            $target,
+            'Remove the group from the Autopilot Group Tag policy')) {
+        return
+    }
+
+    Invoke-RestMethod `
+        -Method Put `
+        -Uri $url.TrimEnd('/') `
+        -Authentication Bearer `
+        -Token $apiToken `
+        -ContentType 'application/json' `
+        -Body $body `
+        -ErrorAction Stop
 }
 
 function Set-AutopilotTagPolicy {
@@ -766,6 +1143,8 @@ Export-ModuleMember -Function @(
     'Import-AutopilotDevice',
     'Get-AutopilotImportStatus',
     'Get-AutopilotTagPolicy',
+    'Add-AutopilotTagPolicy',
+    'Remove-AutopilotTagPolicy',
     'Set-AutopilotTagPolicy',
     'Update-AutopilotTagPolicyManager',
     'Add-AutopilotTagPolicyManager',

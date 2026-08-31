@@ -130,6 +130,78 @@ Read the current policy:
 Get-AutopilotTagPolicy
 ```
 
+#### Add a Group Tag Policy
+
+`Add-AutopilotTagPolicy` adds an Entra group to the policy without replacing
+the other group rules. If the group already has a rule, the command adds the
+specified tags to that rule. Existing and duplicate tags are retained only
+once.
+
+Parameters:
+
+- `-Group` accepts either the Entra group object ID or its exact display name.
+    `-GroupId` and `-GroupName` are aliases for this parameter.
+- `-GroupTag` accepts one or more Autopilot Group Tags. `-Tag` is an alias.
+- `-Mau` optionally sets the restricted management administrative unit for the
+    complete policy. The full parameter name is
+    `-RestrictedManagementAdministrativeUnitName`. If omitted, the currently
+    configured MAU is preserved.
+- `-WhatIf` previews the update without writing it to the Azure Function.
+
+Add a group by its exact Entra display name:
+
+```powershell
+Add-AutopilotTagPolicy `
+    -Group 'Autopilot Import Operators' `
+    -GroupTag 'Autopilot-Standard', 'Autopilot-Kiosk'
+```
+
+Add a group by its object ID and set the MAU:
+
+```powershell
+Add-AutopilotTagPolicy `
+    -Group '11111111-1111-1111-1111-111111111111' `
+    -GroupTag 'Autopilot-Privileged' `
+    -Mau 'MAU-Autopilot-Devices' `
+    -WhatIf
+```
+
+If more than one Entra group has the same display name, the object ID is
+required. Run the command without `-WhatIf` to apply the change.
+
+#### Remove a Group Tag Policy
+
+`Remove-AutopilotTagPolicy` removes the complete Group Tag rule for one Entra
+group. Other group rules and the configured MAU remain unchanged. The command
+does not delete the group from Entra.
+
+Parameters:
+
+- `-Group` accepts either the Entra group object ID or its exact display name.
+    `-GroupId` and `-GroupName` are aliases for this parameter.
+- `-WhatIf` previews the removal without writing it to the Azure Function.
+
+Remove a rule using its exact Entra group display name:
+
+```powershell
+Remove-AutopilotTagPolicy `
+    -Group 'Obsolete Autopilot Group' `
+    -WhatIf
+```
+
+Alternatively, remove it by group object ID:
+
+```powershell
+Remove-AutopilotTagPolicy `
+    -Group '11111111-1111-1111-1111-111111111111'
+```
+
+If multiple Entra groups have the same display name, use the object ID. The
+last policy rule cannot be removed because the Function requires at least one
+group-to-tag rule. Run the command without `-WhatIf` to apply the removal.
+
+#### Replace the Complete Group Tag Policy
+
 Preview the complete desired policy before applying it:
 
 ```powershell
@@ -346,6 +418,7 @@ Import-Module $module.FullName
 
 The module exports `New-AutopilotClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
 `Get-AutopilotTagPolicy`,
+`Add-AutopilotTagPolicy`, `Remove-AutopilotTagPolicy`,
 `Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
 `Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
 
