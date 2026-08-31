@@ -343,6 +343,48 @@ function Test-BuiltWebFrontend {
     }).Count -eq 0
 }
 
+function Invoke-WebReadinessRequest {
+    <#
+    .SYNOPSIS
+    Waits for a newly published HTTP endpoint to become ready.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [uri] $Uri,
+
+        [int] $ExpectedStatusCode = 200,
+
+        [ValidateRange(1, 60)]
+        [int] $MaximumAttempts = 24,
+
+        [ValidateRange(0, 60)]
+        [int] $RetryDelaySeconds = 5
+    )
+
+    $transientStatusCodes = @(404, 408, 429, 500, 502, 503, 504)
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        try {
+            $response = Invoke-WebRequest `
+                -Method Get `
+                -Uri $Uri `
+                -SkipHttpErrorCheck
+            if ($response.StatusCode -eq $ExpectedStatusCode -or
+                $response.StatusCode -notin $transientStatusCodes -or
+                $attempt -eq $MaximumAttempts) {
+                return $response
+            }
+        }
+        catch {
+            if ($attempt -eq $MaximumAttempts) {
+                throw
+            }
+        }
+
+        Write-Warning "Web endpoint is not ready yet. Retrying in $RetryDelaySeconds seconds ($attempt/$MaximumAttempts)..."
+        Start-Sleep -Seconds $RetryDelaySeconds
+    }
+}
+
 function Test-FunctionAppName {
     <#
     .SYNOPSIS
@@ -1448,10 +1490,7 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
         throw "Smoke test expected HTTP 401 without a token, but received $($smokeResponse.StatusCode)."
     }
 
-    $webSmokeResponse = Invoke-WebRequest `
-        -Method Get `
-        -Uri $webUrl `
-        -SkipHttpErrorCheck
+    $webSmokeResponse = Invoke-WebReadinessRequest -Uri $webUrl
     if ($webSmokeResponse.StatusCode -ne 200) {
         throw "Web frontend smoke test expected HTTP 200, but received $($webSmokeResponse.StatusCode)."
     }

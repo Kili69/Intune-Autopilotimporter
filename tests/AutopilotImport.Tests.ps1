@@ -1553,6 +1553,60 @@ Describe 'Installer packaged web frontend fallback' {
     }
 }
 
+Describe 'Installer web frontend readiness check' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Invoke-WebReadinessRequest'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    BeforeEach {
+        $script:requestAttempt = 0
+        Mock Start-Sleep
+    }
+
+    It 'retries a transient 404 until the published route is ready' {
+        Mock Invoke-WebRequest {
+            $script:requestAttempt++
+            [pscustomobject]@{
+                StatusCode = if ($script:requestAttempt -lt 3) { 404 } else { 200 }
+            }
+        }
+
+        $response = Invoke-WebReadinessRequest `
+            -Uri 'https://func.example/api/ui/index.html' `
+            -RetryDelaySeconds 0
+
+        $response.StatusCode | Should -Be 200
+        Should -Invoke Invoke-WebRequest -Times 3 -Exactly
+        Should -Invoke Start-Sleep -Times 2 -Exactly
+    }
+
+    It 'returns the final transient response after the attempt limit' {
+        Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 404 } }
+
+        $response = Invoke-WebReadinessRequest `
+            -Uri 'https://func.example/api/ui/index.html' `
+            -MaximumAttempts 2 `
+            -RetryDelaySeconds 0
+
+        $response.StatusCode | Should -Be 404
+        Should -Invoke Invoke-WebRequest -Times 2 -Exactly
+        Should -Invoke Start-Sleep -Times 1 -Exactly
+    }
+}
+
 Describe 'Azure deployment permission validation' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
