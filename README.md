@@ -51,11 +51,98 @@ After installation, open the `webUrl` reported by the installer or stored in
 without authentication. Import functions become available only after the user
 signs in with a Microsoft Entra account.
 
-The browser validates the CSV locally, requests the Group Tags authorized for
-the signed-in user's Entra groups, and sends each validated device to the same
-secured Function API used by the PowerShell module. The hardware hashes are not
-stored by the frontend. Import and extension-attribute status are refreshed
-automatically until each device reaches a final state.
+The frontend provides the following functions:
+
+- German and English user interface with a persistent language selection
+- Microsoft Entra sign-in using Authorization Code Flow with PKCE
+- Local validation of Autopilot CSV files before any data is transmitted
+- Selection of only those Group Tags authorized for the signed-in user's Entra
+    groups
+- Parallel submission of up to three devices to the secured Function API
+- Display of serial number, import ID, processing status, and error details
+- Automatic monitoring of both the Intune import and the Entra device
+    extension-attribute update
+- Sign-out from the current Entra session
+
+The hardware hashes are not stored by the frontend. They remain in browser
+memory and are sent only to the secured Function API after validation and user
+confirmation.
+
+#### Open the Frontend During Windows OOBE
+
+During Windows Out-of-Box Experience, press **Shift + F10** to open Command
+Prompt. If PowerShell was started for collecting the hardware hash and the
+prompt begins with `PS`, open the page with:
+
+```powershell
+Start-Process `
+        -FilePath "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe" `
+        -ArgumentList '--inprivate', '<webUrl>'
+```
+
+If Edge is installed in the 64-bit Program Files directory instead, use:
+
+```powershell
+Start-Process `
+        -FilePath "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" `
+        -ArgumentList '--inprivate', '<webUrl>'
+```
+
+Replace `<webUrl>` with the URL reported by the installer, for example
+`https://<function-app-name>.azurewebsites.net/api/ui/index.html`.
+
+In PowerShell, do not use the CMD command `start "" ...`: `start` is an alias
+for `Start-Process` there and interprets the arguments differently.
+
+The included `Start-IntuneAutopilotImporter.ps1` script automates this process.
+It reads the serial number and hardware hash directly from Windows, creates
+`AutopilotHWID.csv` in the current user's temporary directory, validates the
+public runtime configuration of the supplied frontend URL, copies the CSV path
+to the clipboard when possible, and opens Microsoft Edge in InPrivate mode:
+
+```powershell
+.\scripts\Start-IntuneAutopilotImporter.ps1 `
+    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+```
+
+Omit `-WebUrl` to enter the URL interactively. The script accepts the Function
+App root URL, `/api/ui`, or the complete `/api/ui/index.html` URL. It does not
+upload the hardware hash automatically; paste the copied CSV path into the
+frontend's file picker, sign in, review the device, and start the import.
+
+After the script has been published to PowerShell Gallery, it can be installed
+and started during OOBE with:
+
+```powershell
+Install-Script `
+    -Name Start-IntuneAutopilotImporter `
+    -Scope CurrentUser `
+    -Force
+
+Start-IntuneAutopilotImporter.ps1 `
+    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+```
+
+The script requires an elevated Windows PowerShell 5.1 or PowerShell 7 session.
+It has no dependency on `Get-WindowsAutopilotInfo`.
+
+#### Import Workflow and Status Updates
+
+1. Sign in with an Entra account that belongs to an authorized importer group.
+2. Select or drop an Autopilot CSV containing `Device Serial Number` and
+     `Hardware Hash`.
+3. Select one of the Group Tags returned for the signed-in account.
+4. Start the import and keep the page open while processing continues.
+
+The frontend performs the first status request immediately after submission.
+While at least one device is pending, it refreshes the status every 15 seconds.
+Polling stops when every device has reached `complete` or `error`. Temporary
+status-request errors are displayed and retried during the next polling cycle.
+
+Import IDs and status rows are kept only in the current page's memory. Closing
+or reloading the page ends monitoring and clears the displayed results. The
+import itself continues in Azure and can be checked later with
+`Get-AutopilotImportStatus -ImportId '<import-id>'`.
 
 The PowerShell module remains available and uses the same authorization policy.
 
@@ -775,6 +862,80 @@ Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in
 
 The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
 
+### 6. Use a Friendly DNS Alias for the Web Frontend
+
+The web frontend can use a public, friendly subdomain such as
+`autopilot.contoso.com` instead of the generated Function hostname. The final
+URL is then:
+
+```text
+https://autopilot.contoso.com/api/ui/index.html
+```
+
+DNS alone is not sufficient. The hostname must also be assigned to the Function
+App, secured with a TLS certificate, and registered as an Entra SPA redirect
+URI. The Function App uses a Consumption plan, for which a custom subdomain is
+mapped with a CNAME record.
+
+1. In the Azure portal, open the deployed Function App and select
+    **Settings > Custom domains > Add custom domain**.
+2. Enter the public subdomain, for example `autopilot.contoso.com`, and use the
+    DNS values shown by Azure to create these records at the DNS provider:
+
+    | Type | Name | Value |
+    | --- | --- | --- |
+    | CNAME | `autopilot` | `<function-app-name>.azurewebsites.net` |
+    | TXT | `asuid.autopilot` | The **Custom Domain Verification ID** shown by Azure |
+
+    The TXT record is strongly recommended because it proves ownership and
+    protects against subdomain takeover. Do not include `https://` or a URL path
+    in either DNS record.
+3. Wait for DNS propagation, select **Validate**, and add the custom domain to
+    the Function App. A successful DNS lookup by itself does not complete this
+    Azure hostname association.
+4. Configure an **SNI SSL** binding for the custom hostname. Select an App
+    Service Managed Certificate when that option is available, or bind a valid
+    uploaded or Key Vault certificate. Do not distribute the friendly URL until
+    Azure shows the custom domain as **Secured** and HTTPS opens without a
+    certificate warning.
+5. In **Microsoft Entra ID > App registrations**, open the separate
+    **Autopilot Import Web** application. Under **Authentication > Single-page
+    application**, add this exact redirect URI:
+
+    ```text
+    https://autopilot.contoso.com/api/ui/index.html
+    ```
+
+    Redirect URIs are case-sensitive and must match the complete URL returned by
+    `/api/ui/config`. Keep the existing
+    `https://<function-app-name>.azurewebsites.net/api/ui/index.html` redirect URI
+    until the new hostname has been tested and all bookmarks have been migrated.
+    The API Application ID URI and audience, such as `api://<application-client-id>`,
+    do not change.
+6. Test the configuration in this order:
+
+    - `https://autopilot.contoso.com/api/ui/config` returns the frontend
+      configuration and uses `https://autopilot.contoso.com` for its URLs.
+    - `https://autopilot.contoso.com/api/ui/index.html` loads without a TLS
+      warning.
+    - Interactive sign-in succeeds and a test CSV can be submitted.
+
+The OOBE helper can now open the friendly URL directly:
+
+```powershell
+.\scripts\Start-IntuneAutopilotImporter.ps1 `
+          -WebUrl 'https://autopilot.contoso.com/api/ui/index.html'
+```
+
+The endpoint values in `client.settings.json` may continue to use the default
+`azurewebsites.net` hostname. The friendly alias is required there only when
+the PowerShell client should also call the APIs through that hostname.
+
+For background and current platform restrictions, see the Microsoft guidance
+for [mapping an existing custom domain](https://learn.microsoft.com/azure/app-service/app-service-web-tutorial-custom-domain),
+[binding a TLS certificate](https://learn.microsoft.com/azure/app-service/configure-ssl-bindings),
+and [configuring SPA redirect URIs](https://learn.microsoft.com/entra/identity-platform/reply-url).
+
 ## Troubleshooting
 
 ### PowerShell Module or Client Configuration Does Not Work
@@ -887,6 +1048,45 @@ directory without replacing all placeholder values and renaming it to
 `client.settings.json`.
 
 ## Appendix: Developer Information
+
+### Build the Frontend Locally
+
+The frontend source is located under `web`, while the Azure Function that
+serves it is located under `WebFrontend`. Build and test it with:
+
+```powershell
+Set-Location .\web
+npm ci
+npm run check
+```
+
+`npm run check` executes the frontend unit tests and creates the production
+bundle under `WebFrontend\wwwroot`. The generated `web\node_modules`,
+`web\tsconfig.tsbuildinfo`, and `WebFrontend\wwwroot` paths are intentionally
+ignored by Git and are recreated during a local build or deployment.
+
+### Publish the OOBE Helper to PowerShell Gallery
+
+The standalone gallery script is
+`scripts\Start-IntuneAutopilotImporter.ps1`. Its `PSScriptInfo` version is
+updated together with the project version by
+`scripts\Update-ProjectVersion.ps1`. Validate its metadata before publishing:
+
+```powershell
+Test-ScriptFileInfo `
+    -Path .\scripts\Start-IntuneAutopilotImporter.ps1
+```
+
+Test the complete workflow against a non-production Function App before
+publishing. Then publish it with a PowerShell Gallery API key entered directly
+in the interactive PowerShell session; do not store the key in source control:
+
+```powershell
+Publish-Script `
+    -Path .\scripts\Start-IntuneAutopilotImporter.ps1 `
+    -Repository PSGallery `
+    -NuGetApiKey (Read-Host 'PowerShell Gallery API key')
+```
 
 ### Branch Promotion Policy
 

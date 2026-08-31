@@ -1953,6 +1953,79 @@ Describe 'Web frontend response types' {
         $frontendFunction | Should -Not -Match `
             "Headers\['Content-Type'\]"
     }
+
+    It 'uses the requested HTTPS origin for custom domain runtime URLs' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -Raw
+
+        $frontendFunction | Should -Match `
+            '\$Request\.Url'
+        $frontendFunction | Should -Match `
+            'GetLeftPart\(\[UriPartial\]::Authority\)'
+        $frontendFunction | Should -Match `
+            'redirectUri\s*=\s*"\$origin/api/ui/index\.html"'
+        $frontendFunction | Should -Match `
+            'importUrl\s*=\s*"\$origin/api/devices/import"'
+    }
+}
+
+Describe 'OOBE web importer helper script' {
+    BeforeAll {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $helperPath = Join-Path $projectRoot `
+            'scripts\Start-IntuneAutopilotImporter.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $helperAst = [Management.Automation.Language.Parser]::ParseFile(
+            $helperPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $parseErrors.Count | Should -Be 0
+        foreach ($functionName in @(
+                'Resolve-AutopilotImporterWebUrl'
+                'Get-AutopilotImporterConfigUrl'
+            )) {
+            $functionAst = $helperAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
+    It 'has valid PowerShell Gallery metadata matching the project version' {
+        $scriptInfo = Test-ScriptFileInfo -Path $helperPath
+        $projectVersion = (Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'VERSION') `
+            -Raw).Trim()
+
+        $scriptInfo.Name | Should -Be 'Start-IntuneAutopilotImporter'
+        [string] $scriptInfo.Version | Should -Be $projectVersion
+        $scriptInfo.ProjectUri | Should -Be `
+            'https://github.com/anluca_microsoft/Intune-Autopilotimporter'
+    }
+
+    It 'normalizes a Function App root URL to the frontend page' {
+        $webUrl = Resolve-AutopilotImporterWebUrl `
+            -Url 'https://func-example.azurewebsites.net'
+
+        $webUrl.AbsoluteUri | Should -Be `
+            'https://func-example.azurewebsites.net/api/ui/index.html'
+        (Get-AutopilotImporterConfigUrl -WebUri $webUrl).AbsoluteUri |
+            Should -Be `
+                'https://func-example.azurewebsites.net/api/ui/config'
+    }
+
+    It 'rejects an insecure frontend URL' {
+        {
+            Resolve-AutopilotImporterWebUrl `
+                -Url 'http://func-example.azurewebsites.net'
+        } | Should -Throw '*absolute HTTPS URL*'
+    }
 }
 
 Describe 'Project metadata entries' {
@@ -1989,6 +2062,17 @@ Describe 'Project metadata entries' {
                 'src\AutopilotImport.Client\AutopilotImport.Client.psd1')
 
         [string] $manifest.ModuleVersion | Should -Be $projectVersion
+    }
+
+    It 'updates PowerShell Gallery script metadata with the project version' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $versionScript = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'scripts\Update-ProjectVersion.ps1') `
+            -Raw
+
+        $versionScript | Should -Match 'scriptInfoVersionPattern'
+        $versionScript | Should -Match 'PSScriptInfo VERSION entry'
     }
 
     It 'uses the central author in every PowerShell file' {
@@ -2073,6 +2157,7 @@ Describe 'Deployment package' {
                     'scripts/Ensure-EntraWebApplication.ps1'
                     'scripts/Grant-ManagedIdentityGraphPermission.ps1'
                     'scripts/Import-AutopilotDevice.ps1'
+                    'scripts/Start-IntuneAutopilotImporter.ps1'
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
                     'GetAuthorizedTags/function.json'

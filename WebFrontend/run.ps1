@@ -50,7 +50,20 @@ if ($requestedPath -ieq 'config') {
         return
     }
 
-    $origin = "https://$($env:WEBSITE_HOSTNAME)"
+    $requestUri = $null
+    if ($Request.Url) {
+        [void] [uri]::TryCreate(
+            [string] $Request.Url,
+            [UriKind]::Absolute,
+            [ref] $requestUri
+        )
+    }
+    $origin = if ($requestUri -and $requestUri.Scheme -eq 'https') {
+        $requestUri.GetLeftPart([UriPartial]::Authority)
+    }
+    else {
+        "https://$($env:WEBSITE_HOSTNAME)"
+    }
     Send-Response `
         -StatusCode OK `
         -ContentType 'application/json' `

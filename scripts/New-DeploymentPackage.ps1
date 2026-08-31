@@ -110,6 +110,7 @@ $packageEntries = @(
     'scripts\Ensure-EntraWebApplication.ps1'
     'scripts\Grant-ManagedIdentityGraphPermission.ps1'
     'scripts\Import-AutopilotDevice.ps1'
+    'scripts\Start-IntuneAutopilotImporter.ps1'
     'scripts\Set-TagAuthorizationPolicy.ps1'
     'scripts\Set-TagPolicyManagers.ps1'
     'src'
