@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260828.1
+# Project-Version: 1.0.20260831.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -432,7 +432,9 @@ if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
 Import-Module 'Az.Accounts' -ErrorAction Stop
 
 Import-Module $clientModulePath -Force
-$policyResponse = Get-AutopilotTagPolicy -ConfigPath $resolvedConfigPath
+$policyResponse = Get-AutopilotTagPolicy `
+    -ConfigPath $resolvedConfigPath `
+    -Raw
 $tagAuthorizationRules = @(
     ConvertTo-UpdateTagAuthorizationRules `
         -Policy @($policyResponse.policy)
