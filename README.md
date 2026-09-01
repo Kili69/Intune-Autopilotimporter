@@ -479,7 +479,7 @@ only the idempotent permission assignment with the managed identity object ID re
 ```
 
 After the Azure resources are deployed, the installer creates a portable client tools package. It asks for the destination and suggests
-`Documents\PowerShell\Scripts\AutopilotImport`. The package contains:
+`Documents\AutopilotImport`. The package contains:
 
 - `Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psd1`
 - `Modules\AutopilotImport.Client\<version>\AutopilotImport.Client.psm1`
@@ -686,12 +686,26 @@ To run the update without the execution confirmation, use `-Force`:
 
 `-WhatIf` still takes precedence when combined with `-Force` and does not perform the update.
 
-By default, the script selects the newest installed `client.settings.json` under `Documents\PowerShell\Scripts\AutopilotImport`. Select another installed deployment explicitly when required:
+By default, the script selects the newest installed `client.settings.json` from the portable client package, `PSModulePath`, or the standard per-user and system-wide PowerShell module directories. Select another installed deployment explicitly when required:
 
 ```powershell
 .\Update-AutopilotImport.ps1 `
     -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\<version>\client.settings.json'
 ```
+
+When the client module and configuration are not installed on the update computer, the script prompts for the subscription ID, tenant ID, resource group, Function App name, and client tools destination. The current Az context and standard deployment names are offered as defaults. These values can also be supplied for an unattended discovery phase:
+
+```powershell
+.\Update-AutopilotImport.ps1 `
+    -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+    -TenantId '11111111-1111-1111-1111-111111111111' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -ClientToolsPath 'C:\Tools\AutopilotImport' `
+    -InstallMissingModules
+```
+
+In this mode, the API audience is read from the deployed Function App and the management endpoint is derived from its hostname. Use `-ApiAudience` or `-ManagementUrl` only when the deployed values require an explicit override.
 
 The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and the versioned client package.

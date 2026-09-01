@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260901.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -331,6 +331,32 @@ Describe 'Client configuration display' {
         {
             Get-AutopilotClientConfiguration -ConfigPath $settingsPath
         } | Should -Throw 'Function URL is missing*'
+    }
+}
+
+Describe 'Client manager policy App Settings' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\src\AutopilotImport.Client\AutopilotImport.Client.psm1'
+        $tokens = $null
+        $parseErrors = $null
+        $clientModuleAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $clientModulePath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $managerFunctionAst = $clientModuleAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Update-AutopilotTagPolicyManager'
+        }, $true) | Select-Object -First 1
+    }
+
+    It 'passes manager policy JSON to Az.Websites as a string value' {
+        $managerFunctionAst.Extent.Text | Should -Match `
+            '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
+        $managerFunctionAst.Extent.Text | Should -Not -Match `
+            '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
     }
 }
 
@@ -1143,6 +1169,13 @@ Describe 'Installer client tools package' {
         Invoke-Expression $functionAst.Extent.Text
     }
 
+    It 'uses Documents AutopilotImport as the default client tools path' {
+        $installerAst.Extent.Text | Should -Match `
+            'Join-Path\s+\$documentsPath\s+''AutopilotImport'''
+        $installerAst.Extent.Text | Should -Not -Match `
+            'defaultClientToolsPath\s*=.*PowerShell\\Scripts\\AutopilotImport'
+    }
+
     It 'installs compatibility scripts and a versioned client module with defaults' {
         $destinationPath = Join-Path $TestDrive 'AutopilotImport'
         $documentsPath = Join-Path $TestDrive 'Documents'
@@ -1263,6 +1296,8 @@ Describe 'Update script deployment discovery' {
         )
         foreach ($functionName in @(
                 'Resolve-AutopilotUpdateConfigPath',
+            'Read-AutopilotUpdateValue',
+            'Get-AutopilotUpdateConfigurationValue',
                 'Get-AutopilotClientToolsPath',
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Get-UpdateRestrictedManagementAdministrativeUnitName',
@@ -1286,6 +1321,91 @@ Describe 'Update script deployment discovery' {
 
         Resolve-AutopilotUpdateConfigPath -Path $configPath |
             Should -Be (Resolve-Path $configPath).Path
+    }
+
+    It 'accepts deployment identity parameters without a configuration' {
+        foreach ($parameterName in @(
+                'SubscriptionId',
+                'TenantId',
+                'ResourceGroupName',
+                'FunctionAppName',
+                'ApiAudience',
+                'ManagementUrl'
+            )) {
+            $updateAst.ParamBlock.Parameters.Name.VariablePath.UserPath |
+                Should -Contain $parameterName
+        }
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)Resolve-AutopilotUpdateConfigPath\s+.*?-AllowMissing'
+    }
+
+    It 'uses Documents AutopilotImport when no client tools path is installed' {
+        $updateAst.Extent.Text | Should -Match `
+            'DefaultValue\s+\(Join-Path\s+\$documentsPath\s+''AutopilotImport''\)'
+        $updateAst.Extent.Text | Should -Match `
+            'AutopilotImport\\Modules\\AutopilotImport.Client'
+        $updateAst.Extent.Text | Should -Match `
+            'PowerShell\\Scripts\\AutopilotImport\\Modules\\AutopilotImport.Client'
+    }
+
+    It 'uses a supplied update value without prompting' {
+        Mock Read-Host { throw 'Read-Host should not be called.' }
+
+        Read-AutopilotUpdateValue `
+            -CurrentValue ' supplied-value ' `
+            -Prompt 'Required value' | Should -Be 'supplied-value'
+
+        Should -Invoke Read-Host -Times 0
+    }
+
+    It 'accepts the interactive default for a missing update value' {
+        Mock Read-Host { '' }
+
+        Read-AutopilotUpdateValue `
+            -Prompt 'Required value' `
+            -DefaultValue 'default-value' | Should -Be 'default-value'
+
+        Should -Invoke Read-Host `
+            -ParameterFilter { $Prompt -eq 'Required value [default-value]' } `
+            -Times 1
+    }
+
+    It 'reads deployment endpoints from Azure when no config is installed' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)API_AUDIENCE.*?Use -ApiAudience'
+        $updateAst.Extent.Text | Should -Match `
+            'https://\$defaultHostName/api/management/tag-policy'
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)Get-AutopilotTagPolicy\s+.*?-ManagementUrl\s+\$resolvedManagementUrl\s+.*?-ApiApplicationIdUri\s+\$resolvedApiAudience\s+.*?-TenantId\s+\$TenantId'
+    }
+
+    It 'discovers a versioned configuration installed through PSModulePath' {
+        $modulePathRoot = Join-Path $TestDrive 'PowerShell\Modules'
+        $olderConfigPath = Join-Path $modulePathRoot `
+            'AutopilotImport.Client\9998.0.0.0\client.settings.json'
+        $newerConfigPath = Join-Path $modulePathRoot `
+            'AutopilotImport.Client\9999.0.0.0\client.settings.json'
+        [void] (New-Item `
+            -Path (Split-Path $olderConfigPath -Parent) `
+            -ItemType Directory `
+            -Force)
+        [void] (New-Item `
+            -Path (Split-Path $newerConfigPath -Parent) `
+            -ItemType Directory `
+            -Force)
+        '{}' | Set-Content -LiteralPath $olderConfigPath
+        '{}' | Set-Content -LiteralPath $newerConfigPath
+
+        $originalModulePath = $env:PSModulePath
+        try {
+            $env:PSModulePath = $modulePathRoot
+
+            Resolve-AutopilotUpdateConfigPath |
+                Should -Be (Resolve-Path $newerConfigPath).Path
+        }
+        finally {
+            $env:PSModulePath = $originalModulePath
+        }
     }
 
     It 'derives the client package root from a versioned configuration' {
@@ -1322,6 +1442,8 @@ Describe 'Update script deployment discovery' {
     It 'requests the raw policy response for deployment preservation' {
         $updateAst.Extent.Text | Should -Match `
             '(?s)Get-AutopilotTagPolicy\s+.*?-Raw'
+        $updateAst.Extent.Text | Should -Match `
+            "did not return a Group Tag policy"
     }
 
     It 'supports forcing an update without an execution confirmation' {
@@ -1785,12 +1907,82 @@ Describe 'Azure deployment permission validation' {
             }
         }
 
-        {
+        $errorRecord = {
             Assert-AzureDeploymentPermissions `
                 -SubscriptionId '11111111-1111-1111-1111-111111111111' `
                 -ResourceGroupName 'rg-test' `
                 -ResourceGroupExists
-        } | Should -Throw '*Azure deployment permissions are insufficient*'
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Azure deployment permissions are insufficient'
+        $errorRecord.Exception.Message | Should -Match `
+            'Microsoft\.Authorization/roleAssignments/write'
+        $errorRecord.Exception.Message | Should -Match `
+            'Create or update Azure role assignments'
+        $errorRecord.Exception.Message | Should -Match `
+            'Contributor and Role Based Access Control Administrator'
+        $errorRecord.Exception.Message | Should -Match `
+            "Checked scope: /subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-test"
+        $errorRecord.Exception.Data['MissingActions'] | Should -Be `
+            'Microsoft.Authorization/roleAssignments/write'
+        $errorRecord.Exception.Data[ `
+            'AutopilotDeploymentPermissionError'] | Should -BeTrue
+    }
+
+    It 'recommends Contributor when only resource writes are missing' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('*')
+                        notActions = @('Microsoft.Web/sites/config/write')
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -ResourceGroupExists
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Microsoft\.Web/sites/config/write'
+        $errorRecord.Exception.Message | Should -Match `
+            'Assign Contributor or Owner'
+        $errorRecord.Exception.Message | Should -Not -Match `
+            'assign both Contributor'
+    }
+
+    It 'requires subscription scope when the resource group is missing' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('*')
+                        notActions = @(
+                            'Microsoft.Resources/subscriptions/resourceGroups/write'
+                        )
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-new'
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Microsoft\.Resources/subscriptions/resourceGroups/write'
+        $errorRecord.Exception.Message | Should -Match `
+            "subscription '/subscriptions/11111111-1111-1111-1111-111111111111', because the resource group does not exist"
     }
 
     It 'uses a concise error when permissions cannot be queried' {
@@ -2452,6 +2644,19 @@ Describe 'Project metadata entries' {
 
         $versionScript | Should -Match 'scriptInfoVersionPattern'
         $versionScript | Should -Match 'PSScriptInfo VERSION entry'
+        $versionScript | Should -Match `
+            '\(''\$\{1\}'' \+ \$newVersion\)'
+    }
+
+    It 'excludes dependency and generated directories from version updates' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $versionScript = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'scripts\Update-ProjectVersion.ps1') `
+            -Raw
+
+        $versionScript | Should -Match `
+            '\(\?:node_modules\|artifacts\|\\\.git\)'
     }
 
     It 'uses the central author in every PowerShell file' {

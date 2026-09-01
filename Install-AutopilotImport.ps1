@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260901.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -932,8 +932,64 @@ function Assert-AzureDeploymentPermissions {
         } | Select-Object -First 1)
     })
     if ($missingActions.Count -gt 0) {
-        Write-Verbose "Missing Azure deployment actions at '$scope': $($missingActions -join ', ')"
-        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
+        $actionDescriptions = @{
+            'Microsoft.Resources/deployments/write' = `
+                'Create or update ARM/Bicep deployments'
+            'Microsoft.Resources/subscriptions/resourceGroups/write' = `
+                'Create or update the resource group'
+            'Microsoft.Storage/storageAccounts/write' = `
+                'Create or update the Storage Account'
+            'Microsoft.Storage/storageAccounts/blobServices/write' = `
+                'Create or update the Blob service'
+            'Microsoft.Storage/storageAccounts/blobServices/containers/write' = `
+                'Create or update Blob containers'
+            'Microsoft.Insights/components/write' = `
+                'Create or update Application Insights'
+            'Microsoft.Web/serverfarms/write' = `
+                'Create or update the App Service plan'
+            'Microsoft.Web/sites/write' = `
+                'Create or update the Function App'
+            'Microsoft.Web/sites/config/write' = `
+                'Create or update Function App configuration'
+            'Microsoft.Authorization/roleAssignments/write' = `
+                'Create or update Azure role assignments'
+        }
+        $missingActionDetails = @($missingActions | ForEach-Object {
+            "  - $_ ($($actionDescriptions[$_]))"
+        }) -join [Environment]::NewLine
+        $roleAssignmentWriteMissing = $missingActions -contains `
+            'Microsoft.Authorization/roleAssignments/write'
+        $resourceGroupWriteMissing = $missingActions -contains `
+            'Microsoft.Resources/subscriptions/resourceGroups/write'
+        $requiredRoles = if ($roleAssignmentWriteMissing) {
+            'Assign Owner, or assign both Contributor and Role Based Access Control Administrator (alternatively User Access Administrator).'
+        }
+        else {
+            'Assign Contributor or Owner.'
+        }
+        $assignmentScope = if ($resourceGroupWriteMissing) {
+            "subscription '/subscriptions/$SubscriptionId', because the resource group does not exist"
+        }
+        else {
+            "resource group '$ResourceGroupName' or its subscription"
+        }
+        $permissionMessage = @(
+            'Azure deployment permissions are insufficient.'
+            "Checked scope: $scope"
+            'Missing Azure actions:'
+            $missingActionDetails
+            "Required role assignment: $requiredRoles"
+            "Assign the role or roles at the $assignmentScope."
+            'After the assignment becomes effective, run Connect-AzAccount again and retry the installation.'
+        ) -join [Environment]::NewLine
+        Write-Verbose $permissionMessage
+        $permissionException = [UnauthorizedAccessException]::new(
+            $permissionMessage)
+        $permissionException.Data['AutopilotDeploymentPermissionError'] = $true
+        $permissionException.Data['MissingActions'] = `
+            $missingActions -join ','
+        $permissionException.Data['CheckedScope'] = $scope
+        throw $permissionException
     }
 }
 
@@ -1144,7 +1200,7 @@ $documentsPath = [Environment]::GetFolderPath('MyDocuments')
 if ([string]::IsNullOrWhiteSpace($documentsPath)) {
     $documentsPath = $HOME
 }
-$defaultClientToolsPath = Join-Path $documentsPath 'PowerShell\Scripts\AutopilotImport'
+$defaultClientToolsPath = Join-Path $documentsPath 'AutopilotImport'
 $ClientToolsPath = Read-DeploymentValue `
     -CurrentValue $ClientToolsPath `
     -Prompt 'Operational PowerShell scripts directory' `
@@ -1586,10 +1642,16 @@ $result
 #endregion Result
 }
 catch {
+    $isDeploymentPermissionError = `
+        $_.Exception.Data['AutopilotDeploymentPermissionError'] -eq $true
     $errorDetails = @(
         "Timestamp: $(Get-Date -Format 'o')"
         "Script: $PSCommandPath"
         "Message: $($_.Exception.Message)"
+        if ($isDeploymentPermissionError) {
+            "Checked scope: $($_.Exception.Data['CheckedScope'])"
+            "Missing actions: $($_.Exception.Data['MissingActions'])"
+        }
         'Error record:'
         ($_ | Format-List * -Force | Out-String)
         'Exception:'
@@ -1608,6 +1670,9 @@ catch {
         -Encoding utf8
     Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
         -ErrorAction Continue
+    if ($isDeploymentPermissionError) {
+        throw
+    }
     $isMicrosoftGraphAuthorizationError =
         [string] $_.FullyQualifiedErrorId -match 'Microsoft\.Graph' -or
         [string] $_.TargetObject -match 'graph\.microsoft\.com'

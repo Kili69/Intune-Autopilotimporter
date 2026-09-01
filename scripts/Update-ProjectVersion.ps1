@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260901.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -87,7 +87,11 @@ $newVersion = "1.0.$versionDate.$counter"
 
 $powerShellFiles = @(
     Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-        Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+        Where-Object {
+            $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+            $_.FullName -notmatch `
+                '[\\/](?:node_modules|artifacts|\.git)[\\/]'
+        }
 )
 
 foreach ($file in $powerShellFiles) {
@@ -112,7 +116,7 @@ foreach ($file in $powerShellFiles) {
         $updatedContent = [regex]::Replace(
             $updatedContent,
             $scriptInfoVersionPattern,
-            "`$1$newVersion",
+            ('${1}' + $newVersion),
             1
         )
     }

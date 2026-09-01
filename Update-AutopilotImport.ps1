@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260901.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -15,10 +15,37 @@ existing resource names.
 
 .PARAMETER ConfigPath
 Path to the installed client.settings.json. When omitted, the newest version
-under Documents\PowerShell\Scripts\AutopilotImport is selected.
+from the portable client package, PSModulePath, or a standard per-user or
+system-wide PowerShell module directory is selected. When no configuration is
+installed, deployment values are resolved from parameters or interactive
+prompts.
+
+.PARAMETER SubscriptionId
+Azure subscription GUID containing the existing Function App. The installed
+configuration or current Az context is offered as the interactive default.
+
+.PARAMETER TenantId
+Microsoft Entra tenant GUID owning the existing deployment. The installed
+configuration or current Az context is offered as the interactive default.
+
+.PARAMETER ResourceGroupName
+Name of the resource group containing the existing Function App.
+
+.PARAMETER FunctionAppName
+Name of the existing Azure Function App.
+
+.PARAMETER ApiAudience
+Optional API audience override. When omitted, it is read from the installed
+configuration or the Function App's API_AUDIENCE setting.
+
+.PARAMETER ManagementUrl
+Optional Group Tag management endpoint override. When omitted, it is read
+from the installed configuration or derived from the Function App hostname.
 
 .PARAMETER ClientToolsPath
-Client package destination. By default, it is derived from ConfigPath.
+Client package destination. By default, it is derived from ConfigPath. When no
+configuration is installed, the script prompts with the current user's
+PowerShell script directory as the default.
 
 .PARAMETER InstallMissingModules
 Allows the installer to install missing PowerShell and Bicep prerequisites.
@@ -64,6 +91,17 @@ Updates the deployment without prompting for execution confirmation.
 
 .EXAMPLE
 .\Update-AutopilotImport.ps1 `
+    -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+    -TenantId '11111111-1111-1111-1111-111111111111' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -InstallMissingModules
+
+Updates an existing deployment when no client module or configuration is
+installed on the current computer.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 `
     -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\1.0.20260826.1\client.settings.json' `
     -InstallMissingModules
 
@@ -84,6 +122,20 @@ Function management API.
 param(
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string] $ConfigPath,
+
+    [string] $SubscriptionId,
+
+    [string] $TenantId,
+
+    [string] $ResourceGroupName,
+
+    [string] $FunctionAppName,
+
+    [ValidatePattern('^api://')]
+    [string] $ApiAudience,
+
+    [ValidatePattern('^https://')]
+    [string] $ManagementUrl,
 
     [string] $ClientToolsPath,
 
@@ -127,16 +179,24 @@ function Resolve-AutopilotUpdateConfigPath {
 
     .DESCRIPTION
     Returns an explicitly supplied client.settings.json path. When no path is
-    supplied, searches the default AutopilotImport client module directory and
-    selects the configuration from the highest versioned directory.
+    supplied, searches the portable client package, PSModulePath, and standard
+    per-user and system-wide PowerShell module directories. The configuration
+    from the highest versioned directory is selected.
 
     .PARAMETER Path
     Optional path to a specific client.settings.json file.
 
+    .PARAMETER AllowMissing
+    Returns no path instead of throwing when no installed configuration is
+    found. This enables parameter-based and interactive update discovery.
+
     .OUTPUTS
     System.String. The absolute path to client.settings.json.
     #>
-    param([string] $Path)
+    param(
+        [string] $Path,
+        [switch] $AllowMissing
+    )
 
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
         return (Resolve-Path -LiteralPath $Path).Path
@@ -146,14 +206,61 @@ function Resolve-AutopilotUpdateConfigPath {
     if ([string]::IsNullOrWhiteSpace($documentsPath)) {
         $documentsPath = $HOME
     }
-    $moduleRoot = Join-Path $documentsPath `
-        'PowerShell\Scripts\AutopilotImport\Modules\AutopilotImport.Client'
-    $candidates = @(Get-ChildItem `
-        -Path (Join-Path $moduleRoot '*\client.settings.json') `
-        -File `
-        -ErrorAction SilentlyContinue)
+    $moduleRoots = [Collections.Generic.List[string]]::new()
+    $moduleRoots.Add((Join-Path $documentsPath `
+        'AutopilotImport\Modules\AutopilotImport.Client'))
+    $moduleRoots.Add((Join-Path $documentsPath `
+        'PowerShell\Scripts\AutopilotImport\Modules\AutopilotImport.Client'))
+    $moduleRoots.Add((Join-Path $documentsPath `
+        'PowerShell\Modules\AutopilotImport.Client'))
+    $moduleRoots.Add((Join-Path $documentsPath `
+        'WindowsPowerShell\Modules\AutopilotImport.Client'))
+
+    foreach ($powerShellModuleRoot in @(
+            $env:PSModulePath -split [IO.Path]::PathSeparator
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($powerShellModuleRoot)) {
+            $moduleRoots.Add((Join-Path $powerShellModuleRoot `
+                'AutopilotImport.Client'))
+        }
+    }
+
+    $programFilesPath = [Environment]::GetFolderPath('ProgramFiles')
+    if (-not [string]::IsNullOrWhiteSpace($programFilesPath)) {
+        $moduleRoots.Add((Join-Path $programFilesPath `
+            'PowerShell\Modules\AutopilotImport.Client'))
+        $moduleRoots.Add((Join-Path $programFilesPath `
+            'WindowsPowerShell\Modules\AutopilotImport.Client'))
+    }
+
+    $searchedModuleRoots = @($moduleRoots | Select-Object -Unique)
+    $candidates = @($searchedModuleRoots | ForEach-Object {
+        $moduleRoot = $_
+        if (-not (Test-Path -LiteralPath $moduleRoot -PathType Container)) {
+            return
+        }
+
+        $unversionedSettingsPath = Join-Path $moduleRoot `
+            'client.settings.json'
+        if (Test-Path -LiteralPath $unversionedSettingsPath -PathType Leaf) {
+            Get-Item -LiteralPath $unversionedSettingsPath
+        }
+        Get-ChildItem -LiteralPath $moduleRoot -Directory |
+            ForEach-Object {
+                $versionedSettingsPath = Join-Path $_.FullName `
+                    'client.settings.json'
+                if (Test-Path `
+                    -LiteralPath $versionedSettingsPath `
+                    -PathType Leaf) {
+                    Get-Item -LiteralPath $versionedSettingsPath
+                }
+            }
+    })
     if ($candidates.Count -eq 0) {
-        throw "No installed client.settings.json was found under '$moduleRoot'. Use -ConfigPath."
+        if ($AllowMissing) {
+            return $null
+        }
+        throw "No installed client.settings.json was found in the portable or PowerShell module directories: $($searchedModuleRoots -join ', '). Use -ConfigPath."
     }
 
     return ($candidates | Sort-Object {
@@ -165,6 +272,62 @@ function Resolve-AutopilotUpdateConfigPath {
             [version]'0.0'
         }
     } -Descending | Select-Object -First 1).FullName
+}
+
+function Read-AutopilotUpdateValue {
+    <#
+    .SYNOPSIS
+    Resolves an update value from a parameter, configuration, or prompt.
+
+    .DESCRIPTION
+    Returns CurrentValue when supplied. Otherwise, prompts interactively and
+    offers DefaultValue when available. Empty required values terminate before
+    any deployment changes are made.
+    #>
+    param(
+        [string] $CurrentValue,
+        [Parameter(Mandatory)]
+        [string] $Prompt,
+        [string] $DefaultValue
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($CurrentValue)) {
+        return $CurrentValue.Trim()
+    }
+
+    $promptText = if ([string]::IsNullOrWhiteSpace($DefaultValue)) {
+        $Prompt
+    }
+    else {
+        "$Prompt [$DefaultValue]"
+    }
+    $enteredValue = Read-Host $promptText
+    if ([string]::IsNullOrWhiteSpace($enteredValue)) {
+        $enteredValue = $DefaultValue
+    }
+    if ([string]::IsNullOrWhiteSpace($enteredValue)) {
+        throw "A value for '$Prompt' is required."
+    }
+    return $enteredValue.Trim()
+}
+
+function Get-AutopilotUpdateConfigurationValue {
+    <#
+    .SYNOPSIS
+    Reads an optional value from an installed client configuration.
+    #>
+    param(
+        [AllowNull()]
+        [object] $Configuration,
+        [Parameter(Mandatory)]
+        [string] $Name
+    )
+
+    if ($null -ne $Configuration -and
+        $null -ne $Configuration.PSObject.Properties[$Name]) {
+        return [string] $Configuration.$Name
+    }
+    return $null
 }
 
 function Get-AutopilotClientToolsPath {
@@ -430,36 +593,6 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer not found: $installerPath"
 }
 
-$resolvedConfigPath = Resolve-AutopilotUpdateConfigPath -Path $ConfigPath
-$settings = Get-Content -LiteralPath $resolvedConfigPath -Raw | ConvertFrom-Json
-$requiredSettings = @(
-    'managementUrl',
-    'apiApplicationIdUri',
-    'tenantId',
-    'subscriptionId',
-    'resourceGroupName',
-    'functionAppName'
-)
-foreach ($settingName in $requiredSettings) {
-    if ($null -eq $settings.PSObject.Properties[$settingName] -or
-        [string]::IsNullOrWhiteSpace([string] $settings.$settingName)) {
-        throw "Client configuration '$resolvedConfigPath' is missing '$settingName'."
-    }
-}
-$apiAudience = [string] $settings.apiApplicationIdUri
-$entraClientIdText = $apiAudience -replace '^api://', ''
-$entraClientId = [guid]::Empty
-if (-not [guid]::TryParse($entraClientIdText, [ref] $entraClientId)) {
-    throw "API audience '$apiAudience' does not contain a valid Entra Client ID."
-}
-$resolvedClientToolsPath = Get-AutopilotClientToolsPath `
-    -SettingsPath $resolvedConfigPath `
-    -OverridePath $ClientToolsPath
-
-#endregion Resolve installed deployment
-
-#region Read current deployment configuration
-
 if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
     if (-not $InstallMissingModules) {
         throw 'Az.Accounts is required. Run again with -InstallMissingModules.'
@@ -472,41 +605,110 @@ if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
 }
 Import-Module 'Az.Accounts' -ErrorAction Stop
 
-Import-Module $clientModulePath -Force
-$policyResponse = Get-AutopilotTagPolicy `
-    -ConfigPath $resolvedConfigPath `
-    -Raw
-$tagAuthorizationRules = @(
-    ConvertTo-UpdateTagAuthorizationRules `
-        -Policy @($policyResponse.policy)
-)
-$restrictedManagementAdministrativeUnitName = `
-    Get-UpdateRestrictedManagementAdministrativeUnitName `
-        -Policy @($policyResponse.policy)
-
 if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
     -not (Get-Command Invoke-AzRestMethod -ErrorAction SilentlyContinue)) {
     throw 'Az.Accounts did not provide the required Azure commands.'
 }
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
+$resolvedConfigPath = Resolve-AutopilotUpdateConfigPath `
+    -Path $ConfigPath `
+    -AllowMissing
+$settings = if ($resolvedConfigPath) {
+    Get-Content -LiteralPath $resolvedConfigPath -Raw | ConvertFrom-Json
+}
+else {
+    $null
+}
+
+$configuredSubscriptionId = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'subscriptionId'
+$configuredTenantId = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'tenantId'
+$configuredResourceGroupName = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'resourceGroupName'
+$configuredFunctionAppName = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'functionAppName'
+
+$SubscriptionId = Read-AutopilotUpdateValue `
+    -CurrentValue $(if ($PSBoundParameters.ContainsKey('SubscriptionId')) {
+        $SubscriptionId
+    } else { $configuredSubscriptionId }) `
+    -Prompt 'Azure Subscription ID' `
+    -DefaultValue $(if ($currentContext) {
+        [string] $currentContext.Subscription.Id
+    })
+$TenantId = Read-AutopilotUpdateValue `
+    -CurrentValue $(if ($PSBoundParameters.ContainsKey('TenantId')) {
+        $TenantId
+    } else { $configuredTenantId }) `
+    -Prompt 'Entra Tenant ID' `
+    -DefaultValue $(if ($currentContext) {
+        [string] $currentContext.Tenant.Id
+    })
+$parsedGuid = [guid]::Empty
+if (-not [guid]::TryParse($SubscriptionId, [ref] $parsedGuid)) {
+    throw 'Azure Subscription ID must be a GUID.'
+}
+$parsedGuid = [guid]::Empty
+if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
+    throw 'Entra Tenant ID must be a GUID.'
+}
+$ResourceGroupName = Read-AutopilotUpdateValue `
+    -CurrentValue $(if ($PSBoundParameters.ContainsKey('ResourceGroupName')) {
+        $ResourceGroupName
+    } else { $configuredResourceGroupName }) `
+    -Prompt 'Azure Resource Group' `
+    -DefaultValue 'rg-autopilot-import'
+$defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
+$FunctionAppName = Read-AutopilotUpdateValue `
+    -CurrentValue $(if ($PSBoundParameters.ContainsKey('FunctionAppName')) {
+        $FunctionAppName
+    } else { $configuredFunctionAppName }) `
+    -Prompt 'Azure Function App name' `
+    -DefaultValue $defaultFunctionName
+
+if ($resolvedConfigPath) {
+    $resolvedClientToolsPath = Get-AutopilotClientToolsPath `
+        -SettingsPath $resolvedConfigPath `
+        -OverridePath $ClientToolsPath
+}
+else {
+    $documentsPath = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($documentsPath)) {
+        $documentsPath = $HOME
+    }
+    $resolvedClientToolsPath = Read-AutopilotUpdateValue `
+        -CurrentValue $ClientToolsPath `
+        -Prompt 'Operational PowerShell scripts directory' `
+        -DefaultValue (Join-Path $documentsPath 'AutopilotImport')
+}
+
+#endregion Resolve installed deployment
+
+#region Read current deployment configuration
+
 if (-not $currentContext -or
-    [string] $currentContext.Subscription.Id -ne [string] $settings.subscriptionId -or
-    [string] $currentContext.Tenant.Id -ne [string] $settings.tenantId) {
+    [string] $currentContext.Subscription.Id -ne $SubscriptionId -or
+    [string] $currentContext.Tenant.Id -ne $TenantId) {
     Connect-AzAccount `
-        -Tenant $settings.tenantId `
-        -Subscription $settings.subscriptionId | Out-Null
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId | Out-Null
 }
 Set-AzContext `
-    -Tenant $settings.tenantId `
-    -Subscription $settings.subscriptionId `
+    -Tenant $TenantId `
+    -Subscription $SubscriptionId `
     -WhatIf:$false | Out-Null
 
 Write-Host 'Validating Azure update permissions...'
 Assert-AzureUpdatePermissions `
-    -SubscriptionId $settings.subscriptionId `
-    -ResourceGroupName $settings.resourceGroupName
+    -SubscriptionId $SubscriptionId `
+    -ResourceGroupName $ResourceGroupName
 
-$resourceId = "/subscriptions/$($settings.subscriptionId)/resourceGroups/$($settings.resourceGroupName)/providers/Microsoft.Web/sites/$($settings.functionAppName)"
+$resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
 $siteResponse = Invoke-AzRestMethod `
     -Method GET `
     -Path "${resourceId}?api-version=2023-12-01"
@@ -516,7 +718,7 @@ if ($siteResponse.StatusCode -ge 400) {
 }
 $site = $siteResponse.Content | ConvertFrom-Json
 if (-not $site.id) {
-    throw "Function App '$($settings.functionAppName)' was not found."
+    throw "Function App '$FunctionAppName' was not found."
 }
 $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
@@ -524,6 +726,63 @@ $appSettingsResponse = Invoke-AzRestMethod `
     -WhatIf:$false
 Assert-AutopilotAppSettingsResponse -Response $appSettingsResponse
 $appSettings = $appSettingsResponse.Content | ConvertFrom-Json
+$configuredApiAudience = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'apiApplicationIdUri'
+$resolvedApiAudience = if ($PSBoundParameters.ContainsKey('ApiAudience')) {
+    $ApiAudience
+}
+elseif (-not [string]::IsNullOrWhiteSpace($configuredApiAudience)) {
+    $configuredApiAudience
+}
+else {
+    [string] $appSettings.properties.API_AUDIENCE
+}
+if ([string]::IsNullOrWhiteSpace($resolvedApiAudience)) {
+    throw "Function App '$FunctionAppName' does not define API_AUDIENCE. Use -ApiAudience."
+}
+$entraClientIdText = $resolvedApiAudience -replace '^api://', ''
+$entraClientId = [guid]::Empty
+if ($resolvedApiAudience -notmatch '^api://' -or
+    -not [guid]::TryParse($entraClientIdText, [ref] $entraClientId)) {
+    throw "API audience '$resolvedApiAudience' does not contain a valid Entra Client ID."
+}
+
+$configuredManagementUrl = Get-AutopilotUpdateConfigurationValue `
+    -Configuration $settings `
+    -Name 'managementUrl'
+$defaultHostName = [string] $site.properties.defaultHostName
+if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
+    $defaultHostName = "$FunctionAppName.azurewebsites.net"
+}
+$resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
+    $ManagementUrl
+}
+elseif (-not [string]::IsNullOrWhiteSpace($configuredManagementUrl)) {
+    $configuredManagementUrl
+}
+else {
+    "https://$defaultHostName/api/management/tag-policy"
+}
+
+Import-Module $clientModulePath -Force
+$policyResponse = Get-AutopilotTagPolicy `
+    -ManagementUrl $resolvedManagementUrl `
+    -ApiApplicationIdUri $resolvedApiAudience `
+    -TenantId $TenantId `
+    -Raw
+if ($null -eq $policyResponse -or
+    $null -eq $policyResponse.PSObject.Properties['policy']) {
+    throw "The management endpoint '$resolvedManagementUrl' did not return a Group Tag policy. Verify the Function App, API audience, and management URL."
+}
+$tagAuthorizationRules = @(
+    ConvertTo-UpdateTagAuthorizationRules `
+        -Policy @($policyResponse.policy)
+)
+$restrictedManagementAdministrativeUnitName = `
+    Get-UpdateRestrictedManagementAdministrativeUnitName `
+        -Policy @($policyResponse.policy)
+
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
 if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
@@ -557,11 +816,11 @@ $managerPrincipalIds = @(
 #region Invoke idempotent installer
 
 Write-Host "`nResolved update" -ForegroundColor Cyan
-Write-Host "  Configuration : $resolvedConfigPath"
-Write-Host "  Subscription  : $($settings.subscriptionId)"
-Write-Host "  Tenant        : $($settings.tenantId)"
-Write-Host "  Resource group: $($settings.resourceGroupName)"
-Write-Host "  Function      : $($settings.functionAppName)"
+Write-Host "  Configuration : $(if ($resolvedConfigPath) { $resolvedConfigPath } else { '[not installed]' })"
+Write-Host "  Subscription  : $SubscriptionId"
+Write-Host "  Tenant        : $TenantId"
+Write-Host "  Resource group: $ResourceGroupName"
+Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
@@ -570,15 +829,15 @@ Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 
 $installerParameters = @{
-    SubscriptionId              = [string] $settings.subscriptionId
-    TenantId                    = [string] $settings.tenantId
-    ResourceGroupName           = [string] $settings.resourceGroupName
+    SubscriptionId              = $SubscriptionId
+    TenantId                    = $TenantId
+    ResourceGroupName           = $ResourceGroupName
     Location                    = [string] $site.location
-    FunctionAppName             = [string] $settings.functionAppName
+    FunctionAppName             = $FunctionAppName
     EntraClientId               = $entraClientId.ToString()
     WebClientId                 = $webClientId
     InstallerPrincipalId        = $installerPrincipalId
-    ApiAudience                 = $apiAudience
+    ApiAudience                 = $resolvedApiAudience
     TagAuthorizationRule        = $tagAuthorizationRules
     RestrictedManagementAdministrativeUnitName = `
         [string] $restrictedManagementAdministrativeUnitName
@@ -593,7 +852,7 @@ $installerParameters = @{
     SkipSmokeTest               = $SkipSmokeTest
 }
 
-$target = "$($settings.functionAppName) in $($settings.resourceGroupName)"
+$target = "$FunctionAppName in $ResourceGroupName"
 if ($WhatIfPreference) {
     & $installerPath @installerParameters -WhatIf
     return

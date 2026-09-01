@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260901.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 Set-StrictMode -Version Latest
@@ -1168,7 +1168,10 @@ function Update-AutopilotTagPolicyManager {
         allowIntuneRoleAdministrators = $true
     }
     if ($PSCmdlet.ShouldProcess("$resolvedResourceGroup/$resolvedFunctionName", 'Update Group Tag managers')) {
-        $appSettings.MANAGER_AUTHORIZATION_POLICY = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
+        $updatedPolicyJson = $updatedPolicy |
+            ConvertTo-Json -Depth 4 -Compress
+        $appSettings['MANAGER_AUTHORIZATION_POLICY'] = `
+            [string] $updatedPolicyJson
         Set-AzWebApp -ResourceGroupName $resolvedResourceGroup -Name $resolvedFunctionName `
             -AppSettings $appSettings | Out-Null
     }
