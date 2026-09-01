@@ -697,6 +697,61 @@ function Import-DeploymentModule {
     Import-Module $Name -ErrorAction Stop
 }
 
+function Install-BicepStandaloneCli {
+    <#
+    .SYNOPSIS
+    Installs the official standalone Bicep CLI for the current user.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $DestinationPath
+    )
+
+    $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    $assetName = switch ($architecture) {
+        ([Runtime.InteropServices.Architecture]::X64) { 'bicep-win-x64.exe' }
+        ([Runtime.InteropServices.Architecture]::Arm64) { 'bicep-win-arm64.exe' }
+        default {
+            throw "Automatic Bicep installation does not support the $architecture architecture. Install Bicep manually from https://aka.ms/bicep-install."
+        }
+    }
+    $downloadUri = "https://github.com/Azure/bicep/releases/latest/download/$assetName"
+    $destinationDirectory = Split-Path $DestinationPath -Parent
+    $temporaryPath = Join-Path `
+        ([IO.Path]::GetTempPath()) `
+        "bicep-$([guid]::NewGuid().ToString('N')).exe"
+
+    try {
+        New-Item `
+            -Path $destinationDirectory `
+            -ItemType Directory `
+            -Force | Out-Null
+        Write-Host "Downloading the standalone Bicep CLI for $architecture..."
+        Invoke-WebRequest `
+            -Uri $downloadUri `
+            -OutFile $temporaryPath `
+            -UseBasicParsing
+        if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf) -or
+            (Get-Item -LiteralPath $temporaryPath).Length -eq 0) {
+            throw 'The downloaded Bicep executable is empty or missing.'
+        }
+        Move-Item `
+            -LiteralPath $temporaryPath `
+            -Destination $DestinationPath `
+            -Force
+        Unblock-File -LiteralPath $DestinationPath -ErrorAction SilentlyContinue
+    }
+    catch {
+        throw "Standalone Bicep installation failed. Download Bicep manually from https://aka.ms/bicep-install. $($_.Exception.Message)"
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $temporaryPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
 function Initialize-BicepCli {
     <#
     .SYNOPSIS
@@ -706,10 +761,10 @@ function Initialize-BicepCli {
     Returns immediately when bicep can already be resolved as a command.
     Otherwise, searches the standard per-user and system-wide installation
     paths. When Bicep is missing and the installer was started with
-    InstallMissingModules, installs the Microsoft.Bicep winget package and
-    checks the known paths again. The resolved installation directory is added
-    to PATH for the current process. A terminating error is thrown when Bicep
-    or winget is unavailable, or when the winget installation fails.
+    InstallMissingModules, installs the Microsoft.Bicep winget package when
+    winget is available. On systems without winget, such as Windows Server,
+    downloads the official standalone executable for the current user. The
+    resolved installation directory is added to PATH for the current process.
 
     .OUTPUTS
     None.
@@ -731,20 +786,21 @@ function Initialize-BicepCli {
 
     if (-not $bicepPath -and $InstallMissingModules) {
         $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if (-not $winget) {
-            throw 'Bicep is missing and winget is not available. Install Bicep from https://aka.ms/bicep-install.'
+        if ($winget) {
+            Write-Host 'Installing Bicep CLI with winget...'
+            & $winget.Source install `
+                --id Microsoft.Bicep `
+                --exact `
+                --source winget `
+                --accept-package-agreements `
+                --accept-source-agreements `
+                --silent
+            if ($LASTEXITCODE -ne 0) {
+                throw "Bicep installation failed with exit code $LASTEXITCODE."
+            }
         }
-
-        Write-Host 'Installing Bicep CLI...'
-        & $winget.Source install `
-            --id Microsoft.Bicep `
-            --exact `
-            --source winget `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --silent
-        if ($LASTEXITCODE -ne 0) {
-            throw "Bicep installation failed with exit code $LASTEXITCODE."
+        else {
+            Install-BicepStandaloneCli -DestinationPath $knownPaths[0]
         }
 
         $bicepPath = $knownPaths | Where-Object { Test-Path $_ -PathType Leaf } |

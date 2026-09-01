@@ -1607,6 +1607,53 @@ Describe 'Installer web frontend readiness check' {
     }
 }
 
+Describe 'Installer Bicep bootstrap' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $functionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Install-BicepStandaloneCli'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $functionAst.Extent.Text
+    }
+
+    It 'downloads a non-empty standalone executable for the current architecture' {
+        Mock Invoke-WebRequest {
+            param($Uri, $OutFile)
+            Set-Content -LiteralPath $OutFile -Value 'mock-bicep'
+        }
+        Mock Unblock-File
+        $destinationPath = Join-Path $TestDrive 'Bicep CLI\bicep.exe'
+
+        Install-BicepStandaloneCli -DestinationPath $destinationPath
+
+        $destinationPath | Should -Exist
+        Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter {
+            $Uri -match `
+                '^https://github\.com/Azure/bicep/releases/latest/download/bicep-win-(x64|arm64)\.exe$'
+        }
+    }
+
+    It 'uses the standalone installer when winget is unavailable' {
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer | Should -Match `
+            '(?s)if \(\$winget\).*?else \{\s*Install-BicepStandaloneCli -DestinationPath \$knownPaths\[0\]'
+        $installer | Should -Not -Match `
+            'Bicep is missing and winget is not available'
+    }
+}
+
 Describe 'Azure deployment permission validation' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'

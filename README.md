@@ -1133,7 +1133,7 @@ For a local manual increment, run:
 
 ## Appendix: Bicep CLI in Restricted Environments
 
-The installer uses `winget install Microsoft.Bicep` when `-InstallMissingModules` is specified. If application control, proxy settings, or network restrictions prevent that automatic download, install the standalone Bicep CLI before starting the deployment. Azure PowerShell requires a separately installed `bicep` command; the copy managed internally by Azure CLI is not available to Azure PowerShell.
+When `-InstallMissingModules` is specified, the installer uses `winget install Microsoft.Bicep` when `winget` is available. On Windows Server and other systems without `winget`, it downloads the official standalone Bicep executable for the current architecture into the current user's local application directory. If application control, proxy settings, or network restrictions prevent either automatic method, install the standalone Bicep CLI before starting the deployment. Azure PowerShell requires a separately installed `bicep` command; the copy managed internally by Azure CLI is not available to Azure PowerShell.
 
 Use the official [Bicep installation documentation](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install) and download one of these Windows assets from the [latest Bicep release](https://github.com/Azure/bicep/releases/latest):
 
