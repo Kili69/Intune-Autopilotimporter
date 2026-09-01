@@ -187,6 +187,24 @@ pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
 
 Normally, the command reads the Function URL, API Application ID URI, and tenant from `client.settings.json`. Use `-ConfigPath` to select another configuration file. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values override the file settings, allowing one computer to target multiple environments.
 
+### Display Client Configuration
+
+Display the complete configuration currently used by the installed client
+module, including subscription, tenant, resource group, Function App, API,
+management, and web application values:
+
+```powershell
+Get-AutopilotClientConfiguration
+```
+
+Select a different configuration file and display every property:
+
+```powershell
+Get-AutopilotClientConfiguration `
+    -ConfigPath 'C:\AutopilotImport\client.settings.json' |
+    Format-List
+```
+
 ### Track Import Status
 
 A successful request returns HTTP 202 and an `importId`. Intune processes the request asynchronously. Check the current state:

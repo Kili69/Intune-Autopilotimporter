@@ -237,6 +237,82 @@ function Get-CoreModulePath {
     return $modulePath
 }
 
+function Get-AutopilotClientConfiguration {
+    <#
+    .SYNOPSIS
+    Displays the active Autopilot Import client configuration.
+
+    .DESCRIPTION
+    Reads client.settings.json from the installed module or from ConfigPath and
+    returns the Azure subscription, tenant, resource group, Function App, API,
+    management, and web application settings. The command validates that all
+    required settings are present. WebClientId is returned when the deployment
+    configuration contains it.
+
+    .PARAMETER ConfigPath
+    Optional path to a client.settings.json file. When omitted, the command
+    reads client.settings.json from the module directory.
+
+    .EXAMPLE
+    Get-AutopilotClientConfiguration
+
+    Displays the configuration installed with the client module.
+
+    .EXAMPLE
+    Get-AutopilotClientConfiguration `
+        -ConfigPath 'C:\AutopilotImport\client.settings.json' |
+        Format-List
+
+    Displays all values from an explicitly selected configuration file.
+
+    .OUTPUTS
+    PSCustomObject containing the resolved client configuration.
+    #>
+    [CmdletBinding()]
+    param(
+        [string] $ConfigPath
+    )
+
+    $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath
+    $resolvedConfigPath = [IO.Path]::GetFullPath(
+        [string] $configuration.ConfigPath
+    )
+    if (-not (Test-Path -LiteralPath $resolvedConfigPath -PathType Leaf)) {
+        throw "Client configuration '$resolvedConfigPath' was not found. Reinstall the client module or provide -ConfigPath."
+    }
+
+    $requiredSettings = [ordered]@{
+        functionUrl         = 'Function URL'
+        managementUrl       = 'management URL'
+        apiApplicationIdUri = 'API application ID URI'
+        tenantId            = 'Tenant ID'
+        subscriptionId      = 'Subscription ID'
+        resourceGroupName   = 'resource group name'
+        functionAppName     = 'Function App name'
+        webUrl              = 'web URL'
+    }
+    $resolvedSettings = @{}
+    foreach ($setting in $requiredSettings.GetEnumerator()) {
+        $resolvedSettings[$setting.Key] = Get-ConfigurationValue `
+            -Configuration $configuration `
+            -Name $setting.Key `
+            -Description $setting.Value
+    }
+
+    [pscustomobject][ordered]@{
+        SubscriptionId      = $resolvedSettings.subscriptionId
+        TenantId            = $resolvedSettings.tenantId
+        ResourceGroupName   = $resolvedSettings.resourceGroupName
+        FunctionAppName     = $resolvedSettings.functionAppName
+        FunctionUrl         = $resolvedSettings.functionUrl
+        ManagementUrl       = $resolvedSettings.managementUrl
+        ApiApplicationIdUri = $resolvedSettings.apiApplicationIdUri
+        WebUrl              = $resolvedSettings.webUrl
+        WebClientId         = [string] $configuration.webClientId
+        ConfigPath          = $resolvedConfigPath
+    }
+}
+
 function New-AutopilotClientConfiguration {
     <#
     .SYNOPSIS
@@ -1147,6 +1223,7 @@ function Remove-AutopilotTagPolicyManager {
 
 Export-ModuleMember -Function @(
     'New-AutopilotClientConfiguration',
+    'Get-AutopilotClientConfiguration',
     'Import-AutopilotDevice',
     'Get-AutopilotImportStatus',
     'Get-AutopilotTagPolicy',
