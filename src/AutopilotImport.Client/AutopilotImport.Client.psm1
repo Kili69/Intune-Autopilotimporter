@@ -929,17 +929,22 @@ function Add-AutopilotTagPolicy {
 function Remove-AutopilotTagPolicy {
     <#
     .SYNOPSIS
-    Removes an Entra group from the Group Tag policy.
+    Removes Group Tags or an Entra group from the Group Tag policy.
 
     .DESCRIPTION
     Accepts either an Entra group object ID or an exact group display name.
-    The selected group's complete rule is removed while all other rules and
-    the currently configured restricted management administrative unit are
-    preserved.
+    When GroupTag is specified, only those tags are removed from the selected
+    group's rule. Without GroupTag, the selected group's complete rule is
+    removed. All other rules and the currently configured restricted
+    management administrative unit are preserved.
 
     .PARAMETER Group
     Entra group object ID or exact display name. If multiple groups have the
     same display name, use the object ID to select one unambiguously.
+
+    .PARAMETER GroupTag
+    Optional Autopilot Group Tags to remove from the selected group's rule.
+    Omit this parameter to remove the complete rule.
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
@@ -947,6 +952,10 @@ function Remove-AutopilotTagPolicy {
         [ValidateNotNullOrEmpty()]
         [Alias('GroupId', 'GroupName')]
         [string] $Group,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('Tag')]
+        [string[]] $GroupTag,
 
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
@@ -1006,15 +1015,61 @@ function Remove-AutopilotTagPolicy {
         throw "Entra group '$Group' does not have a Group Tag policy rule."
     }
 
-    $remainingPolicy = @($currentPolicy | Where-Object {
-        ([guid] $_.groupId).ToString() -ne $resolvedGroupId
-    })
-    if ($remainingPolicy.Count -eq 0) {
-        throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
+    $removeTags = @()
+    if ($PSBoundParameters.ContainsKey('GroupTag')) {
+        $removeTags = @($GroupTag | ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        if ($removeTags.Count -eq 0) {
+            throw 'Specify at least one Group Tag to remove.'
+        }
+        foreach ($tag in $removeTags) {
+            if ($tag.Length -gt 128) {
+                throw "Group Tag '$tag' must not exceed 128 characters."
+            }
+            if ($tag.Contains(',')) {
+                throw "Group Tag '$tag' must not contain a comma."
+            }
+        }
+
+        $currentTags = @($matchingRule[0].tags | ForEach-Object {
+            ([string] $_).Trim()
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        $unknownTags = @($removeTags | Where-Object { $_ -notin $currentTags })
+        if ($unknownTags.Count -gt 0) {
+            throw "Group '$Group' does not contain Group Tag(s): $($unknownTags -join ', ')."
+        }
+        $remainingTags = @($currentTags | Where-Object {
+            $_ -notin $removeTags
+        })
+        if ($remainingTags.Count -eq 0) {
+            throw 'The last Group Tag cannot be removed from a policy rule. Omit -GroupTag to remove the complete group rule.'
+        }
+
+        $remainingPolicy = @($currentPolicy)
+        $rules = @($remainingPolicy | ForEach-Object {
+            $ruleGroupId = ([guid] $_.groupId).ToString()
+            $ruleTags = if ($ruleGroupId -eq $resolvedGroupId) {
+                $remainingTags
+            }
+            else {
+                @($_.tags)
+            }
+            "$ruleGroupId=$($ruleTags -join ',')"
+        })
     }
-    $rules = @($remainingPolicy | ForEach-Object {
-        "$(([guid] $_.groupId).ToString())=$(@($_.tags) -join ',')"
-    })
+    else {
+        $remainingPolicy = @($currentPolicy | Where-Object {
+            ([guid] $_.groupId).ToString() -ne $resolvedGroupId
+        })
+        if ($remainingPolicy.Count -eq 0) {
+            throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
+        }
+        $rules = @($remainingPolicy | ForEach-Object {
+            "$(([guid] $_.groupId).ToString())=$(@($_.tags) -join ',')"
+        })
+    }
     $configuredMauNames = @($remainingPolicy |
         ForEach-Object {
             if ($_.PSObject.Properties[
@@ -1041,9 +1096,13 @@ function Remove-AutopilotTagPolicy {
     else {
         "$groupDisplayName ($resolvedGroupId)"
     }
-    if (-not $PSCmdlet.ShouldProcess(
-            $target,
-            'Remove the group from the Autopilot Group Tag policy')) {
+    $operation = if ($removeTags.Count -gt 0) {
+        "Remove Group Tags '$($removeTags -join ', ')' from the Autopilot policy"
+    }
+    else {
+        'Remove the group from the Autopilot Group Tag policy'
+    }
+    if (-not $PSCmdlet.ShouldProcess($target, $operation)) {
         return
     }
 

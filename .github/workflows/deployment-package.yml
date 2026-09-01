@@ -3,10 +3,7 @@ name: Build deployment package
 on:
   push:
     branches:
-      - main
-  pull_request:
-    branches:
-      - main
+      - '**'
   workflow_dispatch:
 
 permissions:
@@ -41,8 +38,11 @@ jobs:
       - name: Build deployment package
         id: package
         shell: pwsh
+        env:
+          PACKAGE_BRANCH: ${{ github.ref_name }}
         run: |
-          $package = ./scripts/New-DeploymentPackage.ps1
+          $package = ./scripts/New-DeploymentPackage.ps1 `
+            -BranchName $env:PACKAGE_BRANCH
           "path=$($package.FullName)" >> $env:GITHUB_OUTPUT
           "name=$($package.BaseName)" >> $env:GITHUB_OUTPUT
 

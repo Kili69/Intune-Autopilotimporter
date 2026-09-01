@@ -1,7 +1,7 @@
 trigger:
   branches:
     include:
-      - main
+      - '*'
 
 pr:
   branches:
@@ -39,6 +39,26 @@ stages:
                   Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
                 }
                 Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
+          - task: PowerShell@2
+            displayName: Build deployment package
+            env:
+              SOURCE_BRANCH: $(Build.SourceBranch)
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                $branchName = $env:SOURCE_BRANCH `
+                  -replace '^refs/heads/', '' `
+                  -replace '^refs/pull/', 'pr-'
+                $package = ./scripts/New-DeploymentPackage.ps1 `
+                  -BranchName $branchName
+                Write-Host "##vso[task.setvariable variable=deploymentPackagePath]$($package.FullName)"
+                Write-Host "##vso[task.setvariable variable=deploymentPackageName]$($package.BaseName)"
+          - task: PublishPipelineArtifact@1
+            displayName: Publish deployment package
+            inputs:
+              targetPath: $(deploymentPackagePath)
+              artifact: $(deploymentPackageName)
 
   - stage: Deploy
     dependsOn: Test

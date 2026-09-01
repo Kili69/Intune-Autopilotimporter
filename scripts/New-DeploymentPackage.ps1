@@ -21,15 +21,16 @@ possibility of such damages.
 Creates a versioned deployment package for Autopilot Import.
 
 .DESCRIPTION
-Reads the project version from VERSION and creates a ZIP archive containing
+Reads the project version from VERSION and resolves the current branch from an
+explicit parameter, CI environment, or Git. It creates a ZIP archive containing
 the files required to install, update, and operate Autopilot Import. Package
 content is selected from an explicit allowlist so local configuration, tests,
 logs, repository metadata, and generated files are not included.
 
 The archive contains a top-level directory named
-Intune-Autopilotimport-deployment-<version>. An existing archive for the same
-version is replaced. Temporary staging files are removed after packaging,
-including when package creation fails.
+Intune-autopilotImporter-<branch><version>. An existing archive for the same
+branch and version is replaced. Temporary staging files are removed after
+packaging, including when package creation fails.
 
 .PARAMETER ProjectRoot
 Root directory of the Autopilot Import source tree. The default is the parent
@@ -38,6 +39,11 @@ directory of this script's directory.
 .PARAMETER OutputDirectory
 Directory in which the deployment ZIP is created. The default is the
 artifacts directory below ProjectRoot.
+
+.PARAMETER BranchName
+Source branch included in the package name. When omitted, the script uses the
+GitHub or Azure Pipelines branch environment and then the current local Git
+branch. Characters invalid for a portable file name are replaced with hyphens.
 
 .EXAMPLE
 .\scripts\New-DeploymentPackage.ps1
@@ -68,7 +74,9 @@ param(
 
     [string] $OutputDirectory = (Join-Path `
         (Split-Path $PSScriptRoot -Parent) `
-        'artifacts')
+        'artifacts'),
+
+    [string] $BranchName
 )
 
 Set-StrictMode -Version Latest
@@ -107,6 +115,47 @@ function Assert-BuiltWebFrontend {
     }
 }
 
+function Resolve-PackageBranchName {
+    param(
+        [string] $Name,
+        [Parameter(Mandatory)]
+        [string] $Root
+    )
+
+    $resolvedName = $Name
+    if ([string]::IsNullOrWhiteSpace($resolvedName)) {
+        $resolvedName = @(
+            $env:GITHUB_HEAD_REF
+            $env:GITHUB_REF_NAME
+            $env:BUILD_SOURCEBRANCHNAME
+        ) | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Select-Object -First 1
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedName)) {
+        $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+        if ($gitCommand) {
+            $resolvedName = (& $gitCommand.Source `
+                -C $Root `
+                branch `
+                --show-current 2>$null).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                $resolvedName = $null
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedName)) {
+        throw 'The source branch could not be determined. Use -BranchName.'
+    }
+
+    $safeName = $resolvedName.Trim() -replace '[^A-Za-z0-9._-]', '-'
+    $safeName = $safeName.Trim('-', '.')
+    if ([string]::IsNullOrWhiteSpace($safeName)) {
+        throw "Branch name '$resolvedName' does not contain any portable file-name characters."
+    }
+    return $safeName
+}
+
 # Use the central project version for both the archive and its root directory.
 $projectVersion = (Get-Content `
     -LiteralPath (Join-Path $ProjectRoot 'VERSION') `
@@ -115,7 +164,10 @@ if ([string]::IsNullOrWhiteSpace($projectVersion)) {
     throw 'VERSION must contain a package version.'
 }
 
-$packageName = "Intune-Autopilotimport-deployment-$projectVersion"
+$packageBranch = Resolve-PackageBranchName `
+    -Name $BranchName `
+    -Root $ProjectRoot
+$packageName = "Intune-autopilotImporter-$packageBranch$projectVersion"
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) `
     "$packageName-$([guid]::NewGuid().ToString('N'))"
 $packageRoot = Join-Path $stagingRoot $packageName

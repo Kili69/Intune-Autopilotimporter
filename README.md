@@ -274,17 +274,36 @@ Add-AutopilotTagPolicy `
 If more than one Entra group has the same display name, the object ID is
 required. Run the command without `-WhatIf` to apply the change.
 
+Add another tag to an existing group rule without changing its other tags:
+
+```powershell
+Add-AutopilotTagPolicy `
+    -Group '11111111-1111-1111-1111-111111111111' `
+    -GroupTag 'Autopilot-Shared'
+```
+
 #### Remove a Group Tag Policy
 
-`Remove-AutopilotTagPolicy` removes the complete Group Tag rule for one Entra
-group. Other group rules and the configured MAU remain unchanged. The command
-does not delete the group from Entra.
+`Remove-AutopilotTagPolicy` removes selected tags from one Entra group when
+`-GroupTag` is supplied. Without `-GroupTag`, it removes the complete Group Tag
+rule for that group. Other group rules and the configured MAU remain unchanged.
+The command does not delete the group from Entra.
 
 Parameters:
 
 - `-Group` accepts either the Entra group object ID or its exact display name.
     `-GroupId` and `-GroupName` are aliases for this parameter.
+- `-GroupTag` optionally selects one or more tags to remove. `-Tag` is an alias.
+    Omit it to remove the complete group rule.
 - `-WhatIf` previews the removal without writing it to the Azure Function.
+
+Remove one tag while preserving the group's other tags:
+
+```powershell
+Remove-AutopilotTagPolicy `
+    -Group '11111111-1111-1111-1111-111111111111' `
+    -GroupTag 'Autopilot-Kiosk'
+```
 
 Remove a rule using its exact Entra group display name:
 
@@ -302,8 +321,10 @@ Remove-AutopilotTagPolicy `
 ```
 
 If multiple Entra groups have the same display name, use the object ID. The
-last policy rule cannot be removed because the Function requires at least one
-group-to-tag rule. Run the command without `-WhatIf` to apply the removal.
+last tag cannot be removed from a group rule. Omit `-GroupTag` to remove that
+complete rule instead. The last policy rule cannot be removed because the
+Function requires at least one group-to-tag rule. Run the command without
+`-WhatIf` to apply the removal.
 
 #### Replace the Complete Group Tag Policy
 
@@ -350,7 +371,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 ### Quick Installation Guide
 
 1. Obtain the Azure, Entra ID, and delegated Microsoft Graph permissions listed under [Required Roles and Permissions](#required-roles-and-permissions). The installing administrator needs all applicable permissions for the complete setup.
-2. Download `Intune-Autopilotimport-deployment-<version>.zip` and extract it. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
+2. Download `Intune-autopilotImporter-<branch><version>.zip` and extract it. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
 3. Start the interactive installation. Missing PowerShell modules and the Bicep CLI are installed when required:
 
 ```powershell
@@ -718,17 +739,17 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 
 #### Deployment Package
 
-GitHub Actions builds a versioned deployment package for every push to `main` and every pull request targeting `main`. The workflow runs the Pester suite first and then publishes `Intune-Autopilotimport-deployment-<version>` as a workflow artifact with a retention period of 30 days. The downloaded artifact contains the ZIP file of the same name.
+GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
-The workflow is prepared on `dev` but normal pushes to `dev` do not run it. It can be tested there manually with the GitHub Actions `workflow_dispatch` trigger or built locally:
+The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:
 
 ```powershell
 .\scripts\New-DeploymentPackage.ps1
 ```
 
-The local package is written to `artifacts\Intune-Autopilotimport-deployment-<version>.zip` by default.
+The local package is written to `artifacts\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
 
 #### Manual Bicep Deployment
 

@@ -677,6 +677,104 @@ Describe 'Removing a Client Group Tag policy rule' {
             -Times 0
     }
 
+    It 'removes only the selected tag from an existing group rule' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @(
+                        [pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('Standard', 'Kiosk', 'Shared')
+                            restrictedManagementAdministrativeUnitName = `
+                                'Autopilot Devices'
+                        }
+                        [pscustomobject]@{
+                            groupId = '22222222-2222-2222-2222-222222222222'
+                            tags = @('Legacy')
+                            restrictedManagementAdministrativeUnitName = `
+                                'Autopilot Devices'
+                        }
+                    )
+                }
+            }
+            return [pscustomobject]@{ updated = $true }
+        }
+
+        $result = Remove-AutopilotTagPolicy `
+            -Group '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Kiosk' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false
+
+        $result.updated | Should -BeTrue
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'Put' -and
+                $Body -match `
+                    '11111111-1111-1111-1111-111111111111=Standard,Shared' -and
+                $Body -notmatch `
+                    '11111111-1111-1111-1111-111111111111=[^"\r\n]*Kiosk' -and
+                $Body -match `
+                    '22222222-2222-2222-2222-222222222222=Legacy' -and
+                $Body -match 'Autopilot Devices'
+            } `
+            -Times 1
+    }
+
+    It 'does not remove an individual tag with WhatIf' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @([pscustomobject]@{
+                        groupId = '22222222-2222-2222-2222-222222222222'
+                        tags = @('Legacy', 'Shared')
+                    })
+                }
+            }
+            return [pscustomobject]@{ updated = $true }
+        }
+
+        Remove-AutopilotTagPolicy `
+            -Group '22222222-2222-2222-2222-222222222222' `
+            -GroupTag 'Legacy' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter { $Method -eq 'Put' } `
+            -Times 0
+    }
+
+    It 'rejects removing a tag that is not assigned to the group' {
+        {
+            Remove-AutopilotTagPolicy `
+                -Group '22222222-2222-2222-2222-222222222222' `
+                -GroupTag 'Unknown' `
+                -ManagementUrl 'https://func.example/api/management/tag-policy' `
+                -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+                -TenantId '44444444-4444-4444-4444-444444444444' `
+                -Confirm:$false
+        } | Should -Throw '*does not contain Group Tag(s): Unknown*'
+    }
+
+    It 'refuses to remove the last tag from a group rule' {
+        {
+            Remove-AutopilotTagPolicy `
+                -Group '22222222-2222-2222-2222-222222222222' `
+                -GroupTag 'Legacy' `
+                -ManagementUrl 'https://func.example/api/management/tag-policy' `
+                -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+                -TenantId '44444444-4444-4444-4444-444444444444' `
+                -Confirm:$false
+        } | Should -Throw '*last Group Tag cannot be removed*'
+    }
+
     It 'does not remove the rule with WhatIf' {
         Remove-AutopilotTagPolicy `
             -Group '22222222-2222-2222-2222-222222222222' `
@@ -2683,19 +2781,36 @@ Describe 'Project metadata entries' {
 }
 
 Describe 'Deployment package' {
-    It 'runs automatically for main but not for dev pushes' {
+    It 'runs automatically for every pushed commit' {
         $workflowPath = Join-Path `
             $PSScriptRoot `
             '..\.github\workflows\deployment-package.yml'
         $workflow = Get-Content -LiteralPath $workflowPath -Raw
 
         $workflow | Should -Match `
-            '(?ms)^  push:\s+branches:\s+- main\s*$'
-        $workflow | Should -Match `
-            '(?ms)^  pull_request:\s+branches:\s+- main\s*$'
+            "(?ms)^  push:\s+branches:\s+- '\*\*'\s*$"
         $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
-        $workflow | Should -Not -Match '(?m)^\s+- dev\s*$'
+        $workflow | Should -Match `
+            'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
+        $workflow | Should -Match `
+            '-BranchName \$env:PACKAGE_BRANCH'
         $workflow | Should -Match 'actions/upload-artifact@v4'
+    }
+
+    It 'publishes a package for every branch in Azure Pipelines' {
+        $pipelinePath = Join-Path $PSScriptRoot '..\azure-pipelines.yml'
+        $pipeline = Get-Content -LiteralPath $pipelinePath -Raw
+
+        $pipeline | Should -Match `
+            "(?ms)^trigger:\s+branches:\s+include:\s+- '\*'\s*$"
+        $pipeline | Should -Match `
+            '(?m)^\s+displayName: Build deployment package\s*$'
+        $pipeline | Should -Match `
+            '(?m)^\s+displayName: Publish deployment package\s*$'
+        $pipeline | Should -Match `
+            '(?m)^\s+SOURCE_BRANCH: \$\(Build\.SourceBranch\)\s*$'
+        $pipeline | Should -Match `
+            '(?m)^\s+condition: and\(succeeded\(\), eq\(variables\[''Build\.SourceBranch''\], ''refs/heads/main''\)\)\s*$'
     }
 
     It 'allows pull requests to main only from dev' {
@@ -2721,10 +2836,13 @@ Describe 'Deployment package' {
             $projectRoot `
             'scripts\New-DeploymentPackage.ps1') `
             -ProjectRoot $projectRoot `
-            -OutputDirectory $outputDirectory
-        $packageRoot = "Intune-Autopilotimport-deployment-$((Get-Content `
+            -OutputDirectory $outputDirectory `
+            -BranchName 'feature/tag-policy'
+        $packageRoot = "Intune-autopilotImporter-feature-tag-policy$((Get-Content `
             -LiteralPath (Join-Path $projectRoot 'VERSION') `
             -Raw).Trim())"
+
+        $package.Name | Should -Be "$packageRoot.zip"
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
