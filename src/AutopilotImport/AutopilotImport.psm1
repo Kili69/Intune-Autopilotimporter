@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260901.1
+# Project-Version: 1.0.20260902.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -503,7 +503,11 @@ function Test-IntuneRoleAdministratorAssignment {
         )
     } | ForEach-Object { [string] $_.val })
     $assignedPrincipalIds = @($RoleAssignment | Where-Object {
-        $_.roleDefinition.displayName -eq 'Intune Role Administrator'
+        $roleDefinitionProperty = $_.PSObject.Properties['roleDefinition']
+        $roleDefinitionProperty -and
+            $roleDefinitionProperty.Value -and
+            $roleDefinitionProperty.Value.PSObject.Properties['displayName'] -and
+            $roleDefinitionProperty.Value.displayName -eq 'Intune Role Administrator'
     } | ForEach-Object {
         @($_.members) | ForEach-Object { [string] $_ }
     })

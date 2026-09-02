@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260901.1
+# Project-Version: 1.0.20260902.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2471,6 +2471,23 @@ Describe 'Intune Role Administrator authorization' {
             roleDefinition = [pscustomobject]@{
                 displayName = 'Read Only Operator'
             }
+            members = @('11111111-1111-1111-1111-111111111111')
+        })
+
+        Test-IntuneRoleAdministratorAssignment `
+            -Principal $principal `
+            -RoleAssignment $assignments |
+            Should -Be $false
+    }
+
+    It 'ignores assignments without an expanded role definition' {
+        $principal = [pscustomobject]@{
+            claims = @(
+                @{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }
+            )
+        }
+        $assignments = @([pscustomobject]@{
+            id      = 'assignment-without-role-definition'
             members = @('11111111-1111-1111-1111-111111111111')
         })
 

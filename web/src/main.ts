@@ -53,7 +53,7 @@ const translations = {
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
     newImport: 'New import', register: 'Register devices', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
-    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Authorized tag', loadingTags: 'Loading tags …', startImport: 'Start import',
+    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
@@ -64,6 +64,8 @@ const translations = {
 } as const;
 
 type TranslationKey = keyof typeof translations.de;
+declare const __APP_VERSION__: string;
+
 const savedLanguage = localStorage.getItem('autopilot-language');
 const language: Language = savedLanguage === 'de' || savedLanguage === 'en'
   ? savedLanguage
@@ -167,7 +169,7 @@ app.innerHTML = `
       </section>
     </section>
 
-    <footer>${t('footer')}</footer>
+    <footer>${t('footer')} · v${__APP_VERSION__}</footer>
   </div>
 `;
 
