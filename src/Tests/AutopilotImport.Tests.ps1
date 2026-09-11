@@ -11,7 +11,7 @@ hash rejection, Easy Auth role enforcement, Entra group-to-tag authorization,
 tag casing, installer authorization-rule parsing, and project metadata markers.
 
 .EXAMPLE
-Invoke-Pester -Script .\tests\AutopilotImport.Tests.ps1
+Invoke-Pester -Script .\src\Tests\AutopilotImport.Tests.ps1
 
 Runs the test suite with Pester 5 syntax.
 
@@ -22,13 +22,15 @@ None.
 Pester test results when invoked through Invoke-Pester.
 #>
 
-$modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
+$repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$modulePath = Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
+Remove-Module AutopilotImport -Force -ErrorAction SilentlyContinue
 Import-Module $modulePath -Force
 
 Describe 'Client API error messages' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
         $clientModule = Get-Module AutopilotImport.Client |
             Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
@@ -82,7 +84,7 @@ Describe 'Client API error messages' {
 Describe 'Client import result metadata' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
         $clientModule = Get-Module AutopilotImport.Client |
             Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
@@ -111,7 +113,7 @@ Describe 'Client import result metadata' {
 Describe 'Client CSV input validation' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -144,7 +146,7 @@ Describe 'Client CSV input validation' {
 Describe 'Client configuration creation' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -267,7 +269,7 @@ Describe 'Client configuration creation' {
 Describe 'Client configuration display' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -337,7 +339,7 @@ Describe 'Client configuration display' {
 Describe 'Client manager policy App Settings' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psm1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psm1'
         $tokens = $null
         $parseErrors = $null
         $clientModuleAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -363,7 +365,7 @@ Describe 'Client manager policy App Settings' {
 Describe 'Client import status metadata' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
         $clientModule = Get-Module AutopilotImport.Client |
             Where-Object ModuleBase -eq (Split-Path (Resolve-Path $clientModulePath).Path)
@@ -418,7 +420,7 @@ Describe 'Client import status metadata' {
 Describe 'Client Group Tag policy display' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -477,7 +479,7 @@ Describe 'Client Group Tag policy display' {
 Describe 'Adding a Client Group Tag policy rule' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -604,7 +606,7 @@ Describe 'Adding a Client Group Tag policy rule' {
 Describe 'Removing a Client Group Tag policy rule' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
-            '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
         Import-Module $clientModulePath -Force
     }
 
@@ -1030,7 +1032,7 @@ Describe 'Group-based tag authorization' {
 
 Describe 'Installer tag authorization rules' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1175,7 +1177,7 @@ Describe 'Restricted management administrative unit membership' {
 
 Describe 'Installer Function App naming' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1211,7 +1213,7 @@ Describe 'Installer Function App naming' {
 
 Describe 'Installer additional manager principal IDs' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1250,8 +1252,8 @@ Describe 'Installer additional manager principal IDs' {
 
 Describe 'Installer client tools package' {
     BeforeAll {
-        $projectRoot = Join-Path $PSScriptRoot '..'
-        $installerPath = Join-Path $projectRoot 'Install-AutopilotImport.ps1'
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $installerPath = Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1383,8 +1385,8 @@ Describe 'Installer client tools package' {
 
 Describe 'Update script deployment discovery' {
     BeforeAll {
-        $projectRoot = Join-Path $PSScriptRoot '..'
-        $updateScriptPath = Join-Path $projectRoot 'Update-AutopilotImport.ps1'
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $updateScriptPath = Join-Path $projectRoot 'src\Installer\Update-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $updateAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1722,7 +1724,7 @@ Describe 'Entra web application Graph responses' {
     BeforeAll {
         $scriptPath = Join-Path `
             $PSScriptRoot `
-            '..\scripts\Ensure-EntraWebApplication.ps1'
+            '..\Scripts\Ensure-EntraWebApplication.ps1'
         $tokens = $null
         $parseErrors = $null
         $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1788,7 +1790,7 @@ Describe 'Entra web application Graph responses' {
 
 Describe 'Installer optional web client application' {
     It 'does not pass a null client ID to the web application script' {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $installer = Get-Content -LiteralPath $installerPath -Raw
 
         $installer | Should -Match `
@@ -1802,7 +1804,7 @@ Describe 'Installer optional web client application' {
 
 Describe 'Installer packaged web frontend fallback' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -1819,7 +1821,9 @@ Describe 'Installer packaged web frontend fallback' {
     }
 
     It 'accepts the complete frontend bundle in the repository' {
-        Test-BuiltWebFrontend -ProjectRoot (Join-Path $PSScriptRoot '..') |
+        Test-BuiltWebFrontend -ProjectRoot (
+            Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        ) |
             Should -BeTrue
     }
 
@@ -1835,7 +1839,7 @@ Describe 'Installer packaged web frontend fallback' {
 
     It 'rebuilds the frontend in CI before creating the deployment package' {
         $workflow = Get-Content `
-            -LiteralPath (Join-Path $PSScriptRoot '..\.github\workflows\deployment-package.yml') `
+            -LiteralPath (Join-Path $PSScriptRoot '..\..\.github\workflows\deployment-package.yml') `
             -Raw
 
         $workflow | Should -Match `
@@ -1845,7 +1849,7 @@ Describe 'Installer packaged web frontend fallback' {
 
 Describe 'Installer web frontend readiness check' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -1899,7 +1903,7 @@ Describe 'Installer web frontend readiness check' {
 
 Describe 'Installer Bicep bootstrap' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -1934,7 +1938,7 @@ Describe 'Installer Bicep bootstrap' {
 
     It 'uses the standalone installer when winget is unavailable' {
         $installer = Get-Content `
-            -LiteralPath (Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1') `
             -Raw
 
         $installer | Should -Match `
@@ -1946,7 +1950,7 @@ Describe 'Installer Bicep bootstrap' {
 
 Describe 'Azure deployment permission validation' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -2103,7 +2107,7 @@ Describe 'Azure deployment permission validation' {
 
 Describe 'Installer Azure deployment diagnostics' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -2143,9 +2147,9 @@ Describe 'Installer Azure deployment diagnostics' {
 
 Describe 'Installer Entra deployment diagnostics' {
     It 'distinguishes Microsoft Graph authorization from Azure RBAC failures' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $installer = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') `
             -Raw
 
         $installer | Should -Match 'Microsoft\\\.Graph'
@@ -2155,9 +2159,9 @@ Describe 'Installer Entra deployment diagnostics' {
     }
 
     It 'does not authenticate to Graph when Entra configuration is skipped' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $installer = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') `
             -Raw
 
         $installer | Should -Match `
@@ -2167,7 +2171,7 @@ Describe 'Installer Entra deployment diagnostics' {
 
 Describe 'Installer Azure resource provider registration' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -2206,7 +2210,7 @@ Describe 'Installer Azure resource provider registration' {
 
 Describe 'Installer Azure resource group tags' {
     BeforeAll {
-        $installerPath = Join-Path $PSScriptRoot '..\Install-AutopilotImport.ps1'
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
         $parseErrors = $null
         $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -2500,9 +2504,9 @@ Describe 'Intune Role Administrator authorization' {
 
 Describe 'Storage Account update compatibility' {
     It 'does not redeclare immutable infrastructure encryption' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $template = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'infra\main.bicep') `
+            -LiteralPath (Join-Path $projectRoot 'src\Infrastructure\main.bicep') `
             -Raw
 
         $template | Should -Not -Match 'requireInfrastructureEncryption'
@@ -2511,9 +2515,9 @@ Describe 'Storage Account update compatibility' {
 
 Describe 'Updater web client ID fallback' {
     It 'checks whether WebClientId was supplied before comparing it as a GUID' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $updater = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'Update-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Update-AutopilotImport.ps1') `
             -Raw
 
         $updater | Should -Match `
@@ -2523,14 +2527,16 @@ Describe 'Updater web client ID fallback' {
 
 Describe 'Setup activity logging' {
     It 'logs installation and update activity in the temporary directory' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 
         foreach ($scriptName in @(
                 'Install-AutopilotImport.ps1'
                 'Update-AutopilotImport.ps1'
             )) {
             $content = Get-Content `
-                -LiteralPath (Join-Path $projectRoot $scriptName) `
+                -LiteralPath (Join-Path `
+                    $projectRoot `
+                    "src\Installer\$scriptName") `
                 -Raw
 
             $content | Should -Match '\[IO\.Path\]::GetTempPath\(\)'
@@ -2546,12 +2552,12 @@ Describe 'Setup activity logging' {
     }
 
     It 'creates a separate transcript for each script invocation' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $installer = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') `
             -Raw
         $update = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'Update-AutopilotImport.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Update-AutopilotImport.ps1') `
             -Raw
 
         $installer | Should -Match `
@@ -2565,18 +2571,18 @@ Describe 'Setup activity logging' {
 
 Describe 'Web frontend response types' {
     It 'keeps the device hash card level at every viewport width' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $style = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'web\src\style.css') `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\style.css') `
             -Raw
 
         $style | Should -Not -Match 'transform:\s*rotate\('
     }
 
     It 'serves textual assets as strings so Azure preserves their MIME types' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $frontendFunction = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\FunctionApp\WebFrontend\run.ps1') `
             -Raw
 
         $frontendFunction | Should -Match `
@@ -2594,9 +2600,9 @@ Describe 'Web frontend response types' {
     }
 
     It 'uses the requested HTTPS origin for custom domain runtime URLs' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $frontendFunction = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'WebFrontend\run.ps1') `
+            -LiteralPath (Join-Path $projectRoot 'src\FunctionApp\WebFrontend\run.ps1') `
             -Raw
 
         $frontendFunction | Should -Match `
@@ -2610,15 +2616,15 @@ Describe 'Web frontend response types' {
     }
 
     It 'redirects the Function hostname root while preserving existing API URLs' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $hostConfiguration = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'host.json') `
+            -LiteralPath (Join-Path $projectRoot 'src\FunctionApp\host.json') `
             -Raw |
             ConvertFrom-Json
 
         $hostConfiguration.extensions.http.routePrefix | Should -Be ''
         $infrastructure = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'infra\main.bicep') `
+            -LiteralPath (Join-Path $projectRoot 'src\Infrastructure\main.bicep') `
             -Raw
         $infrastructure | Should -Match `
             "name:\s*'AzureWebJobsDisableHomepage'\s+value:\s*'true'"
@@ -2634,7 +2640,7 @@ Describe 'Web frontend response types' {
             $functionConfiguration = Get-Content `
                 -LiteralPath (Join-Path `
                     $projectRoot `
-                    "$functionName\function.json") `
+                    "src\FunctionApp\$functionName\function.json") `
                 -Raw |
                 ConvertFrom-Json
             $httpTrigger = @($functionConfiguration.bindings | Where-Object {
@@ -2645,7 +2651,7 @@ Describe 'Web frontend response types' {
         }
 
         $proxyConfiguration = Get-Content `
-            -LiteralPath (Join-Path $projectRoot 'proxies.json') `
+            -LiteralPath (Join-Path $projectRoot 'src\FunctionApp\proxies.json') `
             -Raw |
             ConvertFrom-Json
         $rootProxy = $proxyConfiguration.proxies.RootRedirect
@@ -2659,9 +2665,9 @@ Describe 'Web frontend response types' {
 
 Describe 'OOBE web importer helper script' {
     BeforeAll {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $helperPath = Join-Path $projectRoot `
-            'scripts\Start-IntuneAutopilotImporter.ps1'
+            'src\Scripts\Start-IntuneAutopilotImporter.ps1'
         $tokens = $null
         $parseErrors = $null
         $helperAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -2718,7 +2724,7 @@ Describe 'Project metadata entries' {
     BeforeAll {
         $packageScriptPath = Join-Path `
             $PSScriptRoot `
-            '..\scripts\New-DeploymentPackage.ps1'
+            '..\Scripts\New-DeploymentPackage.ps1'
         $tokens = $null
         $parseErrors = $null
         $packageAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -2804,7 +2810,7 @@ Describe 'Project metadata entries' {
     }
 
     It 'uses the central version in every PowerShell file' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
         $projectVersion | Should -Match '^1\.1\.\d{8}\.\d+$'
 
@@ -2827,7 +2833,7 @@ Describe 'Project metadata entries' {
     }
 
     It 'uses the central version as the client module version' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content `
             (Join-Path $projectRoot 'VERSION') `
             -Raw).Trim()
@@ -2839,10 +2845,10 @@ Describe 'Project metadata entries' {
     }
 
     It 'updates PowerShell Gallery script metadata with the project version' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $versionScript = Get-Content `
             -LiteralPath (Join-Path $projectRoot `
-                'scripts\Update-ProjectVersion.ps1') `
+                'src\Scripts\Update-ProjectVersion.ps1') `
             -Raw
 
         $versionScript | Should -Match 'scriptInfoVersionPattern'
@@ -2852,18 +2858,18 @@ Describe 'Project metadata entries' {
     }
 
     It 'excludes dependency and generated directories from version updates' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $versionScript = Get-Content `
             -LiteralPath (Join-Path $projectRoot `
-                'scripts\Update-ProjectVersion.ps1') `
+                'src\Scripts\Update-ProjectVersion.ps1') `
             -Raw
 
         $versionScript | Should -Match `
-            '\(\?:node_modules\|artifacts\|\\\.git\)'
+            '\(\?:node_modules\|InstallationPackage\|\\\.git\)'
     }
 
     It 'uses the central author in every PowerShell file' {
-        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectAuthor = (Get-Content (Join-Path $projectRoot 'AUTHOR') -Raw).Trim()
 
         $powerShellFiles = @(
@@ -2889,12 +2895,14 @@ Describe 'Deployment package' {
     It 'runs automatically for every pushed commit' {
         $workflowPath = Join-Path `
             $PSScriptRoot `
-            '..\.github\workflows\deployment-package.yml'
+            '..\..\.github\workflows\deployment-package.yml'
         $workflow = Get-Content -LiteralPath $workflowPath -Raw
 
         $workflow | Should -Match `
             "(?ms)^  push:\s+branches:\s+- '\*\*'\s*$"
         $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
+        $workflow | Should -Match `
+            '(?m)^    runs-on: \[self-hosted, Windows, X64\]\s*$'
         $workflow | Should -Match `
             'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
         $workflow | Should -Match `
@@ -2903,7 +2911,7 @@ Describe 'Deployment package' {
     }
 
     It 'publishes a package for every branch in Azure Pipelines' {
-        $pipelinePath = Join-Path $PSScriptRoot '..\azure-pipelines.yml'
+        $pipelinePath = Join-Path $PSScriptRoot '..\..\azure-pipelines.yml'
         $pipeline = Get-Content -LiteralPath $pipelinePath -Raw
 
         $pipeline | Should -Match `
@@ -2921,7 +2929,7 @@ Describe 'Deployment package' {
     It 'allows pull requests to main only from dev' {
         $workflowPath = Join-Path `
             $PSScriptRoot `
-            '..\.github\workflows\main-promotion-policy.yml'
+            '..\..\.github\workflows\main-promotion-policy.yml'
         $workflow = Get-Content -LiteralPath $workflowPath -Raw
 
         $workflow | Should -Match `
@@ -2929,17 +2937,19 @@ Describe 'Deployment package' {
         $workflow | Should -Match `
             '(?m)^    name: Validate dev promotion\s*$'
         $workflow | Should -Match `
-            '\[\[ "\$SOURCE_BRANCH" != "dev" \]\]'
+            'if \(\$env:SOURCE_BRANCH -ne ''dev''\)'
+        $workflow | Should -Match `
+            '(?m)^    runs-on: \[self-hosted, Windows, X64\]\s*$'
         $workflow | Should -Match `
             'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
     }
 
     It 'contains installation and runtime files without local configuration' {
-        $projectRoot = Join-Path $PSScriptRoot '..'
-        $outputDirectory = Join-Path $TestDrive 'artifacts'
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $outputDirectory = Join-Path $TestDrive 'InstallationPackage'
         $package = & (Join-Path `
             $projectRoot `
-            'scripts\New-DeploymentPackage.ps1') `
+            'src\Scripts\New-DeploymentPackage.ps1') `
             -ProjectRoot $projectRoot `
             -OutputDirectory $outputDirectory `
             -BranchName 'feature/tag-policy'

@@ -37,12 +37,12 @@ branch and version is replaced. Temporary staging files are removed after
 packaging, including when package creation fails.
 
 .PARAMETER ProjectRoot
-Root directory of the Autopilot Import source tree. The default is the parent
-directory of this script's directory.
+Root directory of the Autopilot Import source tree. The default is the
+repository root.
 
 .PARAMETER OutputDirectory
 Directory in which the deployment ZIP is created. The default is the
-artifacts directory below ProjectRoot.
+InstallationPackage directory below ProjectRoot.
 
 .PARAMETER BranchName
 Source branch included in the package name. When omitted, the script uses the
@@ -50,13 +50,13 @@ GitHub or Azure Pipelines branch environment and then the current local Git
 branch. Characters invalid for a portable file name are replaced with hyphens.
 
 .EXAMPLE
-.\scripts\New-DeploymentPackage.ps1
+.\src\Scripts\New-DeploymentPackage.ps1
 
-Creates the versioned deployment package in the repository's artifacts
+Creates the versioned deployment package in the repository's InstallationPackage
 directory.
 
 .EXAMPLE
-.\scripts\New-DeploymentPackage.ps1 `
+.\src\Scripts\New-DeploymentPackage.ps1 `
     -ProjectRoot 'C:\Repos\Intune-Autopilotimporter' `
     -OutputDirectory 'C:\DeploymentPackages'
 
@@ -74,11 +74,13 @@ values. Their example files are included instead.
 
 [CmdletBinding()]
 param(
-    [string] $ProjectRoot = (Split-Path $PSScriptRoot -Parent),
+    [string] $ProjectRoot = (Split-Path `
+        (Split-Path $PSScriptRoot -Parent) `
+        -Parent),
 
     [string] $OutputDirectory = (Join-Path `
-        (Split-Path $PSScriptRoot -Parent) `
-        'artifacts'),
+        (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) `
+        'InstallationPackage'),
 
     [string] $BranchName
 )
@@ -95,7 +97,14 @@ function Assert-BuiltWebFrontend {
         [string] $ProjectVersion
     )
 
-    $webRoot = Join-Path $Root 'WebFrontend\wwwroot'
+    $sourceWebRoot = Join-Path $Root `
+        'src\FunctionApp\WebFrontend\wwwroot'
+    $webRoot = if (Test-Path -LiteralPath $sourceWebRoot -PathType Container) {
+        $sourceWebRoot
+    }
+    else {
+        Join-Path $Root 'WebFrontend\wwwroot'
+    }
     $indexPath = Join-Path $webRoot 'index.html'
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
         throw "The prebuilt web frontend is missing: $indexPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
@@ -167,7 +176,7 @@ function Assert-ProjectVersionConsistency {
     $powerShellFiles = @(
         Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
             $_.Extension -in '.ps1', '.psm1', '.psd1' -and
-            $_.FullName -notmatch '[\\/](?:node_modules|artifacts|\.git)[\\/]'
+            $_.FullName -notmatch '[\\/](?:node_modules|InstallationPackage|\.git)[\\/]'
         }
     )
     foreach ($file in $powerShellFiles) {
@@ -260,48 +269,49 @@ Assert-BuiltWebFrontend `
 
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
-    'AUTHOR'
-    'README.md'
-    'VERSION'
-    'host.json'
-    'proxies.json'
-    'requirements.psd1'
-    'profile.ps1'
-    'client.settings.json.example'
-    'local.settings.json.example'
-    'Install-AutopilotImport.ps1'
-    'Update-AutopilotImport.ps1'
-    'ImportDevice'
-    'GetAuthorizedTags'
-    'ManageTagPolicy'
-    'ProcessDeviceAttribute'
-    'WebFrontend'
-    'infra'
-    'scripts\Ensure-EntraApiApplication.ps1'
-    'scripts\Ensure-EntraWebApplication.ps1'
-    'scripts\Grant-ManagedIdentityGraphPermission.ps1'
-    'scripts\Import-AutopilotDevice.ps1'
-    'scripts\Start-IntuneAutopilotImporter.ps1'
-    'scripts\Set-TagAuthorizationPolicy.ps1'
-    'scripts\Set-TagPolicyManagers.ps1'
-    'src'
-    'web\index.html'
-    'web\package.json'
-    'web\package-lock.json'
-    'web\tsconfig.json'
-    'web\vite.config.ts'
-    'web\src'
+    @{ Source = 'AUTHOR'; Destination = 'AUTHOR' }
+    @{ Source = 'README.md'; Destination = 'README.md' }
+    @{ Source = 'VERSION'; Destination = 'VERSION' }
+    @{ Source = 'src\FunctionApp\host.json'; Destination = 'host.json' }
+    @{ Source = 'src\FunctionApp\proxies.json'; Destination = 'proxies.json' }
+    @{ Source = 'src\FunctionApp\requirements.psd1'; Destination = 'requirements.psd1' }
+    @{ Source = 'src\FunctionApp\profile.ps1'; Destination = 'profile.ps1' }
+    @{ Source = 'src\Installer\client.settings.json.example'; Destination = 'client.settings.json.example' }
+    @{ Source = 'src\Installer\local.settings.json.example'; Destination = 'local.settings.json.example' }
+    @{ Source = 'src\Installer\Install-AutopilotImport.ps1'; Destination = 'Install-AutopilotImport.ps1' }
+    @{ Source = 'src\Installer\Update-AutopilotImport.ps1'; Destination = 'Update-AutopilotImport.ps1' }
+    @{ Source = 'src\FunctionApp\ImportDevice'; Destination = 'ImportDevice' }
+    @{ Source = 'src\FunctionApp\GetAuthorizedTags'; Destination = 'GetAuthorizedTags' }
+    @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
+    @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
+    @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
+    @{ Source = 'src\Infrastructure'; Destination = 'infra' }
+    @{ Source = 'src\Scripts\Ensure-EntraApiApplication.ps1'; Destination = 'scripts\Ensure-EntraApiApplication.ps1' }
+    @{ Source = 'src\Scripts\Ensure-EntraWebApplication.ps1'; Destination = 'scripts\Ensure-EntraWebApplication.ps1' }
+    @{ Source = 'src\Scripts\Grant-ManagedIdentityGraphPermission.ps1'; Destination = 'scripts\Grant-ManagedIdentityGraphPermission.ps1' }
+    @{ Source = 'src\Scripts\Import-AutopilotDevice.ps1'; Destination = 'scripts\Import-AutopilotDevice.ps1' }
+    @{ Source = 'src\Scripts\Start-IntuneAutopilotImporter.ps1'; Destination = 'scripts\Start-IntuneAutopilotImporter.ps1' }
+    @{ Source = 'src\Scripts\Set-TagAuthorizationPolicy.ps1'; Destination = 'scripts\Set-TagAuthorizationPolicy.ps1' }
+    @{ Source = 'src\Scripts\Set-TagPolicyManagers.ps1'; Destination = 'scripts\Set-TagPolicyManagers.ps1' }
+    @{ Source = 'src\FunctionApp\src\AutopilotImport'; Destination = 'src\AutopilotImport' }
+    @{ Source = 'src\AutopilotImport.Client'; Destination = 'src\AutopilotImport.Client' }
+    @{ Source = 'src\Web\index.html'; Destination = 'web\index.html' }
+    @{ Source = 'src\Web\package.json'; Destination = 'web\package.json' }
+    @{ Source = 'src\Web\package-lock.json'; Destination = 'web\package-lock.json' }
+    @{ Source = 'src\Web\tsconfig.json'; Destination = 'web\tsconfig.json' }
+    @{ Source = 'src\Web\vite.config.ts'; Destination = 'web\vite.config.ts' }
+    @{ Source = 'src\Web\src'; Destination = 'web\src' }
 )
 
 try {
     # Assemble the distributable directory in a unique temporary location.
     New-Item -Path $packageRoot -ItemType Directory -Force | Out-Null
     foreach ($entry in $packageEntries) {
-        $sourcePath = Join-Path $ProjectRoot $entry
+        $sourcePath = Join-Path $ProjectRoot $entry.Source
         if (-not (Test-Path -LiteralPath $sourcePath)) {
             throw "Required deployment package entry was not found: $sourcePath"
         }
-        $destinationPath = Join-Path $packageRoot $entry
+        $destinationPath = Join-Path $packageRoot $entry.Destination
         New-Item `
             -Path (Split-Path $destinationPath -Parent) `
             -ItemType Directory `

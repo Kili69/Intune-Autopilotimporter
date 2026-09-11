@@ -420,7 +420,7 @@ For a standard installation, one installing administrator performs the complete 
 
 The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
 `Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
-`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `infra/main.bicep`.
+`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `src/Infrastructure/main.bicep`.
 
 The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
 If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
@@ -657,11 +657,11 @@ Before the first pipeline deployment, create or configure the Entra API and SPA 
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
-$entraApplication = .\scripts\Ensure-EntraApiApplication.ps1 `
+$entraApplication = .\src\Scripts\Ensure-EntraApiApplication.ps1 `
     -TenantId '<Tenant-ID>' `
     -DisplayName 'Autopilot Import API' `
     -Confirm:$false
-$webApplication = .\scripts\Ensure-EntraWebApplication.ps1 `
+$webApplication = .\src\Scripts\Ensure-EntraWebApplication.ps1 `
     -TenantId '<Tenant-ID>' `
     -ApiApplicationObjectId $entraApplication.ApplicationObjectId `
     -ApiClientId $entraApplication.ClientId `
@@ -679,7 +679,7 @@ $function = Get-AzWebApp `
     -ResourceGroupName 'rg-autopilot-import' `
     -Name '<function-app-name>'
 
-.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+.\src\Scripts\Grant-ManagedIdentityGraphPermission.ps1 `
     -ManagedIdentityObjectId $function.Identity.PrincipalId
 ```
 
@@ -746,10 +746,10 @@ The package contains `README.md`, the installer and updater, Function runtime fi
 The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:
 
 ```powershell
-.\scripts\New-DeploymentPackage.ps1
+.\src\Scripts\New-DeploymentPackage.ps1
 ```
 
-The local package is written to `artifacts\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
+The local package is written to `InstallationPackage\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
 
 #### Manual Bicep Deployment
 
@@ -781,7 +781,7 @@ New-AzResourceGroup `
 
 $deployment = New-AzResourceGroupDeployment `
     -ResourceGroupName $resourceGroupName `
-    -TemplateFile .\infra\main.bicep `
+    -TemplateFile .\src\Infrastructure\main.bicep `
     -functionAppName $functionAppName `
     -entraClientId $entraClientId `
     -webClientId $webClientId `
@@ -798,7 +798,7 @@ This action requires an administrator who can assign app roles. The managed iden
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 
-.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+.\src\Scripts\Grant-ManagedIdentityGraphPermission.ps1 `
     -ManagedIdentityObjectId $deployment.Outputs.managedIdentityObjectId.Value
 ```
 
@@ -807,16 +807,18 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 The ZIP archive must contain `host.json` at its root:
 
 ```powershell
-Push-Location .\web
+Push-Location .\src\Web
 npm ci
 npm run build
 Pop-Location
 
 $package = Join-Path $PWD 'autopilot-import.zip'
+Push-Location .\src\FunctionApp
 Compress-Archive `
     -Path .\host.json, .\proxies.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
     -DestinationPath $package `
     -Force
+Pop-Location
 
 Publish-AzWebApp `
     -ResourceGroupName $resourceGroupName `
@@ -1102,32 +1104,36 @@ directory without replacing all placeholder values and renaming it to
 
 ## Appendix: Developer Information
 
+See [DEVELOPER.md](DEVELOPER.md) for the complete repository layout, local build
+process, installation package mapping, CI sequence, and build troubleshooting.
+
 ### Build the Frontend Locally
 
-The frontend source is located under `web`, while the Azure Function that
-serves it is located under `WebFrontend`. Build and test it with:
+The frontend source is located under `src/Web`, while the Azure Function that
+serves it is located under `src/FunctionApp/WebFrontend`. Build and test it with:
 
 ```powershell
-Set-Location .\web
+Set-Location .\src\Web
 npm ci
 npm run check
 ```
 
 `npm run check` executes the frontend unit tests and creates the production
-bundle under `WebFrontend\wwwroot`. The generated `web\node_modules`,
-`web\tsconfig.tsbuildinfo`, and `WebFrontend\wwwroot` paths are intentionally
-ignored by Git and are recreated during a local build or deployment.
+bundle under `src\FunctionApp\WebFrontend\wwwroot`. The generated
+`src\Web\node_modules`, `src\Web\tsconfig.tsbuildinfo`, and
+`src\FunctionApp\WebFrontend\wwwroot` paths are intentionally ignored by Git
+and are recreated during a local build or deployment.
 
 ### Publish the OOBE Helper to PowerShell Gallery
 
 The standalone gallery script is
-`scripts\Start-IntuneAutopilotImporter.ps1`. Its `PSScriptInfo` version is
+`src\Scripts\Start-IntuneAutopilotImporter.ps1`. Its `PSScriptInfo` version is
 updated together with the project version by
-`scripts\Update-ProjectVersion.ps1`. Validate its metadata before publishing:
+`src\Scripts\Update-ProjectVersion.ps1`. Validate its metadata before publishing:
 
 ```powershell
 Test-ScriptFileInfo `
-    -Path .\scripts\Start-IntuneAutopilotImporter.ps1
+    -Path .\src\Scripts\Start-IntuneAutopilotImporter.ps1
 ```
 
 Test the complete workflow against a non-production Function App before
@@ -1136,7 +1142,7 @@ in the interactive PowerShell session; do not store the key in source control:
 
 ```powershell
 Publish-Script `
-    -Path .\scripts\Start-IntuneAutopilotImporter.ps1 `
+    -Path .\src\Scripts\Start-IntuneAutopilotImporter.ps1 `
     -Repository PSGallery `
     -NuGetApiKey (Read-Host 'PowerShell Gallery API key')
 ```
@@ -1157,7 +1163,7 @@ The workflow validates the pull request source, while the server-side rule preve
 ### Tests
 
 ```powershell
-Invoke-Pester .\tests\AutopilotImport.Tests.ps1
+Invoke-Pester .\src\Tests\AutopilotImport.Tests.ps1
 ```
 
 The tests cover Group Tag authorization, manager users and groups, the strict Owner/Contributor boundary, installer rule parsing, and invalid hardware hashes.
@@ -1172,7 +1178,7 @@ After commits are pushed to `main`, the GitHub workflow increments the counter b
 For a local manual increment, run:
 
 ```powershell
-.\scripts\Update-ProjectVersion.ps1
+.\src\Scripts\Update-ProjectVersion.ps1
 ```
 
 ### Operations and Security

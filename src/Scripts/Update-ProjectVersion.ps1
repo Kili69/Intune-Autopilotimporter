@@ -36,12 +36,12 @@ Number to add to the current day's counter. The default is 1.
 UTC date used in the version. The default is the current UTC date.
 
 .EXAMPLE
-.\scripts\Update-ProjectVersion.ps1
+.\src\Scripts\Update-ProjectVersion.ps1
 
 Increments the current day's counter by one.
 
 .EXAMPLE
-.\scripts\Update-ProjectVersion.ps1 -IncrementBy 3
+.\src\Scripts\Update-ProjectVersion.ps1 -IncrementBy 3
 
 Increments the counter by three when a push contains three commits.
 
@@ -60,7 +60,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = Split-Path $PSScriptRoot -Parent
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $versionPath = Join-Path $projectRoot 'VERSION'
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
@@ -90,7 +90,7 @@ $powerShellFiles = @(
         Where-Object {
             $_.Extension -in '.ps1', '.psm1', '.psd1' -and
             $_.FullName -notmatch `
-                '[\\/](?:node_modules|artifacts|\.git)[\\/]'
+                '[\\/](?:node_modules|InstallationPackage|\.git)[\\/]'
         }
 )
 

@@ -585,8 +585,19 @@ function Assert-AzureUpdatePermissions {
 
 #region Resolve installed deployment
 
-$projectRoot = $PSScriptRoot
-$installerPath = Join-Path $projectRoot 'Install-AutopilotImport.ps1'
+$repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$projectRoot = if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'VERSION')) {
+    $repositoryRoot
+}
+else {
+    $PSScriptRoot
+}
+$installerPath = if ($projectRoot -eq $PSScriptRoot) {
+    Join-Path $projectRoot 'Install-AutopilotImport.ps1'
+}
+else {
+    Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1'
+}
 $clientModulePath = Join-Path $projectRoot `
     'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {

@@ -239,13 +239,40 @@ $setupTranscriptActive = $true
 Write-Host "Setup log: $setupLogPath"
 
 try {
-$projectRoot = $PSScriptRoot
-$templatePath = Join-Path $projectRoot 'infra\main.bicep'
-$grantScriptPath = Join-Path $projectRoot 'scripts\Grant-ManagedIdentityGraphPermission.ps1'
-$ensureEntraAppScriptPath = Join-Path $projectRoot 'scripts\Ensure-EntraApiApplication.ps1'
-$ensureEntraWebAppScriptPath = Join-Path $projectRoot `
-    'scripts\Ensure-EntraWebApplication.ps1'
-$autopilotImportModulePath = Join-Path $projectRoot 'src\AutopilotImport\AutopilotImport.psm1'
+$repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$isRepositoryLayout = Test-Path `
+    -LiteralPath (Join-Path $repositoryRoot 'VERSION') `
+    -PathType Leaf
+$projectRoot = if ($isRepositoryLayout) { $repositoryRoot } else { $PSScriptRoot }
+$functionAppRoot = if ($isRepositoryLayout) {
+    Join-Path $projectRoot 'src\FunctionApp'
+}
+else {
+    $projectRoot
+}
+$scriptsRoot = if ($isRepositoryLayout) {
+    Join-Path $projectRoot 'src\Scripts'
+}
+else {
+    Join-Path $projectRoot 'scripts'
+}
+$webProjectRoot = if ($isRepositoryLayout) {
+    Join-Path $projectRoot 'src\Web'
+}
+else {
+    Join-Path $projectRoot 'web'
+}
+$templatePath = if ($isRepositoryLayout) {
+    Join-Path $projectRoot 'src\Infrastructure\main.bicep'
+}
+else {
+    Join-Path $projectRoot 'infra\main.bicep'
+}
+$grantScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityGraphPermission.ps1'
+$ensureEntraAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraApiApplication.ps1'
+$ensureEntraWebAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraWebApplication.ps1'
+$autopilotImportModulePath = Join-Path $functionAppRoot `
+    'src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $autopilotImportModulePath -Force
 
 #endregion Initialization
@@ -317,7 +344,14 @@ function Test-BuiltWebFrontend {
         [string] $ProjectRoot
     )
 
-    $webRoot = Join-Path $ProjectRoot 'WebFrontend\wwwroot'
+    $sourceWebRoot = Join-Path $ProjectRoot `
+        'src\FunctionApp\WebFrontend\wwwroot'
+    $webRoot = if (Test-Path -LiteralPath $sourceWebRoot -PathType Container) {
+        $sourceWebRoot
+    }
+    else {
+        Join-Path $ProjectRoot 'WebFrontend\wwwroot'
+    }
     $indexPath = Join-Path $webRoot 'index.html'
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
         return $false
@@ -587,6 +621,16 @@ function Install-AutopilotClientTools {
     $destinationRoot = [IO.Path]::GetFullPath($DestinationPath)
     $scriptDestination = Join-Path $destinationRoot 'scripts'
     $clientModuleSource = Join-Path $ProjectRoot 'src\AutopilotImport.Client'
+    $sourceScriptsRoot = Join-Path $ProjectRoot 'src\Scripts'
+    if (-not (Test-Path -LiteralPath $sourceScriptsRoot -PathType Container)) {
+        $sourceScriptsRoot = Join-Path $ProjectRoot 'scripts'
+    }
+    $runtimeModuleSource = Join-Path $ProjectRoot `
+        'src\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
+    if (-not (Test-Path -LiteralPath $runtimeModuleSource -PathType Leaf)) {
+        $runtimeModuleSource = Join-Path $ProjectRoot `
+            'src\AutopilotImport\AutopilotImport.psm1'
+    }
     $clientModuleManifest = Import-PowerShellDataFile `
         -LiteralPath (Join-Path $clientModuleSource 'AutopilotImport.Client.psd1')
     $moduleDestination = Join-Path $destinationRoot `
@@ -600,7 +644,7 @@ function Install-AutopilotClientTools {
             'Set-TagPolicyManagers.ps1'
         )) {
         Copy-Item `
-            -LiteralPath (Join-Path $ProjectRoot "scripts\$scriptName") `
+            -LiteralPath (Join-Path $sourceScriptsRoot $scriptName) `
             -Destination (Join-Path $scriptDestination $scriptName) `
             -Force
     }
@@ -614,7 +658,7 @@ function Install-AutopilotClientTools {
             -Force
     }
     Copy-Item `
-        -LiteralPath (Join-Path $ProjectRoot 'src\AutopilotImport\AutopilotImport.psm1') `
+        -LiteralPath $runtimeModuleSource `
         -Destination (Join-Path $moduleDestination 'AutopilotImport.psm1') `
         -Force
 
@@ -1535,7 +1579,7 @@ if (-not $SkipGraphPermission) {
 if (-not $SkipPublish) {
     if ($npmCommand) {
         Write-Host 'Building web frontend...'
-        Push-Location (Join-Path $projectRoot 'web')
+        Push-Location $webProjectRoot
         try {
             & $npmCommand.Source ci
             if ($LASTEXITCODE -ne 0) {
@@ -1558,16 +1602,16 @@ if (-not $SkipPublish) {
     try {
         Compress-Archive `
             -Path @(
-                (Join-Path $projectRoot 'host.json'),
-                (Join-Path $projectRoot 'proxies.json'),
-                (Join-Path $projectRoot 'requirements.psd1'),
-                (Join-Path $projectRoot 'profile.ps1'),
-                (Join-Path $projectRoot 'ImportDevice'),
-                (Join-Path $projectRoot 'ProcessDeviceAttribute'),
-                (Join-Path $projectRoot 'ManageTagPolicy'),
-                (Join-Path $projectRoot 'GetAuthorizedTags'),
-                (Join-Path $projectRoot 'WebFrontend'),
-                (Join-Path $projectRoot 'src')
+                (Join-Path $functionAppRoot 'host.json'),
+                (Join-Path $functionAppRoot 'proxies.json'),
+                (Join-Path $functionAppRoot 'requirements.psd1'),
+                (Join-Path $functionAppRoot 'profile.ps1'),
+                (Join-Path $functionAppRoot 'ImportDevice'),
+                (Join-Path $functionAppRoot 'ProcessDeviceAttribute'),
+                (Join-Path $functionAppRoot 'ManageTagPolicy'),
+                (Join-Path $functionAppRoot 'GetAuthorizedTags'),
+                (Join-Path $functionAppRoot 'WebFrontend'),
+                (Join-Path $functionAppRoot 'src')
             ) `
             -DestinationPath $packagePath `
             -CompressionLevel Optimal `

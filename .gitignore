@@ -7,6 +7,6 @@ client.settings.json
 *.zip
 *.log
 *.csv
-web/node_modules/
+src/Web/node_modules/
 testResults.xml
 *.tsbuildinfo

@@ -98,6 +98,9 @@ $moduleManifest = @(
         -ErrorAction SilentlyContinue |
         Sort-Object { [version] $_.Directory.Name } -Descending
     Get-Item `
+        -LiteralPath (Join-Path $PSScriptRoot '..\AutopilotImport.Client\AutopilotImport.Client.psd1') `
+        -ErrorAction SilentlyContinue
+    Get-Item `
         -LiteralPath (Join-Path $PSScriptRoot '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1') `
         -ErrorAction SilentlyContinue
 ) | Select-Object -First 1

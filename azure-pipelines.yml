@@ -27,7 +27,7 @@ stages:
           - script: |
               npm ci
               npm run check
-            workingDirectory: web
+            workingDirectory: src/Web
             displayName: Test and build web frontend
           - task: PowerShell@2
             displayName: Run Pester tests
@@ -38,7 +38,7 @@ stages:
                 if (-not (Get-Module -ListAvailable -Name Pester | Where-Object Version -ge '5.0.0')) {
                   Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
                 }
-                Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
+                Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
           - task: PowerShell@2
             displayName: Build deployment package
             env:
@@ -50,7 +50,7 @@ stages:
                 $branchName = $env:SOURCE_BRANCH `
                   -replace '^refs/heads/', '' `
                   -replace '^refs/pull/', 'pr-'
-                $package = ./scripts/New-DeploymentPackage.ps1 `
+                $package = ./src/Scripts/New-DeploymentPackage.ps1 `
                   -BranchName $branchName
                 Write-Host "##vso[task.setvariable variable=deploymentPackagePath]$($package.FullName)"
                 Write-Host "##vso[task.setvariable variable=deploymentPackageName]$($package.BaseName)"
@@ -94,7 +94,7 @@ stages:
                         )
                       }
 
-                      ./Install-AutopilotImport.ps1 `
+                      ./src/Installer/Install-AutopilotImport.ps1 `
                         -SubscriptionId '$(subscriptionId)' `
                         -TenantId '$(tenantId)' `
                         -ResourceGroupName '$(resourceGroupName)' `
