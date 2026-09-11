@@ -70,6 +70,7 @@ stages:
                         -TenantId '$(tenantId)' `
                         -ResourceGroupName '$(resourceGroupName)' `
                         -Location '$(location)' `
+                        -StorageNetworkAccess Public `
                         -FunctionAppName '$(functionAppName)' `
                         -EntraClientId '$(entraClientId)' `
                         -InstallerPrincipalId '$(installerPrincipalId)' `

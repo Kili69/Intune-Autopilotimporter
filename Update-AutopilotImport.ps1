@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260911.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -297,7 +297,10 @@ function Assert-AzureUpdatePermissions {
         [string] $SubscriptionId,
 
         [Parameter(Mandatory)]
-        [string] $ResourceGroupName
+        [string] $ResourceGroupName,
+
+        [ValidateSet('Public', 'Private')]
+        [string] $StorageNetworkAccess = 'Public'
     )
 
     $scope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
@@ -312,6 +315,16 @@ function Assert-AzureUpdatePermissions {
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
     )
+    if ($StorageNetworkAccess -eq 'Private') {
+        $requiredActions += @(
+            'Microsoft.ManagedIdentity/userAssignedIdentities/write'
+            'Microsoft.Network/virtualNetworks/write'
+            'Microsoft.Network/privateEndpoints/write'
+            'Microsoft.Network/privateDnsZones/write'
+            'Microsoft.Network/privateDnsZones/virtualNetworkLinks/write'
+            'Microsoft.Network/privateEndpoints/privateDnsZoneGroups/write'
+        )
+    }
     $permissionsResponse = try {
         Invoke-AzRestMethod `
             -Method GET `
@@ -356,6 +369,12 @@ function Assert-AzureUpdatePermissions {
                 'Microsoft.Web/sites/write' { 'Function Apps' }
                 'Microsoft.Web/sites/config/write' { 'Function App configuration' }
                 'Microsoft.Authorization/roleAssignments/write' { 'Azure role assignments' }
+                'Microsoft.ManagedIdentity/userAssignedIdentities/write' { 'User-assigned managed identities' }
+                'Microsoft.Network/virtualNetworks/write' { 'Virtual networks' }
+                'Microsoft.Network/privateEndpoints/write' { 'Private endpoints' }
+                'Microsoft.Network/privateDnsZones/write' { 'Private DNS zones' }
+                'Microsoft.Network/privateDnsZones/virtualNetworkLinks/write' { 'Private DNS virtual network links' }
+                'Microsoft.Network/privateEndpoints/privateDnsZoneGroups/write' { 'Private endpoint DNS zone groups' }
             }
         } | Select-Object -Unique)
         $roleAssignmentMissing = $missingActions -contains `
@@ -460,11 +479,6 @@ Set-AzContext `
     -Subscription $settings.subscriptionId `
     -WhatIf:$false | Out-Null
 
-Write-Host 'Validating Azure update permissions...'
-Assert-AzureUpdatePermissions `
-    -SubscriptionId $settings.subscriptionId `
-    -ResourceGroupName $settings.resourceGroupName
-
 $resourceId = "/subscriptions/$($settings.subscriptionId)/resourceGroups/$($settings.resourceGroupName)/providers/Microsoft.Web/sites/$($settings.functionAppName)"
 $siteResponse = Invoke-AzRestMethod `
     -Method GET `
@@ -477,6 +491,22 @@ $site = $siteResponse.Content | ConvertFrom-Json
 if (-not $site.id) {
     throw "Function App '$($settings.functionAppName)' was not found."
 }
+$functionAppConfigProperty = $site.properties.PSObject.Properties[
+    'functionAppConfig']
+$storageNetworkAccess = if (
+    $functionAppConfigProperty -and
+    $functionAppConfigProperty.Value.deployment.storage) {
+    'Private'
+}
+else {
+    'Public'
+}
+Write-Host 'Validating Azure update permissions...'
+Assert-AzureUpdatePermissions `
+    -SubscriptionId $settings.subscriptionId `
+    -ResourceGroupName $settings.resourceGroupName `
+    -StorageNetworkAccess $storageNetworkAccess
+
 $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
@@ -508,6 +538,7 @@ Write-Host "  Tenant        : $($settings.tenantId)"
 Write-Host "  Resource group: $($settings.resourceGroupName)"
 Write-Host "  Function      : $($settings.functionAppName)"
 Write-Host "  Region        : $($site.location)"
+Write-Host "  Storage network access: $storageNetworkAccess"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
 Write-Host "  Restricted management AU: $restrictedManagementAdministrativeUnitName"
@@ -519,6 +550,7 @@ $installerParameters = @{
     TenantId                    = [string] $settings.tenantId
     ResourceGroupName           = [string] $settings.resourceGroupName
     Location                    = [string] $site.location
+    StorageNetworkAccess        = $storageNetworkAccess
     FunctionAppName             = [string] $settings.functionAppName
     EntraClientId               = $entraClientId.ToString()
     ApiAudience                 = $apiAudience

@@ -1,4 +1,4 @@
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260911.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1201,6 +1201,13 @@ Describe 'Update script deployment discovery' {
             '(?s)if\s*\(\$WhatIfPreference\).*?return.*?if\s*\(\s*-not\s+\$Force'
     }
 
+    It 'preserves the detected storage network mode when invoking the installer' {
+        $updateAst.Extent.Text | Should -Match `
+            "(?s)functionAppConfig.*?deployment\.storage.*?'Private'.*?'Public'"
+        $updateAst.Extent.Text | Should -Match `
+            'StorageNetworkAccess\s*=\s*\$storageNetworkAccess'
+    }
+
     It 'supports an existing policy without RMAU metadata' {
         $policy = [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
@@ -1318,6 +1325,45 @@ Describe 'Update script deployment discovery' {
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
             'Contributor plus Role Based Access Control Administrator or User Access Administrator'
     }
+
+    It 'requires network and managed identity permissions for private storage updates' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @(
+                            'Microsoft.Resources/*'
+                            'Microsoft.Storage/*'
+                            'Microsoft.Insights/*'
+                            'Microsoft.Web/*'
+                            'Microsoft.Authorization/*'
+                        )
+                        notActions = @()
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -StorageNetworkAccess Public
+        } | Should -Not -Throw
+
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -StorageNetworkAccess Private
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'User-assigned managed identities'
+        $errorRecord.Exception.Message | Should -Match `
+            'Virtual networks|Private endpoints|Private DNS zones'
+    }
 }
 
 Describe 'Azure deployment permission validation' {
@@ -1333,6 +1379,7 @@ Describe 'Azure deployment permission validation' {
         foreach ($functionName in @(
                 'Test-AzurePermissionPattern'
                 'Assert-AzureDeploymentPermissions'
+            'Assert-FlexConsumptionLocation'
             )) {
             $functionAst = $installerAst.FindAll({
                 param($node)
@@ -1366,6 +1413,76 @@ Describe 'Azure deployment permission validation' {
         Should -Invoke Invoke-AzRestMethod -ParameterFilter {
             $Path -match '/resourceGroups/rg-test/providers/Microsoft.Authorization/permissions'
         }
+    }
+
+    It 'keeps public permissions unchanged and adds private network permissions' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @(
+                            'Microsoft.Resources/*'
+                            'Microsoft.Storage/*'
+                            'Microsoft.Insights/*'
+                            'Microsoft.Web/*'
+                            'Microsoft.Authorization/*'
+                        )
+                        notActions = @()
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -StorageNetworkAccess Public `
+                -ResourceGroupExists
+        } | Should -Not -Throw
+
+        {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -StorageNetworkAccess Private `
+                -ResourceGroupExists
+        } | Should -Throw '*Azure deployment permissions are insufficient*'
+    }
+
+    It 'accepts a supported Flex Consumption region independent of spacing and casing' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ name = 'West Europe' })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-FlexConsumptionLocation `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -Location 'westeurope'
+        } | Should -Not -Throw
+    }
+
+    It 'rejects a region that does not support Flex Consumption' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ name = 'West Europe' })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Assert-FlexConsumptionLocation `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -Location 'unsupported-region'
+        } | Should -Throw '*Flex Consumption is not available*'
     }
 
     It 'rejects permissions excluded through NotActions' {
@@ -1757,6 +1874,47 @@ Describe 'Storage Account update compatibility' {
     }
 }
 
+Describe 'Web frontend hosting' {
+    It 'includes the UI function and frontend in the Function publish archive' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install-AutopilotImport.ps1') `
+            -Raw
+
+        $installer.Contains("Join-Path `$projectRoot 'Ui'") |
+            Should -BeTrue
+        $installer.Contains("Join-Path `$projectRoot 'WebFrontend'") |
+            Should -BeTrue
+        $installer | Should -Match 'WebInterfaceUrl'
+    }
+
+    It 'maps the UI path to a GET-only HTTP Function' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $configuration = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Ui\function.json') `
+            -Raw |
+            ConvertFrom-Json
+        $trigger = $configuration.bindings | Where-Object type -EQ 'httpTrigger'
+
+        $trigger.authLevel | Should -Be 'anonymous'
+        $trigger.methods | Should -Be @('get')
+        $trigger.route | Should -Be 'ui/{*path}'
+    }
+
+    It 'serves only files below the frontend root with explicit content types' {
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $handler = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'Ui\run.ps1') `
+            -Raw
+
+        $handler | Should -Match '\[IO\.Path\]::GetFullPath'
+        $handler | Should -Match '\[StringComparison\]::OrdinalIgnoreCase'
+        $handler | Should -Match "'text/html; charset=utf-8'"
+        $handler | Should -Match "'text/javascript; charset=utf-8'"
+        $handler | Should -Match '\[IO\.File\]::ReadAllBytes'
+    }
+}
+
 Describe 'Setup activity logging' {
     It 'logs installation and update activity in the temporary directory' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -1807,7 +1965,8 @@ Describe 'Project metadata entries' {
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object Extension -in '.ps1', '.psm1', '.psd1' |
+                Where-Object FullName -NotMatch '[\\/]node_modules[\\/]'
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1838,7 +1997,8 @@ Describe 'Project metadata entries' {
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
-                Where-Object Extension -in '.ps1', '.psm1', '.psd1'
+                Where-Object Extension -in '.ps1', '.psm1', '.psd1' |
+                Where-Object FullName -NotMatch '[\\/]node_modules[\\/]'
         )
         foreach ($file in $powerShellFiles) {
             $content = Get-Content -LiteralPath $file.FullName -Raw
@@ -1912,6 +2072,9 @@ Describe 'Deployment package' {
                     'scripts/Import-AutopilotDevice.ps1'
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
+                    'Ui/function.json'
+                    'Ui/run.ps1'
+                    'WebFrontend/wwwroot/index.html'
                 )) {
                 $entries | Should -Contain "$packageRoot/$requiredEntry"
             }

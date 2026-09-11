@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260911.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -174,6 +174,9 @@ param(
     [hashtable] $ResourceGroupTags,
 
     [string] $Location,
+
+    [ValidateSet('Public', 'Private')]
+    [string] $StorageNetworkAccess = 'Public',
 
     [string] $FunctionAppName,
 
@@ -719,6 +722,9 @@ function Assert-AzureDeploymentPermissions {
         [Parameter(Mandatory)]
         [string] $ResourceGroupName,
 
+        [ValidateSet('Public', 'Private')]
+        [string] $StorageNetworkAccess = 'Public',
+
         [switch] $ResourceGroupExists
     )
 
@@ -739,6 +745,16 @@ function Assert-AzureDeploymentPermissions {
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
     )
+    if ($StorageNetworkAccess -eq 'Private') {
+        $requiredActions += @(
+            'Microsoft.ManagedIdentity/userAssignedIdentities/write'
+            'Microsoft.Network/virtualNetworks/write'
+            'Microsoft.Network/privateEndpoints/write'
+            'Microsoft.Network/privateDnsZones/write'
+            'Microsoft.Network/privateDnsZones/virtualNetworkLinks/write'
+            'Microsoft.Network/privateEndpoints/privateDnsZoneGroups/write'
+        )
+    }
     if (-not $ResourceGroupExists) {
         $requiredActions += 'Microsoft.Resources/subscriptions/resourceGroups/write'
     }
@@ -778,6 +794,39 @@ function Assert-AzureDeploymentPermissions {
     if ($missingActions.Count -gt 0) {
         Write-Verbose "Missing Azure deployment actions at '$scope': $($missingActions -join ', ')"
         throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
+    }
+}
+
+function Assert-FlexConsumptionLocation {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [string] $Location
+    )
+
+    $response = try {
+        Invoke-AzRestMethod `
+            -Method GET `
+            -Path "/subscriptions/$SubscriptionId/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=FlexConsumption"
+    }
+    catch {
+        Write-Verbose "Flex Consumption location lookup failed: $($_ | Format-List * -Force | Out-String)"
+        throw 'Flex Consumption region availability could not be verified. Check Microsoft.Web provider access and try again.'
+    }
+    if ($response.StatusCode -ge 400) {
+        Write-Verbose "Flex Consumption location lookup failed: $($response.Content)"
+        throw 'Flex Consumption region availability could not be verified. Check Microsoft.Web provider access and try again.'
+    }
+
+    $supportedLocations = @(
+        ($response.Content | ConvertFrom-Json).value.name |
+        ForEach-Object { ([string] $_).ToLowerInvariant() -replace '\s', '' }
+    )
+    $normalizedLocation = $Location.ToLowerInvariant() -replace '\s', ''
+    if ($normalizedLocation -notin $supportedLocations) {
+        throw "Azure Functions Flex Consumption is not available in region '$Location' for this subscription. Select a region returned by 'az functionapp list-flexconsumption-locations'."
     }
 }
 
@@ -830,6 +879,127 @@ function Register-AzureResourceProvider {
 
     if ($provider.RegistrationState -ne 'Registered') {
         throw "Azure resource provider '$ProviderNamespace' did not reach the Registered state within five minutes."
+    }
+}
+
+function Get-PlainAccessToken {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ResourceUrl
+    )
+
+    $tokenResult = Get-AzAccessToken -ResourceUrl $ResourceUrl
+    if ($tokenResult.Token -is [Security.SecureString]) {
+        return ConvertFrom-SecureString `
+            -SecureString $tokenResult.Token `
+            -AsPlainText
+    }
+
+    return [string] $tokenResult.Token
+}
+
+function Publish-FlexConsumptionFunctionApp {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [string] $ResourceGroupName,
+
+        [Parameter(Mandatory)]
+        [string] $FunctionAppName,
+
+        [Parameter(Mandatory)]
+        [string] $ArchivePath
+    )
+
+    $sitePath = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName?api-version=2024-11-01"
+    $siteResponse = Invoke-AzRestMethod -Method GET -Path $sitePath
+    if ($siteResponse.StatusCode -ge 400) {
+        throw "Function App metadata lookup failed with HTTP $($siteResponse.StatusCode): $($siteResponse.Content)"
+    }
+
+    $site = $siteResponse.Content | ConvertFrom-Json
+    $scmHost = @($site.properties.hostNameSslStates | Where-Object {
+        $_.hostType -eq 'Repository'
+    } | Select-Object -ExpandProperty name -First 1)
+    if (-not $scmHost) {
+        throw "The SCM hostname for Function App '$FunctionAppName' could not be determined."
+    }
+
+    $token = Get-PlainAccessToken `
+        -ResourceUrl 'https://management.core.windows.net/'
+    $headers = @{
+        Authorization  = "Bearer $token"
+        'Cache-Control' = 'no-cache'
+    }
+    $scmBaseUrl = "https://$scmHost"
+    $publishResponse = Invoke-WebRequest `
+        -Method Post `
+        -Uri "$scmBaseUrl/api/publish?RemoteBuild=false&Deployer=autopilot_import_installer" `
+        -Headers $headers `
+        -ContentType 'application/zip' `
+        -InFile $ArchivePath `
+        -SkipHttpErrorCheck
+    if ($publishResponse.StatusCode -notin 200, 202) {
+        throw "Flex Consumption deployment failed with HTTP $($publishResponse.StatusCode): $($publishResponse.Content)"
+    }
+
+    if ($publishResponse.StatusCode -eq 200) {
+        return
+    }
+
+    $deploymentStatusUrl = "$scmBaseUrl/api/deployments/latest"
+    for ($attempt = 1; $attempt -le 450; $attempt++) {
+        Start-Sleep -Seconds 2
+        $statusResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri $deploymentStatusUrl `
+            -Headers $headers
+        if ($statusResponse.status -eq 4) {
+            return
+        }
+        if ($statusResponse.status -eq 3) {
+            throw "Flex Consumption deployment failed: $($statusResponse | ConvertTo-Json -Depth 6 -Compress)"
+        }
+    }
+
+    throw 'Flex Consumption deployment did not complete within 15 minutes.'
+}
+
+function Set-PrivateStorageTagPolicy {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ManagementUrl,
+
+        [Parameter(Mandatory)]
+        [string] $ApiAudience,
+
+        [Parameter(Mandatory)]
+        [string] $PolicyJson
+    )
+
+    $token = Get-PlainAccessToken -ResourceUrl $ApiAudience
+    $secureToken = ConvertTo-SecureString $token -AsPlainText -Force
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            Invoke-RestMethod `
+                -Method Put `
+                -Uri $ManagementUrl.TrimEnd('/') `
+                -Authentication Bearer `
+                -Token $secureToken `
+                -ContentType 'application/json' `
+                -Body $PolicyJson | Out-Null
+            return
+        }
+        catch {
+            if ($attempt -eq 12) {
+                throw
+            }
+
+            Write-Warning "The policy management endpoint is not ready yet. Retrying in 10 seconds ($attempt/12)."
+            Start-Sleep -Seconds 10
+        }
     }
 }
 
@@ -979,6 +1149,21 @@ $Location = Read-DeploymentValue `
     -CurrentValue $Location `
     -Prompt 'Azure Region' `
     -DefaultValue 'westeurope'
+if (-not $PSBoundParameters.ContainsKey('StorageNetworkAccess')) {
+    $publicEndpointResponse = Read-Host `
+        'Allow public endpoints for the Storage Account? [Y/n]'
+    $StorageNetworkAccess = if (
+        [string]::IsNullOrWhiteSpace($publicEndpointResponse) -or
+        $publicEndpointResponse -match '^(?i:y|yes|j|ja)$') {
+        'Public'
+    }
+    elseif ($publicEndpointResponse -match '^(?i:n|no|nein)$') {
+        'Private'
+    }
+    else {
+        throw 'Enter Y/Yes for public Storage endpoints or N/No for private endpoints.'
+    }
+}
 
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
 $FunctionAppName = Read-FunctionAppName `
@@ -1063,7 +1248,14 @@ $existingResourceGroup = Get-AzResourceGroup `
 Assert-AzureDeploymentPermissions `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
+    -StorageNetworkAccess $StorageNetworkAccess `
     -ResourceGroupExists:($null -ne $existingResourceGroup)
+if ($StorageNetworkAccess -eq 'Private') {
+    Write-Host 'Validating Azure Functions Flex Consumption region availability...'
+    Assert-FlexConsumptionLocation `
+        -SubscriptionId $SubscriptionId `
+        -Location $Location
+}
 
 Write-Host "`nRequested installation" -ForegroundColor Cyan
 Write-Host "  Subscription : $($subscription.Name) ($SubscriptionId)"
@@ -1078,6 +1270,7 @@ if ($ResourceGroupTags -and $ResourceGroupTags.Count -gt 0) {
 }
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
+Write-Host "  Storage network access: $StorageNetworkAccess"
 Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
@@ -1096,6 +1289,11 @@ if (-not $PSCmdlet.ShouldProcess(
 }
 
 Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+if ($StorageNetworkAccess -eq 'Private') {
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.Network'
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.ManagedIdentity'
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.App'
+}
 
 #endregion Azure context and confirmation
 
@@ -1159,6 +1357,7 @@ Write-Host "  Tenant       : $TenantId"
 Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
+Write-Host "  Storage network access: $StorageNetworkAccess"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
 Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
@@ -1188,6 +1387,7 @@ $deploymentParameters = @{
     managerAuthorizationPolicy = $managerAuthorizationPolicyJson
     deviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     installerPrincipalId = $installingUserObjectId.ToString()
+    storageNetworkAccess = $StorageNetworkAccess
 }
 
 Write-Host 'Validating Bicep deployment...'
@@ -1249,47 +1449,49 @@ Write-Host 'Extract the archive into a directory listed in $env:PSModulePath to 
 $storageAccount = Get-AzStorageAccount `
     -ResourceGroupName $ResourceGroupName `
     -Name $storageAccountName
-if ($storageAccount.PublicNetworkAccess -ne 'Enabled') {
-    throw @"
+if ($StorageNetworkAccess -eq 'Public') {
+    if ($storageAccount.PublicNetworkAccess -ne 'Enabled') {
+        throw @"
 Storage Account '$storageAccountName' has PublicNetworkAccess='$($storageAccount.PublicNetworkAccess)'.
 The deployed Azure Functions Consumption architecture requires access to the Storage data endpoint. Azure Policy appears to disable public network access after deployment.
 Request a policy exemption that permits public network access for this Storage Account while shared-key access remains disabled, or deploy a VNet-integrated hosting plan with Private Endpoints and private DNS.
 "@
-}
-$storageContext = New-AzStorageContext `
-    -StorageAccountName $storageAccountName `
-    -UseConnectedAccount
-$policyTemporaryPath = Join-Path ([IO.Path]::GetTempPath()) "tag-policy-$([guid]::NewGuid()).json"
-try {
-    Set-Content `
-        -LiteralPath $policyTemporaryPath `
-        -Value $tagAuthorizationPolicyJson `
-        -Encoding utf8NoBOM
-    $maximumUploadAttempts = 12
-    for ($uploadAttempt = 1; $uploadAttempt -le $maximumUploadAttempts; $uploadAttempt++) {
-        try {
-            Set-AzStorageBlobContent `
-                -Context $storageContext `
-                -Container 'configuration' `
-                -File $policyTemporaryPath `
-                -Blob 'tag-authorization-policy.json' `
-                -Force | Out-Null
-            break
-        }
-        catch {
-            $isAuthorizationDelay = $_.Exception.Message -match `
-                '403|AuthorizationPermissionMismatch|not authorized'
-            if (-not $isAuthorizationDelay -or $uploadAttempt -eq $maximumUploadAttempts) {
-                throw
+    }
+    $storageContext = New-AzStorageContext `
+        -StorageAccountName $storageAccountName `
+        -UseConnectedAccount
+    $policyTemporaryPath = Join-Path ([IO.Path]::GetTempPath()) "tag-policy-$([guid]::NewGuid()).json"
+    try {
+        Set-Content `
+            -LiteralPath $policyTemporaryPath `
+            -Value $tagAuthorizationPolicyJson `
+            -Encoding utf8NoBOM
+        $maximumUploadAttempts = 12
+        for ($uploadAttempt = 1; $uploadAttempt -le $maximumUploadAttempts; $uploadAttempt++) {
+            try {
+                Set-AzStorageBlobContent `
+                    -Context $storageContext `
+                    -Container 'configuration' `
+                    -File $policyTemporaryPath `
+                    -Blob 'tag-authorization-policy.json' `
+                    -Force | Out-Null
+                break
             }
+            catch {
+                $isAuthorizationDelay = $_.Exception.Message -match `
+                    '403|AuthorizationPermissionMismatch|not authorized'
+                if (-not $isAuthorizationDelay -or $uploadAttempt -eq $maximumUploadAttempts) {
+                    throw
+                }
 
-            Write-Warning "Storage RBAC is not active yet. Retrying policy upload in 10 seconds ($uploadAttempt/$maximumUploadAttempts)."
-            Start-Sleep -Seconds 10
+                Write-Warning "Storage RBAC is not active yet. Retrying policy upload in 10 seconds ($uploadAttempt/$maximumUploadAttempts)."
+                Start-Sleep -Seconds 10
+            }
         }
     }
-}
-finally {
-    Remove-Item $policyTemporaryPath -Force -ErrorAction SilentlyContinue
+    finally {
+        Remove-Item $policyTemporaryPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 #endregion Client configuration
@@ -1314,6 +1516,8 @@ if (-not $SkipPublish) {
                 (Join-Path $projectRoot 'ImportDevice'),
                 (Join-Path $projectRoot 'ProcessDeviceAttribute'),
                 (Join-Path $projectRoot 'ManageTagPolicy'),
+                (Join-Path $projectRoot 'Ui'),
+                (Join-Path $projectRoot 'WebFrontend'),
                 (Join-Path $projectRoot 'src')
             ) `
             -DestinationPath $packagePath `
@@ -1321,15 +1525,39 @@ if (-not $SkipPublish) {
             -Force
 
         Write-Host 'Publishing Function code...'
-        Publish-AzWebApp `
-            -ResourceGroupName $ResourceGroupName `
-            -Name $FunctionAppName `
-            -ArchivePath $packagePath `
-            -Force | Out-Null
+        if ($StorageNetworkAccess -eq 'Private') {
+            Publish-FlexConsumptionFunctionApp `
+                -SubscriptionId $SubscriptionId `
+                -ResourceGroupName $ResourceGroupName `
+                -FunctionAppName $FunctionAppName `
+                -ArchivePath $packagePath
+        }
+        else {
+            Publish-AzWebApp `
+                -ResourceGroupName $ResourceGroupName `
+                -Name $FunctionAppName `
+                -ArchivePath $packagePath `
+                -Force | Out-Null
+        }
     }
     finally {
         Remove-Item $packagePath -Force -ErrorAction SilentlyContinue
     }
+}
+
+if ($StorageNetworkAccess -eq 'Private' -and -not $SkipPublish) {
+    Write-Host 'Initializing tag authorization policy through the management API...'
+    $policyRequestBody = @{
+        rules = @($tagAuthorizationPolicy | ForEach-Object {
+            "$($_.groupId)=$($_.tags -join ',')"
+        })
+        restrictedManagementAdministrativeUnitName = `
+            $RestrictedManagementAdministrativeUnitName
+    } | ConvertTo-Json -Depth 4 -Compress
+    Set-PrivateStorageTagPolicy `
+        -ManagementUrl $managementUrl `
+        -ApiAudience $ApiAudience `
+        -PolicyJson $policyRequestBody
 }
 
 #endregion Permissions and Function publishing
@@ -1359,8 +1587,10 @@ $result = [pscustomobject]@{
     TenantId                = $TenantId
     ResourceGroupName       = $ResourceGroupName
     FunctionAppName         = $FunctionAppName
+    StorageNetworkAccess    = $StorageNetworkAccess
     FunctionUrl             = $functionUrl
     ManagementUrl           = $managementUrl
+    WebInterfaceUrl         = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy

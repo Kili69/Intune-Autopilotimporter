@@ -236,6 +236,20 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
+The installer asks whether public endpoints are allowed for the Storage Account. Press Enter or answer `Y` to keep the existing public Storage data endpoints. Answer `N` to deploy private Storage endpoints. For unattended installations, select the mode explicitly:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 `
+    -StorageNetworkAccess Private `
+    -InstallMissingModules
+```
+
+`Public` uses the existing Y1 Consumption plan. `Private` uses Flex Consumption (`FC1`) because the legacy Consumption plan cannot access a Storage Account whose public network access is disabled. Before deployment, the installer verifies that the selected subscription and region support Flex Consumption.
+
+Private mode creates a VNet, a delegated Function integration subnet, a separate private-endpoint subnet, a user-assigned managed identity, and Blob, Queue, and Table private endpoints with linked private DNS zones. The Function App, import API, management API, and SCM deployment endpoint remain publicly reachable and retain their existing Entra authentication. Only the Storage Account data endpoints are private.
+
+Private mode creates more billable Azure resources than public mode, including three private endpoints and Private DNS zones. Review current Azure pricing and organizational DNS requirements before selecting it. Custom DNS servers must forward the Storage private-link zones to Azure Private DNS.
+
 1. After installation, extract the generated client module package from the current user's Documents directory into the PowerShell 7 module directory:
 
 ```powershell
@@ -251,6 +265,10 @@ Expand-Archive `
 ```
 
 The archive already contains the required versioned module layout and the generated `client.settings.json`.
+After deployment, open the authenticated web interface at
+`https://<function-app>.azurewebsites.net/api/ui/index.html`. App Service
+Authentication protects the UI and its assets with the same Entra application
+as the Function API.
 
 ### Required Roles and Permissions
 
@@ -272,16 +290,14 @@ For a standard installation, one installing administrator performs the complete 
 | Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |
 | Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
 | Function App managed identity | Deployed Storage Account | `Storage Queue Data Contributor` | Queues and retries the Entra device extension attribute update while Autopilot processing is incomplete. Assigned automatically by the installer. |
+| Private-mode Storage identity | Deployed Storage Account | `Storage Blob Data Owner`, `Storage Queue Data Contributor`, `Storage Table Data Contributor` | Provides FC1 host and deployment storage access through private endpoints. The user-assigned identity is created and assigned automatically. |
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
-`Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
-`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `infra/main.bicep`.
+In public mode, the installing user receives `Storage Blob Data Contributor`, and the Function system-assigned identity receives `Storage Blob Data Owner` and `Storage Queue Data Contributor`. In private mode, the FC1 host user-assigned identity receives Blob Owner, Queue Contributor, and Table Contributor instead; the initial policy is written through the authenticated public management API after One Deploy completes. The installer therefore needs resource deployment permissions and `Microsoft.Authorization/roleAssignments/write`. Private mode additionally requires write permissions for virtual networks, private endpoints, private DNS zones and links, private DNS zone groups, and user-assigned managed identities. If organizational policy uses custom Azure roles, they must allow the resource types defined in `infra/main.bicep`.
 
-The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
-If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
+Both modes disable Blob public access and shared-key authentication. Public mode permits the Storage data endpoints while requiring Entra authentication. Private mode sets Storage `PublicNetworkAccess=Disabled`; this setting does not disable public ingress to the Function App itself.
 
 Importing users require no Azure subscription role, Entra directory role, Microsoft Graph permission, or direct Intune administrative role. Authorization is provided by the configured group-to-tag rule. The Function's managed
 identity holds the Intune-related Graph permissions independently of the user.

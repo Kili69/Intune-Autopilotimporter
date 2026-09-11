@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260831.1
+# Project-Version: 1.0.20260911.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -103,6 +103,8 @@ $packageEntries = @(
     'ImportDevice'
     'ManageTagPolicy'
     'ProcessDeviceAttribute'
+    'Ui'
+    'WebFrontend'
     'infra'
     'scripts\Ensure-EntraApiApplication.ps1'
     'scripts\Grant-ManagedIdentityGraphPermission.ps1'
