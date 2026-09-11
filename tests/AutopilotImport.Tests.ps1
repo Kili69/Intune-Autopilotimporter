@@ -2715,6 +2715,94 @@ Describe 'OOBE web importer helper script' {
 }
 
 Describe 'Project metadata entries' {
+    BeforeAll {
+        $packageScriptPath = Join-Path `
+            $PSScriptRoot `
+            '..\scripts\New-DeploymentPackage.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $packageAst = [Management.Automation.Language.Parser]::ParseFile(
+            $packageScriptPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $parseErrors.Count | Should -Be 0
+        foreach ($functionName in @(
+                'Assert-BuiltWebFrontend'
+                'Assert-ProjectVersionConsistency'
+            )) {
+            $functionAst = $packageAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
+    It 'rejects a prebuilt web frontend with a stale project version' {
+        $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
+        $assetRoot = Join-Path $webRoot 'assets'
+        New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
+        Set-Content `
+            -LiteralPath (Join-Path $webRoot 'index.html') `
+            -Value '<script type="module" src="/api/ui/assets/index-test.js"></script>'
+        Set-Content `
+            -LiteralPath (Join-Path $assetRoot 'index-test.js') `
+            -Value 'const version = "1.0.20260902.1";'
+
+        {
+            Assert-BuiltWebFrontend `
+                -Root $TestDrive `
+                -ProjectVersion '1.1.20260911.1'
+        } | Should -Throw '*does not contain project version 1.1.20260911.1*'
+    }
+
+    It 'accepts a prebuilt web frontend with the central project version' {
+        $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
+        $assetRoot = Join-Path $webRoot 'assets'
+        New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
+        Set-Content `
+            -LiteralPath (Join-Path $webRoot 'index.html') `
+            -Value '<script type="module" src="/api/ui/assets/index-test.js"></script>'
+        Set-Content `
+            -LiteralPath (Join-Path $assetRoot 'index-test.js') `
+            -Value 'const version = "1.1.20260911.1";'
+
+        {
+            Assert-BuiltWebFrontend `
+                -Root $TestDrive `
+                -ProjectVersion '1.1.20260911.1'
+        } | Should -Not -Throw
+    }
+
+    It 'rejects a PowerShell marker that differs from the central version' {
+        $projectRoot = Join-Path $TestDrive 'version-mismatch'
+        $manifestRoot = Join-Path `
+            $projectRoot `
+            'src\AutopilotImport.Client'
+        New-Item -Path $manifestRoot -ItemType Directory -Force | Out-Null
+        Set-Content `
+            -LiteralPath (Join-Path $projectRoot 'Install.ps1') `
+            -Value '# Project-Version: 1.0.20260902.1'
+        Set-Content `
+            -LiteralPath (Join-Path `
+                $manifestRoot `
+                'AutopilotImport.Client.psd1') `
+            -Value @(
+                '# Project-' + 'Version: 1.1.20260911.1'
+                '@{'
+                "    ModuleVersion = '1.1.20260911.1'"
+                '}'
+            )
+
+        {
+            Assert-ProjectVersionConsistency `
+                -Root $projectRoot `
+                -ProjectVersion '1.1.20260911.1'
+        } | Should -Throw '*uses project version 1.0.20260902.1 instead of 1.1.20260911.1*'
+    }
+
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path $PSScriptRoot -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()

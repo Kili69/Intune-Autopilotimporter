@@ -27,6 +27,10 @@ the files required to install, update, and operate Autopilot Import. Package
 content is selected from an explicit allowlist so local configuration, tests,
 logs, repository metadata, and generated files are not included.
 
+Before packaging, the script verifies that PowerShell version markers, the
+client module manifest, and the version embedded in the built web frontend all
+match VERSION. Package creation stops when any version is inconsistent.
+
 The archive contains a top-level directory named
 Intune-autopilotImporter-<branch><version>. An existing archive for the same
 branch and version is replaced. Temporary staging files are removed after
@@ -85,7 +89,10 @@ $ErrorActionPreference = 'Stop'
 function Assert-BuiltWebFrontend {
     param(
         [Parameter(Mandatory)]
-        [string] $Root
+        [string] $Root,
+
+        [Parameter(Mandatory)]
+        [string] $ProjectVersion
     )
 
     $webRoot = Join-Path $Root 'WebFrontend\wwwroot'
@@ -103,6 +110,7 @@ function Assert-BuiltWebFrontend {
         throw "The prebuilt web frontend index does not reference any assets: $indexPath"
     }
 
+    $javaScriptAssets = @()
     foreach ($assetMatch in $assetMatches) {
         $relativePath = $assetMatch.Groups['path'].Value.Replace(
             '/',
@@ -112,6 +120,76 @@ function Assert-BuiltWebFrontend {
         if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
             throw "The prebuilt web frontend asset is missing: $assetPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
         }
+        if ([IO.Path]::GetExtension($assetPath) -eq '.js') {
+            $javaScriptAssets += $assetPath
+        }
+    }
+
+    if ($javaScriptAssets.Count -eq 0) {
+        throw "The prebuilt web frontend index does not reference a JavaScript asset: $indexPath"
+    }
+
+    $embeddedVersions = @(
+        foreach ($assetPath in $javaScriptAssets) {
+            $assetContent = Get-Content -LiteralPath $assetPath -Raw
+            [regex]::Matches(
+                $assetContent,
+                '(?<!\d)(?<version>\d+\.\d+\.\d{8}\.\d+)(?!\d)'
+            ) | ForEach-Object {
+                $_.Groups['version'].Value
+            }
+        }
+    ) | Select-Object -Unique
+    if ($embeddedVersions -notcontains $ProjectVersion) {
+        throw "The prebuilt web frontend does not contain project version $ProjectVersion. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
+    }
+    $unexpectedVersions = @(
+        $embeddedVersions | Where-Object { $_ -ne $ProjectVersion }
+    )
+    if ($unexpectedVersions.Count -gt 0) {
+        throw "The prebuilt web frontend contains unexpected project version(s): $($unexpectedVersions -join ', '). Expected only $ProjectVersion."
+    }
+}
+
+function Assert-ProjectVersionConsistency {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Root,
+
+        [Parameter(Mandatory)]
+        [string] $ProjectVersion
+    )
+
+    if ($ProjectVersion -notmatch '^\d+\.\d+\.\d{8}\.\d+$') {
+        throw "VERSION contains an invalid project version: $ProjectVersion"
+    }
+
+    $powerShellFiles = @(
+        Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
+            $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+            $_.FullName -notmatch '[\\/](?:node_modules|artifacts|\.git)[\\/]'
+        }
+    )
+    foreach ($file in $powerShellFiles) {
+        $content = Get-Content -LiteralPath $file.FullName -Raw
+        $markers = [regex]::Matches(
+            $content,
+            '(?m)^# Project-Version: (?<version>\d+\.\d+\.\d{8}\.\d+)\r?$'
+        )
+        if ($markers.Count -ne 1) {
+            throw "PowerShell file '$($file.FullName)' must contain exactly one Project-Version marker."
+        }
+        $fileVersion = $markers[0].Groups['version'].Value
+        if ($fileVersion -ne $ProjectVersion) {
+            throw "PowerShell file '$($file.FullName)' uses project version $fileVersion instead of $ProjectVersion."
+        }
+    }
+
+    $manifestPath = Join-Path $Root `
+        'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+    $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
+    if ([string] $manifest.ModuleVersion -ne $ProjectVersion) {
+        throw "Client module manifest uses version $($manifest.ModuleVersion) instead of $ProjectVersion."
     }
 }
 
@@ -173,7 +251,12 @@ $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) `
 $packageRoot = Join-Path $stagingRoot $packageName
 $packagePath = Join-Path $OutputDirectory "$packageName.zip"
 
-Assert-BuiltWebFrontend -Root $ProjectRoot
+Assert-ProjectVersionConsistency `
+    -Root $ProjectRoot `
+    -ProjectVersion $projectVersion
+Assert-BuiltWebFrontend `
+    -Root $ProjectRoot `
+    -ProjectVersion $projectVersion
 
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
