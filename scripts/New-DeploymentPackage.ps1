@@ -57,7 +57,7 @@ directory.
 
 .EXAMPLE
 .\scripts\New-DeploymentPackage.ps1 `
-    -ProjectRoot 'C:\Repos\Intue-Autopilotimporter' `
+    -ProjectRoot 'C:\Repos\Intune-Autopilotimporter' `
     -OutputDirectory 'C:\DeploymentPackages'
 
 Creates the deployment package from an explicit source tree in a custom
