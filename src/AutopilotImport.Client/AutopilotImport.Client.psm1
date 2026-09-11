@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.0.20260902.1
+# Project-Version: 1.1.20260911.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 Set-StrictMode -Version Latest
