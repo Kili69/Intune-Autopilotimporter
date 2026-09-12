@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
-    runs-on: [self-hosted, Windows, X64]
+    runs-on: windows-latest
 
     steps:
       - name: Check out repository
@@ -53,3 +53,33 @@ jobs:
           path: ${{ steps.package.outputs.path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish main installation package to repository
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+        run: |
+          $stagedPackage = Join-Path `
+            $env:RUNNER_TEMP `
+            (Split-Path $env:PACKAGE_PATH -Leaf)
+          Copy-Item -LiteralPath $env:PACKAGE_PATH -Destination $stagedPackage
+
+          git rm -r --ignore-unmatch artifacts InstallationPackage
+          New-Item -Path InstallationPackage -ItemType Directory -Force |
+            Out-Null
+          Copy-Item -LiteralPath $stagedPackage -Destination InstallationPackage
+          git add -f InstallationPackage
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git config user.name 'github-actions[bot]'
+            git config user.email `
+              '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m "build: publish $env:PACKAGE_NAME [skip ci]"
+            git push origin HEAD:main
+          }
+          elseif ($LASTEXITCODE -ne 0) {
+            throw "git diff failed with exit code $LASTEXITCODE."
+          }

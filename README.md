@@ -809,6 +809,13 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 
 GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
 
+After a successful push to `main`, GitHub Actions also commits the current ZIP
+to the `InstallationPackage` directory on `main`. The publish commit uses
+`[skip ci]` to prevent a recursive workflow run. Each publication removes
+previous package ZIPs and the legacy `artifacts` directory, so the branch keeps
+only the package for the current project version. Packages for other branches
+remain available as workflow artifacts and are not committed to those branches.
+
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
 The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:

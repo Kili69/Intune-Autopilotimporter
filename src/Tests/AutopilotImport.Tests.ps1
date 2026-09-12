@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260912.1
+# Project-Version: 1.1.20260912.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -3309,12 +3309,25 @@ Describe 'Deployment package' {
             "(?ms)^  push:\s+branches:\s+- '\*\*'\s*$"
         $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
         $workflow | Should -Match `
-            '(?m)^    runs-on: \[self-hosted, Windows, X64\]\s*$'
+            '(?m)^    runs-on: windows-latest\s*$'
         $workflow | Should -Match `
             'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
         $workflow | Should -Match `
             '-BranchName \$env:PACKAGE_BRANCH'
         $workflow | Should -Match 'actions/upload-artifact@v4'
+        $workflow | Should -Match '(?m)^  contents: write\s*$'
+        $workflow | Should -Match `
+            "(?m)^        if: github\.ref == 'refs/heads/main'\s*$"
+        $workflow | Should -Match `
+            '(?m)^          git rm -r --ignore-unmatch artifacts InstallationPackage\s*$'
+        $workflow | Should -Match `
+            '(?m)^          git add -f InstallationPackage\s*$'
+        $workflow | Should -Match `
+            '(?m)^          if \(\$LASTEXITCODE -eq 1\) \{\s*$'
+        $workflow | Should -Match `
+            'git commit -m "build: publish \$env:PACKAGE_NAME \[skip ci\]"'
+        $workflow | Should -Match `
+            '(?m)^            git push origin HEAD:main\s*$'
     }
 
     It 'publishes a package for every branch in Azure Pipelines' {
