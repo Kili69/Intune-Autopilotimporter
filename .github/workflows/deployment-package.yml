@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64]
 
     steps:
       - name: Check out repository
@@ -26,10 +26,10 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: Invoke-Pester ./tests/AutopilotImport.Tests.ps1 -CI
+        run: Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
 
       - name: Build web frontend
-        working-directory: web
+        working-directory: src/Web
         shell: pwsh
         run: |
           npm ci
@@ -41,7 +41,7 @@ jobs:
         env:
           PACKAGE_BRANCH: ${{ github.ref_name }}
         run: |
-          $package = ./scripts/New-DeploymentPackage.ps1 `
+          $package = ./src/Scripts/New-DeploymentPackage.ps1 `
             -BranchName $env:PACKAGE_BRANCH
           "path=$($package.FullName)" >> $env:GITHUB_OUTPUT
           "name=$($package.BaseName)" >> $env:GITHUB_OUTPUT

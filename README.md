@@ -146,13 +146,16 @@ import itself continues in Azure and can be checked later with
 
 The PowerShell module remains available and uses the same authorization policy.
 
-The installer deploys `AutopilotImport.Client` and a matching `client.settings.json`. The module reads the Function URL, API Application ID URI, and tenant from that file. It exports the commands used for importing and monitoring devices. (see installation)
+The installer deploys `AutopilotImport.Client`. On first use, initialize the
+module with the Function URL. The module stores the public, non-secret runtime
+configuration in the current user's profile and reuses it for later commands.
 
 ### Import a device hash
 
 Use the `Import-AutopilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
 
-- `AutopilotImport.Client` and its `client.settings.json` have been installed.
+- `AutopilotImport.Client` has been installed and initialized once with the
+    Function URL.
 - Your account belongs to an Entra security group that is authorized for the
     Group Tag you want to use.
 - The CSV contains the columns `Device Serial Number` and `Hardware Hash`.
@@ -185,22 +188,33 @@ pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
     -ConfigPath '.\client.settings.json'
 ```
 
-Normally, the command reads the Function URL, API Application ID URI, and tenant from `client.settings.json`. Use `-ConfigPath` to select another configuration file. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values override the file settings, allowing one computer to target multiple environments.
+Initialize the module once for the current Windows user:
+
+```powershell
+Get-AutoPilotImporterClientConfiguration `
+    -FunctionUrl 'https://<function-app>.azurewebsites.net'
+```
+
+The command retrieves `/api/ui/config` over HTTPS and stores the resulting
+non-secret settings in
+`$HOME\.autopilotimporter\client.settings.json`. Subsequent commands load that
+file automatically. Use `-ConfigPath` to select another configuration file.
+Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values on the
+operational commands override file settings, allowing one computer to target
+multiple environments.
 
 ### Display Client Configuration
 
-Display the complete configuration currently used by the installed client
-module, including subscription, tenant, resource group, Function App, API,
-management, and web application values:
+Display the persisted configuration currently used by the client module:
 
 ```powershell
-Get-AutopilotClientConfiguration
+Get-AutoPilotImporterClientConfiguration
 ```
 
 Select a different configuration file and display every property:
 
 ```powershell
-Get-AutopilotClientConfiguration `
+Get-AutoPilotImporterClientConfiguration `
     -ConfigPath 'C:\AutopilotImport\client.settings.json' |
     Format-List
 ```
@@ -224,6 +238,31 @@ Get-AutopilotImportStatus `
 The default timeout is 30 minutes with a 15-second polling interval. Override these values with `-TimeoutSeconds` and `-PollIntervalSeconds`. Only `workflowStatus: complete` confirms that both the Intune import and the Entra extension-attribute update succeeded.
 
 ## Autopilot-importer management
+
+### Read Import History
+
+The installing user, configured manager users or groups, and current members
+of the Intune RBAC role `Intune Role Administrator` can read recent import
+operations and their current Intune status:
+
+```powershell
+Get-AutopilotImportHistory
+```
+
+The command returns up to 100 operations by default. Request up to 1000 and
+filter the pipeline, for example to inspect failed imports:
+
+```powershell
+Get-AutopilotImportHistory -Top 1000 |
+    Where-Object Status -eq 'error'
+```
+
+Each result contains the import ID, batch import ID, serial number, Group Tag,
+status, and Intune error details. Hardware hashes and product keys are never
+returned. The data comes from imported Windows Autopilot device identities
+currently retained by Microsoft Intune. It is operational history, not a
+permanent audit archive; use an external store when long-term retention is
+required.
 
 ### Change Group-to-Tag Assignments
 
@@ -420,7 +459,7 @@ For a standard installation, one installing administrator performs the complete 
 
 The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
 `Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
-`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `infra/main.bicep`.
+`Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `src/Infrastructure/main.bicep`.
 
 The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
 If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
@@ -542,24 +581,36 @@ $module = Get-ChildItem `
 Import-Module $module.FullName
 ```
 
-The module exports `New-AutopilotClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
+The module exports `New-AutoPilotImporterClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
+`Get-AutopilotImportHistory`,
 `Get-AutopilotTagPolicy`,
 `Add-AutopilotTagPolicy`, `Remove-AutopilotTagPolicy`,
 `Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
 `Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
 
-If `client.settings.json` is missing for an existing deployment, create it with
-the client module:
+For normal import and policy API use, initialize the module from the deployed
+Function URL. This does not require Azure subscription access:
 
 ```powershell
-New-AutopilotClientConfiguration `
+Get-AutoPilotImporterClientConfiguration `
+    -FunctionUrl 'https://<function-app>.azurewebsites.net'
+```
+
+The configuration remains in
+`$HOME\.autopilotimporter\client.settings.json` across module updates.
+
+Administrators who also need Azure control-plane values for manager-policy
+commands can create a complete deployment configuration with:
+
+```powershell
+New-AutoPilotImporterClientConfiguration `
     -SubscriptionId '<Subscription-ID>' `
     -ResourceGroupName 'rg-autopilot-import' `
     -TenantId '<Tenant-ID>' `
     -FunctionAppName '<Function-App-Name>'
 ```
 
-By default, the file is created as `client.settings.json` in the current
+By default, this administrative file is created as `client.settings.json` in the current
 directory. Use `-OutputPath 'C:\Configuration'` to select another directory,
 and `-Force` to replace an existing file. The command reads the API Application
 ID URI from the deployed Function App's Easy Auth configuration and prints the
@@ -657,11 +708,11 @@ Before the first pipeline deployment, create or configure the Entra API and SPA 
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
-$entraApplication = .\scripts\Ensure-EntraApiApplication.ps1 `
+$entraApplication = .\src\Scripts\Ensure-EntraApiApplication.ps1 `
     -TenantId '<Tenant-ID>' `
     -DisplayName 'Autopilot Import API' `
     -Confirm:$false
-$webApplication = .\scripts\Ensure-EntraWebApplication.ps1 `
+$webApplication = .\src\Scripts\Ensure-EntraWebApplication.ps1 `
     -TenantId '<Tenant-ID>' `
     -ApiApplicationObjectId $entraApplication.ApplicationObjectId `
     -ApiClientId $entraApplication.ClientId `
@@ -679,7 +730,7 @@ $function = Get-AzWebApp `
     -ResourceGroupName 'rg-autopilot-import' `
     -Name '<function-app-name>'
 
-.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+.\src\Scripts\Grant-ManagedIdentityGraphPermission.ps1 `
     -ManagedIdentityObjectId $function.Identity.PrincipalId
 ```
 
@@ -707,6 +758,23 @@ To run the update without the execution confirmation, use `-Force`:
 
 `-WhatIf` still takes precedence when combined with `-Force` and does not perform the update.
 
+The deployment can also be selected using its Function URL. The script derives
+the Function App name and searches the subscriptions accessible to the signed-in
+Azure account to resolve the subscription, tenant, and resource group:
+
+```powershell
+.\Update-AutopilotImport.ps1 `
+    -FunctionUrl 'https://func-autopilot-contoso.azurewebsites.net/api/ui/index.html'
+```
+
+The URL may include any Function API path, but must use the Function App's
+`azurewebsites.net` hostname. When the same Function App name is visible in
+multiple tenants or subscriptions, add `-SubscriptionId` to select the intended
+deployment. Explicit `-TenantId`, `-ResourceGroupName`, or `-FunctionAppName`
+values must match the resource found from the URL. Azure Reader access is
+enough for discovery; the update itself still requires the permissions listed
+below.
+
 By default, the script selects the newest installed `client.settings.json` from the portable client package, `PSModulePath`, or the standard per-user and system-wide PowerShell module directories. Select another installed deployment explicitly when required:
 
 ```powershell
@@ -726,7 +794,7 @@ When the client module and configuration are not installed on the update compute
     -InstallMissingModules
 ```
 
-In this mode, the API audience is read from the deployed Function App and the management endpoint is derived from its hostname. Use `-ApiAudience` or `-ManagementUrl` only when the deployed values require an explicit override.
+In this mode, and when using `-FunctionUrl`, the API audience is read from the deployed Function App and the management endpoint is derived from its hostname. Use `-ApiAudience` or `-ManagementUrl` only when the deployed values require an explicit override.
 
 The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and the versioned client package.
@@ -746,10 +814,10 @@ The package contains `README.md`, the installer and updater, Function runtime fi
 The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:
 
 ```powershell
-.\scripts\New-DeploymentPackage.ps1
+.\src\Scripts\New-DeploymentPackage.ps1
 ```
 
-The local package is written to `artifacts\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
+The local package is written to `InstallationPackage\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
 
 #### Manual Bicep Deployment
 
@@ -781,7 +849,7 @@ New-AzResourceGroup `
 
 $deployment = New-AzResourceGroupDeployment `
     -ResourceGroupName $resourceGroupName `
-    -TemplateFile .\infra\main.bicep `
+    -TemplateFile .\src\Infrastructure\main.bicep `
     -functionAppName $functionAppName `
     -entraClientId $entraClientId `
     -webClientId $webClientId `
@@ -789,7 +857,20 @@ $deployment = New-AzResourceGroupDeployment `
     -managerAuthorizationPolicy $managerPolicy
 ```
 
-The template enables HTTPS, Easy Auth, Application Insights, and a system-assigned managed identity. Unauthenticated API requests are rejected with HTTP 401 before the Function code runs. Only `/` and `/api/ui/*` are excluded: the root returns an HTTP redirect to the frontend, while the static sign-in page and its public runtime configuration can load without authentication. No import or policy data is exposed through these paths.
+The template enables HTTPS, Easy Auth, Application Insights, and a
+system-assigned managed identity. A Log Analytics workspace named
+`<function-app-name>-la` is created in the same resource group and linked
+explicitly to Application Insights, preventing Azure from creating a separate
+`ai_*_managed` resource group. The workspace retains telemetry for 30 days.
+When an existing deployment is updated, new telemetry is written to this
+workspace; historical telemetry remains in the previously linked managed
+workspace until that workspace is removed.
+
+Unauthenticated API requests are rejected with HTTP 401 before the Function
+code runs. Only `/` and `/api/ui/*` are excluded: the root returns an HTTP
+redirect to the frontend, while the static sign-in page and its public runtime
+configuration can load without authentication. No import or policy data is
+exposed through these paths.
 
 ### 3. Assign the Graph Permission
 
@@ -798,7 +879,7 @@ This action requires an administrator who can assign app roles. The managed iden
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 
-.\scripts\Grant-ManagedIdentityGraphPermission.ps1 `
+.\src\Scripts\Grant-ManagedIdentityGraphPermission.ps1 `
     -ManagedIdentityObjectId $deployment.Outputs.managedIdentityObjectId.Value
 ```
 
@@ -807,16 +888,18 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 The ZIP archive must contain `host.json` at its root:
 
 ```powershell
-Push-Location .\web
+Push-Location .\src\Web
 npm ci
 npm run build
 Pop-Location
 
 $package = Join-Path $PWD 'autopilot-import.zip'
+Push-Location .\src\FunctionApp
 Compress-Archive `
     -Path .\host.json, .\proxies.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
     -DestinationPath $package `
     -Force
+Pop-Location
 
 Publish-AzWebApp `
     -ResourceGroupName $resourceGroupName `
@@ -915,80 +998,6 @@ Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in
 
 The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
 
-### 6. Use a Friendly DNS Alias for the Web Frontend
-
-The web frontend can use a public, friendly subdomain such as
-`autopilot.contoso.com` instead of the generated Function hostname. The final
-URL is then:
-
-```text
-https://autopilot.contoso.com/api/ui/index.html
-```
-
-DNS alone is not sufficient. The hostname must also be assigned to the Function
-App, secured with a TLS certificate, and registered as an Entra SPA redirect
-URI. The Function App uses a Consumption plan, for which a custom subdomain is
-mapped with a CNAME record.
-
-1. In the Azure portal, open the deployed Function App and select
-    **Settings > Custom domains > Add custom domain**.
-2. Enter the public subdomain, for example `autopilot.contoso.com`, and use the
-    DNS values shown by Azure to create these records at the DNS provider:
-
-    | Type | Name | Value |
-    | --- | --- | --- |
-    | CNAME | `autopilot` | `<function-app-name>.azurewebsites.net` |
-    | TXT | `asuid.autopilot` | The **Custom Domain Verification ID** shown by Azure |
-
-    The TXT record is strongly recommended because it proves ownership and
-    protects against subdomain takeover. Do not include `https://` or a URL path
-    in either DNS record.
-3. Wait for DNS propagation, select **Validate**, and add the custom domain to
-    the Function App. A successful DNS lookup by itself does not complete this
-    Azure hostname association.
-4. Configure an **SNI SSL** binding for the custom hostname. Select an App
-    Service Managed Certificate when that option is available, or bind a valid
-    uploaded or Key Vault certificate. Do not distribute the friendly URL until
-    Azure shows the custom domain as **Secured** and HTTPS opens without a
-    certificate warning.
-5. In **Microsoft Entra ID > App registrations**, open the separate
-    **Autopilot Import Web** application. Under **Authentication > Single-page
-    application**, add this exact redirect URI:
-
-    ```text
-    https://autopilot.contoso.com/api/ui/index.html
-    ```
-
-    Redirect URIs are case-sensitive and must match the complete URL returned by
-    `/api/ui/config`. Keep the existing
-    `https://<function-app-name>.azurewebsites.net/api/ui/index.html` redirect URI
-    until the new hostname has been tested and all bookmarks have been migrated.
-    The API Application ID URI and audience, such as `api://<application-client-id>`,
-    do not change.
-6. Test the configuration in this order:
-
-    - `https://autopilot.contoso.com/api/ui/config` returns the frontend
-      configuration and uses `https://autopilot.contoso.com` for its URLs.
-    - `https://autopilot.contoso.com/api/ui/index.html` loads without a TLS
-      warning.
-    - Interactive sign-in succeeds and a test CSV can be submitted.
-
-The OOBE helper can now open the friendly URL directly:
-
-```powershell
-.\scripts\Start-IntuneAutopilotImporter.ps1 `
-          -WebUrl 'https://autopilot.contoso.com/api/ui/index.html'
-```
-
-The endpoint values in `client.settings.json` may continue to use the default
-`azurewebsites.net` hostname. The friendly alias is required there only when
-the PowerShell client should also call the APIs through that hostname.
-
-For background and current platform restrictions, see the Microsoft guidance
-for [mapping an existing custom domain](https://learn.microsoft.com/azure/app-service/app-service-web-tutorial-custom-domain),
-[binding a TLS certificate](https://learn.microsoft.com/azure/app-service/configure-ssl-bindings),
-and [configuring SPA redirect URIs](https://learn.microsoft.com/entra/identity-platform/reply-url).
-
 ## Troubleshooting
 
 ### PowerShell Module or Client Configuration Does Not Work
@@ -1064,7 +1073,7 @@ recreate it from the deployed Azure resources. The signed-in account must be
 able to read the Function App's Easy Auth configuration:
 
 ```powershell
-$createdSettings = New-AutopilotClientConfiguration `
+$createdSettings = New-AutoPilotImporterClientConfiguration `
     -SubscriptionId '<Subscription-ID>' `
     -ResourceGroupName '<Resource-Group-Name>' `
     -TenantId '<Tenant-ID>' `
@@ -1100,34 +1109,147 @@ configuration. Do not place `client.settings.json.example` in the module
 directory without replacing all placeholder values and renaming it to
 `client.settings.json`.
 
+## Appendix: Use a Company DNS Name
+
+The web frontend can be published under a company-owned DNS name such as
+`autopilot.contoso.com` instead of exposing the generated Function App hostname
+to users. The resulting frontend URL is:
+
+```text
+https://autopilot.contoso.com/api/ui/index.html
+```
+
+This requires four coordinated configurations. A DNS record alone is not
+sufficient:
+
+- A public company DNS subdomain
+- A custom-domain assignment on the Azure Function App
+- A valid TLS certificate and hostname binding
+- A matching redirect URI on the `Autopilot Import Web` Entra application
+
+Keep the native `https://<function-app-name>.azurewebsites.net` hostname active
+during and after the migration. It remains useful for diagnostics and is
+required when `Update-AutopilotImport.ps1 -FunctionUrl` discovers the Azure
+deployment.
+
+### 1. Create the Company DNS Records
+
+In the Azure portal, open the deployed Function App and select
+**Settings > Custom domains > Add custom domain**. Enter the complete company
+hostname, for example `autopilot.contoso.com`. Azure displays the values needed
+to validate ownership. Create the following public records in the company's DNS
+zone:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| CNAME | `autopilot` | `<function-app-name>.azurewebsites.net` |
+| TXT | `asuid.autopilot` | Custom Domain Verification ID shown by Azure |
+
+The record names above assume the DNS zone is `contoso.com`. Some DNS providers
+expect only the relative names `autopilot` and `asuid.autopilot`; others expect
+the complete names. Do not include `https://` or a URL path in a DNS record.
+Keep the TXT record after validation because it proves ownership and helps
+protect the hostname from subdomain takeover.
+
+Wait for DNS propagation, then use **Validate** in the Azure portal and add the
+custom domain to the Function App. A successful DNS lookup does not by itself
+complete the Azure hostname assignment.
+
+### 2. Enable HTTPS for the Company Hostname
+
+Configure an **SNI SSL** binding for the custom hostname. Use an App Service
+Managed Certificate when it is available for the selected Function hosting
+plan, or bind a valid certificate uploaded directly or sourced from Azure Key
+Vault. The certificate must include `autopilot.contoso.com` in its subject or
+Subject Alternative Name and must contain the complete certificate chain.
+
+Do not distribute the company URL until Azure reports the custom domain as
+**Secured** and a browser opens it without a certificate warning. Establish a
+renewal process when the certificate is not managed automatically by Azure.
+
+### 3. Add the Entra Redirect URI
+
+In **Microsoft Entra ID > App registrations**, open the separate
+`Autopilot Import Web` application. Under **Authentication > Single-page
+application**, add this exact redirect URI:
+
+```text
+https://autopilot.contoso.com/api/ui/index.html
+```
+
+Redirect URIs are case-sensitive and must match the complete URL returned by
+`https://autopilot.contoso.com/api/ui/config`. Keep the existing
+`https://<function-app-name>.azurewebsites.net/api/ui/index.html` redirect URI
+until the company hostname has been tested and all bookmarks have been
+migrated. The API Application ID URI and audience, such as
+`api://<application-client-id>`, do not change.
+
+### 4. Validate the Company URL
+
+Test the configuration in this order:
+
+1. Confirm that `https://autopilot.contoso.com/api/ui/config` returns the
+   frontend configuration and that its endpoint URLs use the company hostname.
+2. Open `https://autopilot.contoso.com/api/ui/index.html` in a private browser
+   window and confirm that it loads without a TLS warning.
+3. Sign in with an authorized test account and submit a test CSV.
+4. Confirm that the import status reaches `complete`.
+
+The OOBE helper can then open the company URL directly:
+
+```powershell
+.\scripts\Start-IntuneAutopilotImporter.ps1 `
+    -WebUrl 'https://autopilot.contoso.com/api/ui/index.html'
+```
+
+The endpoint values in `client.settings.json` may continue to use the native
+`azurewebsites.net` hostname. Change them to the company hostname only when the
+PowerShell client must also call the APIs through that hostname. For deployment
+discovery and updates, continue to use the native hostname:
+
+```powershell
+.\Update-AutopilotImport.ps1 `
+    -FunctionUrl 'https://<function-app-name>.azurewebsites.net' `
+    -WhatIf
+```
+
+For current platform details, see the Microsoft guidance for
+[mapping an existing custom domain](https://learn.microsoft.com/azure/app-service/app-service-web-tutorial-custom-domain),
+[binding a TLS certificate](https://learn.microsoft.com/azure/app-service/configure-ssl-bindings),
+and [configuring SPA redirect URIs](https://learn.microsoft.com/entra/identity-platform/reply-url).
+
 ## Appendix: Developer Information
+
+See [DEVELOPER.md](DEVELOPER.md) for the complete repository layout, local build
+process, installation package mapping, CI sequence, and build troubleshooting.
 
 ### Build the Frontend Locally
 
-The frontend source is located under `web`, while the Azure Function that
-serves it is located under `WebFrontend`. Build and test it with:
+The frontend source is located under `src/Web`, while the Azure Function that
+serves it is located under `src/FunctionApp/WebFrontend`. Build and test it with:
 
 ```powershell
-Set-Location .\web
+Set-Location .\src\Web
 npm ci
 npm run check
 ```
 
 `npm run check` executes the frontend unit tests and creates the production
-bundle under `WebFrontend\wwwroot`. The generated `web\node_modules`,
-`web\tsconfig.tsbuildinfo`, and `WebFrontend\wwwroot` paths are intentionally
-ignored by Git and are recreated during a local build or deployment.
+bundle under `src\FunctionApp\WebFrontend\wwwroot`. The generated
+`src\Web\node_modules`, `src\Web\tsconfig.tsbuildinfo`, and
+`src\FunctionApp\WebFrontend\wwwroot` paths are intentionally ignored by Git
+and are recreated during a local build or deployment.
 
 ### Publish the OOBE Helper to PowerShell Gallery
 
 The standalone gallery script is
-`scripts\Start-IntuneAutopilotImporter.ps1`. Its `PSScriptInfo` version is
+`src\Scripts\Start-IntuneAutopilotImporter.ps1`. Its `PSScriptInfo` version is
 updated together with the project version by
-`scripts\Update-ProjectVersion.ps1`. Validate its metadata before publishing:
+`src\Scripts\Update-ProjectVersion.ps1`. Validate its metadata before publishing:
 
 ```powershell
 Test-ScriptFileInfo `
-    -Path .\scripts\Start-IntuneAutopilotImporter.ps1
+    -Path .\src\Scripts\Start-IntuneAutopilotImporter.ps1
 ```
 
 Test the complete workflow against a non-production Function App before
@@ -1136,7 +1258,7 @@ in the interactive PowerShell session; do not store the key in source control:
 
 ```powershell
 Publish-Script `
-    -Path .\scripts\Start-IntuneAutopilotImporter.ps1 `
+    -Path .\src\Scripts\Start-IntuneAutopilotImporter.ps1 `
     -Repository PSGallery `
     -NuGetApiKey (Read-Host 'PowerShell Gallery API key')
 ```
@@ -1157,7 +1279,7 @@ The workflow validates the pull request source, while the server-side rule preve
 ### Tests
 
 ```powershell
-Invoke-Pester .\tests\AutopilotImport.Tests.ps1
+Invoke-Pester .\src\Tests\AutopilotImport.Tests.ps1
 ```
 
 The tests cover Group Tag authorization, manager users and groups, the strict Owner/Contributor boundary, installer rule parsing, and invalid hardware hashes.
@@ -1172,7 +1294,7 @@ After commits are pushed to `main`, the GitHub workflow increments the counter b
 For a local manual increment, run:
 
 ```powershell
-.\scripts\Update-ProjectVersion.ps1
+.\src\Scripts\Update-ProjectVersion.ps1
 ```
 
 ### Operations and Security

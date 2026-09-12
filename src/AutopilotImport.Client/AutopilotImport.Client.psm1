@@ -1,11 +1,44 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
+
+<#
+.SYNOPSIS
+Provides client commands for the secured Windows Autopilot import service.
+
+.DESCRIPTION
+The AutopilotImport.Client module validates and imports Autopilot CSV files,
+queries asynchronous import status, and manages Group Tag authorization and
+manager policies. Commands resolve deployment settings from
+persisted per-user configuration, client.settings.json, or explicit parameters
+and acquire Microsoft Entra access tokens through Az.Accounts.
+
+The module does not store credentials or access tokens. Administrative commands
+that change policies support WhatIf and confirmation through ShouldProcess.
+
+.NOTES
+Requires PowerShell 7.2 or later. Runtime commands require Az.Accounts;
+manager-policy commands additionally require Az.Websites and Az.Resources.
+#>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Assert-ClientCommand {
+    <#
+    .SYNOPSIS
+    Verifies that required PowerShell commands are available.
+
+    .DESCRIPTION
+    Resolves every supplied command name through Get-Command and throws one
+    consolidated error listing commands that are not installed or discoverable.
+
+    .PARAMETER Name
+    Names of commands required by the calling client operation.
+
+    .OUTPUTS
+    None. The function throws when one or more commands are unavailable.
+    #>
     param([Parameter(Mandatory)][string[]] $Name)
 
     $missing = @($Name | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
@@ -15,13 +48,45 @@ function Assert-ClientCommand {
 }
 
 function Resolve-ClientConfiguration {
+    <#
+    .SYNOPSIS
+    Loads client settings and applies explicit parameter overrides.
+
+    .DESCRIPTION
+    Reads a JSON configuration file into a hashtable. When ConfigPath is empty,
+    the persisted user configuration is preferred, followed by a legacy
+    client.settings.json beside the module. Non-null and non-empty override
+    values replace values read from the file. The resolved file path is returned
+    in the ConfigPath entry even when the file does not exist.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .PARAMETER Overrides
+    Setting names and explicit values that take precedence over file values.
+
+    .OUTPUTS
+    System.Collections.Hashtable containing merged settings and ConfigPath.
+    #>
     param(
         [string] $ConfigPath,
         [hashtable] $Overrides = @{}
     )
 
     if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-        $ConfigPath = Join-Path $PSScriptRoot 'client.settings.json'
+        # Prefer the upgrade-stable user file, but keep installed legacy
+        # configurations working until the user bootstraps a profile file.
+        $userConfigPath = Get-DefaultClientConfigurationPath
+        $legacyConfigPath = Join-Path $PSScriptRoot 'client.settings.json'
+        $ConfigPath = if (Test-Path -LiteralPath $userConfigPath -PathType Leaf) {
+            $userConfigPath
+        }
+        elseif (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
+            $legacyConfigPath
+        }
+        else {
+            $userConfigPath
+        }
     }
 
     $configuration = @{}
@@ -37,6 +102,7 @@ function Resolve-ClientConfiguration {
         }
     }
 
+    # Explicit command parameters always take precedence over persisted values.
     foreach ($name in $Overrides.Keys) {
         if ($null -ne $Overrides[$name] -and
             -not [string]::IsNullOrWhiteSpace([string] $Overrides[$name])) {
@@ -48,7 +114,52 @@ function Resolve-ClientConfiguration {
     return $configuration
 }
 
+function Get-DefaultClientConfigurationPath {
+    <#
+    .SYNOPSIS
+    Returns the persistent per-user client configuration path.
+
+    .DESCRIPTION
+    Places client.settings.json below the current user's home directory so the
+    configuration survives module upgrades and does not require write access to
+    the PowerShell module installation directory.
+
+    .OUTPUTS
+    System.String containing the absolute per-user configuration path.
+    #>
+    $userProfilePath = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::UserProfile
+    )
+    if ([string]::IsNullOrWhiteSpace($userProfilePath)) {
+        $userProfilePath = [string] $HOME
+    }
+    if ([string]::IsNullOrWhiteSpace($userProfilePath)) {
+        throw 'The current user profile path could not be determined.'
+    }
+
+    $configurationDirectory = Join-Path `
+        ([IO.Path]::GetFullPath($userProfilePath)) `
+        '.autopilotimporter'
+    return Join-Path $configurationDirectory 'client.settings.json'
+}
+
 function Get-ConfigurationValue {
+    <#
+    .SYNOPSIS
+    Returns one required value from resolved client configuration.
+
+    .PARAMETER Configuration
+    Hashtable returned by Resolve-ClientConfiguration.
+
+    .PARAMETER Name
+    Configuration key to retrieve.
+
+    .PARAMETER Description
+    Human-readable setting name included in the error when the value is absent.
+
+    .OUTPUTS
+    System.String containing the required setting value.
+    #>
     param(
         [Parameter(Mandatory)][hashtable] $Configuration,
         [Parameter(Mandatory)][string] $Name,
@@ -57,12 +168,33 @@ function Get-ConfigurationValue {
 
     $value = [string] $Configuration[$Name]
     if ([string]::IsNullOrWhiteSpace($value)) {
-        throw "$Description is missing. Reinstall the client module, provide -ConfigPath, or pass the value explicitly."
+        throw "$Description is missing. Run Get-AutoPilotImporterClientConfiguration -FunctionUrl '<Function-URL>' once, provide -ConfigPath, or pass the value explicitly."
     }
     return $value
 }
 
 function Get-ClientApiErrorMessage {
+    <#
+    .SYNOPSIS
+    Converts an import API error into an actionable client message.
+
+    .DESCRIPTION
+    Parses the Function error response when available, maps known service error
+    codes to user-facing guidance, and appends the serial number and correlation
+    ID needed to identify the failed request.
+
+    .PARAMETER ErrorRecord
+    Error raised by the import API request.
+
+    .PARAMETER SerialNumber
+    Device serial number associated with the failed request.
+
+    .PARAMETER GroupTag
+    Group Tag requested for the failed import.
+
+    .OUTPUTS
+    System.String containing the formatted error message.
+    #>
     param(
         [Parameter(Mandatory)][System.Management.Automation.ErrorRecord] $ErrorRecord,
         [Parameter(Mandatory)][string] $SerialNumber,
@@ -131,6 +263,21 @@ function Get-ClientApiErrorMessage {
 }
 
 function Add-ClientImportMetadata {
+    <#
+    .SYNOPSIS
+    Adds client-side timing and availability information to an import response.
+
+    .PARAMETER ImportResponse
+    Response object returned by the Autopilot import Function.
+
+    .PARAMETER ImportedAt
+    Local timestamp recorded for the accepted import. Defaults to the current
+    time including its UTC offset.
+
+    .OUTPUTS
+    System.Management.Automation.PSObject containing the original response plus
+    importedAt and intuneAvailabilityNote properties.
+    #>
     param(
         [Parameter(Mandatory)][psobject] $ImportResponse,
         [datetimeoffset] $ImportedAt = [datetimeoffset]::Now
@@ -148,6 +295,22 @@ function Add-ClientImportMetadata {
 }
 
 function Add-ClientImportStatusMetadata {
+    <#
+    .SYNOPSIS
+    Adds a description and final-state flag to an import status response.
+
+    .DESCRIPTION
+    Interprets the Intune import status and extension-attribute status. The
+    response is final when the import failed or both import and extension update
+    completed.
+
+    .PARAMETER ImportStatus
+    Status response returned by the Autopilot import Function.
+
+    .OUTPUTS
+    System.Object containing the original status plus statusDescription and
+    isFinal properties.
+    #>
     param([Parameter(Mandatory)][object] $ImportStatus)
 
     $status = ([string] $ImportStatus.status).ToLowerInvariant()
@@ -193,6 +356,27 @@ function Add-ClientImportStatusMetadata {
 }
 
 function Get-ClientAccessToken {
+    <#
+    .SYNOPSIS
+    Acquires an Azure PowerShell access token for a resource.
+
+    .DESCRIPTION
+    Reuses the current Az context when tenant and optional subscription match.
+    Otherwise, it starts Connect-AzAccount before requesting a token with
+    Get-AzAccessToken. The returned token is normalized to SecureString.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for authentication.
+
+    .PARAMETER ResourceUrl
+    Application ID URI or resource URL for which the token is requested.
+
+    .PARAMETER SubscriptionId
+    Optional Azure subscription that the active context must use.
+
+    .OUTPUTS
+    System.Security.SecureString containing the access token.
+    #>
     param(
         [Parameter(Mandatory)][string] $TenantId,
         [Parameter(Mandatory)][string] $ResourceUrl,
@@ -201,6 +385,8 @@ function Get-ClientAccessToken {
 
     Assert-ClientCommand -Name 'Get-AzContext', 'Connect-AzAccount', 'Get-AzAccessToken'
     $context = Get-AzContext -ErrorAction SilentlyContinue
+    # Reuse the current login only when it belongs to the requested tenant and,
+    # for control-plane calls, the requested subscription.
     $contextMatches = $context -and [string] $context.Tenant.Id -eq $TenantId
     if (-not [string]::IsNullOrWhiteSpace($SubscriptionId)) {
         $contextMatches = $contextMatches -and
@@ -215,6 +401,8 @@ function Get-ClientAccessToken {
     }
 
     $tokenResult = Get-AzAccessToken -ResourceUrl $ResourceUrl
+    # Normalize old and new Az.Accounts token shapes before returning a
+    # SecureString accepted by Invoke-RestMethod -Authentication Bearer.
     $plainToken = if ($tokenResult.Token -is [Security.SecureString]) {
         ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
     }
@@ -225,6 +413,17 @@ function Get-ClientAccessToken {
 }
 
 function Get-CoreModulePath {
+    <#
+    .SYNOPSIS
+    Locates the AutopilotImport runtime module used by client policy commands.
+
+    .DESCRIPTION
+    Supports both the installed client-package layout and the repository or
+    deployment-package layout, returning the first existing core module path.
+
+    .OUTPUTS
+    System.String containing the path to AutopilotImport.psm1.
+    #>
     $candidates = @(
         (Join-Path $PSScriptRoot 'AutopilotImport.psm1'),
         (Join-Path $PSScriptRoot '..\AutopilotImport\AutopilotImport.psm1')
@@ -237,48 +436,190 @@ function Get-CoreModulePath {
     return $modulePath
 }
 
-function Get-AutopilotClientConfiguration {
+function Get-AutoPilotImporterClientConfiguration {
     <#
     .SYNOPSIS
     Displays the active Autopilot Import client configuration.
 
     .DESCRIPTION
-    Reads client.settings.json from the installed module or from ConfigPath and
-    returns the Azure subscription, tenant, resource group, Function App, API,
-    management, and web application settings. The command validates that all
-    required settings are present. WebClientId is returned when the deployment
-    configuration contains it.
+    With FunctionUrl, retrieves the public runtime configuration from the
+    Function App and persists it in the current user's profile. Without
+    FunctionUrl, reads the previously persisted configuration. A legacy
+    client.settings.json beside the module remains supported when no user
+    configuration exists.
+
+    The runtime configuration contains no credentials, secrets, or access
+    tokens. Azure subscription and resource group values are optional because
+    the Function runtime does not expose Azure control-plane metadata.
+
+    .PARAMETER FunctionUrl
+    HTTPS URL of the Function App. The URL may be the Function origin or any URL
+    below that origin. The command retrieves /api/ui/config from the same host.
 
     .PARAMETER ConfigPath
-    Optional path to a client.settings.json file. When omitted, the command
-    reads client.settings.json from the module directory.
+    Optional path at which the retrieved configuration is stored or from which
+    an existing configuration is read. When omitted, the command uses
+    ~/.autopilotimporter/client.settings.json.
 
     .EXAMPLE
-    Get-AutopilotClientConfiguration
+    Get-AutoPilotImporterClientConfiguration `
+        -FunctionUrl 'https://func-autopilot-import.azurewebsites.net'
 
-    Displays the configuration installed with the client module.
+    Retrieves the Function runtime configuration, stores it in the user profile,
+    and returns the resolved values.
 
     .EXAMPLE
-    Get-AutopilotClientConfiguration `
-        -ConfigPath 'C:\AutopilotImport\client.settings.json' |
-        Format-List
+    Get-AutoPilotImporterClientConfiguration | Format-List
 
-    Displays all values from an explicitly selected configuration file.
+    Displays the configuration persisted by an earlier bootstrap call.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
 
     .OUTPUTS
     PSCustomObject containing the resolved client configuration.
     #>
     [CmdletBinding()]
     param(
+        [ValidatePattern('^https://')]
+        [string] $FunctionUrl,
+
         [string] $ConfigPath
     )
+
+    if (-not [string]::IsNullOrWhiteSpace($FunctionUrl)) {
+        $functionUri = [uri] $FunctionUrl
+        if (-not $functionUri.IsAbsoluteUri -or $functionUri.Scheme -ne 'https') {
+            throw 'FunctionUrl must be an absolute HTTPS URL.'
+        }
+
+        # Accept any URL below the Function host, but always discover settings
+        # from the well-known endpoint on that same origin.
+        $origin = $functionUri.GetLeftPart([UriPartial]::Authority)
+        $runtimeConfigurationUrl = "$origin/api/ui/config"
+        try {
+            $runtimeConfiguration = Invoke-RestMethod `
+                -Method Get `
+                -Uri $runtimeConfigurationUrl `
+                -ErrorAction Stop
+        }
+        catch {
+            throw "Could not retrieve the Autopilot Import client configuration from '$runtimeConfigurationUrl'. $($_.Exception.Message)"
+        }
+
+        # Copy response properties into a hashtable so missing optional fields
+        # remain safe to inspect while StrictMode is enabled.
+        $runtimeSettings = @{}
+        foreach ($property in $runtimeConfiguration.PSObject.Properties) {
+            $runtimeSettings[$property.Name] = $property.Value
+        }
+        $clientId = [string] $runtimeSettings['clientId']
+        $authority = [string] $runtimeSettings['authority']
+        $scope = [string] $runtimeSettings['scope']
+        $importUrl = [string] $runtimeSettings['importUrl']
+        $scopeSuffix = '/DeviceHash.Import'
+        if ([string]::IsNullOrWhiteSpace($clientId) -or
+            [string]::IsNullOrWhiteSpace($authority) -or
+            [string]::IsNullOrWhiteSpace($scope) -or
+            [string]::IsNullOrWhiteSpace($importUrl)) {
+            throw "The Function runtime configuration from '$runtimeConfigurationUrl' is incomplete."
+        }
+
+        $parsedClientId = [guid]::Empty
+        if (-not [guid]::TryParse($clientId, [ref] $parsedClientId)) {
+            throw "The Function runtime configuration contains an invalid web client ID '$clientId'."
+        }
+
+        $authorityUri = [uri] $authority
+        $tenantId = $authorityUri.AbsolutePath.Trim('/')
+        $parsedTenantId = [guid]::Empty
+        if ($authorityUri.Scheme -ne 'https' -or
+            $authorityUri.Host -ne 'login.microsoftonline.com' -or
+            -not [guid]::TryParse($tenantId, [ref] $parsedTenantId)) {
+            throw "The Function runtime configuration contains an invalid Microsoft Entra authority '$authority'."
+        }
+        if (-not $scope.EndsWith(
+                $scopeSuffix,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw "The Function runtime configuration contains an invalid API scope '$scope'."
+        }
+        # The token audience is the configured scope without its delegated
+        # permission suffix, for example api://<client-id>.
+        $apiApplicationIdUri = $scope.Substring(
+            0,
+            $scope.Length - $scopeSuffix.Length
+        )
+        if (-not $apiApplicationIdUri.StartsWith(
+                'api://',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw "The Function runtime configuration contains an invalid API audience '$apiApplicationIdUri'."
+        }
+
+        # Do not persist a service endpoint redirected to another host by a
+        # malformed or compromised discovery response.
+        $importUri = [uri] $importUrl
+        if ($importUri.Scheme -ne 'https' -or
+            $importUri.GetLeftPart([UriPartial]::Authority) -ne $origin) {
+            throw 'The Function runtime configuration contains an import URL from a different origin.'
+        }
+
+        $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+            Get-DefaultClientConfigurationPath
+        }
+        else {
+            [IO.Path]::GetFullPath($ConfigPath)
+        }
+        $configurationDirectory = Split-Path `
+            -Parent `
+            -Path $resolvedConfigPath
+        New-Item `
+            -Path $configurationDirectory `
+            -ItemType Directory `
+            -Force | Out-Null
+
+        $functionAppName = if ($functionUri.Host.EndsWith(
+                '.azurewebsites.net',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $functionUri.Host.Split('.')[0]
+        }
+        else {
+            $null
+        }
+        $settings = [ordered]@{
+            functionUrl         = $importUri.AbsoluteUri
+            managementUrl       = "$origin/api/management/tag-policy"
+            apiApplicationIdUri = $apiApplicationIdUri
+            tenantId            = $parsedTenantId.ToString()
+            functionAppName     = $functionAppName
+            webUrl              = "$origin/api/ui/index.html"
+            webClientId         = $parsedClientId.ToString()
+        }
+        # Write completely before replacing the profile file so interrupted
+        # writes cannot leave a partially serialized configuration behind.
+        $temporaryPath = "$resolvedConfigPath.tmp"
+        try {
+            $settings | ConvertTo-Json | Set-Content `
+                -LiteralPath $temporaryPath `
+                -Encoding utf8NoBOM
+            Move-Item `
+                -LiteralPath $temporaryPath `
+                -Destination $resolvedConfigPath `
+                -Force
+        }
+        finally {
+            Remove-Item `
+                -LiteralPath $temporaryPath `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
 
     $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath
     $resolvedConfigPath = [IO.Path]::GetFullPath(
         [string] $configuration.ConfigPath
     )
     if (-not (Test-Path -LiteralPath $resolvedConfigPath -PathType Leaf)) {
-        throw "Client configuration '$resolvedConfigPath' was not found. Reinstall the client module or provide -ConfigPath."
+        throw "Client configuration '$resolvedConfigPath' was not found. Run Get-AutoPilotImporterClientConfiguration -FunctionUrl '<Function-URL>' once or provide -ConfigPath."
     }
 
     $requiredSettings = [ordered]@{
@@ -286,9 +627,6 @@ function Get-AutopilotClientConfiguration {
         managementUrl       = 'management URL'
         apiApplicationIdUri = 'API application ID URI'
         tenantId            = 'Tenant ID'
-        subscriptionId      = 'Subscription ID'
-        resourceGroupName   = 'resource group name'
-        functionAppName     = 'Function App name'
         webUrl              = 'web URL'
     }
     $resolvedSettings = @{}
@@ -300,20 +638,20 @@ function Get-AutopilotClientConfiguration {
     }
 
     [pscustomobject][ordered]@{
-        SubscriptionId      = $resolvedSettings.subscriptionId
+        SubscriptionId      = [string] $configuration['subscriptionId']
         TenantId            = $resolvedSettings.tenantId
-        ResourceGroupName   = $resolvedSettings.resourceGroupName
-        FunctionAppName     = $resolvedSettings.functionAppName
+        ResourceGroupName   = [string] $configuration['resourceGroupName']
+        FunctionAppName     = [string] $configuration['functionAppName']
         FunctionUrl         = $resolvedSettings.functionUrl
         ManagementUrl       = $resolvedSettings.managementUrl
         ApiApplicationIdUri = $resolvedSettings.apiApplicationIdUri
         WebUrl              = $resolvedSettings.webUrl
-        WebClientId         = [string] $configuration.webClientId
+        WebClientId         = [string] $configuration['webClientId']
         ConfigPath          = $resolvedConfigPath
     }
 }
 
-function New-AutopilotClientConfiguration {
+function New-AutoPilotImporterClientConfiguration {
     <#
     .SYNOPSIS
     Creates client.settings.json for an existing Autopilot Import deployment.
@@ -344,7 +682,7 @@ function New-AutopilotClientConfiguration {
     Replaces an existing client.settings.json in the output directory.
 
     .EXAMPLE
-    New-AutopilotClientConfiguration `
+    New-AutoPilotImporterClientConfiguration `
         -SubscriptionId '00000000-0000-0000-0000-000000000000' `
         -ResourceGroupName 'rg-autopilot-import' `
         -TenantId '11111111-1111-1111-1111-111111111111' `
@@ -353,7 +691,7 @@ function New-AutopilotClientConfiguration {
     Creates client.settings.json in the current directory.
 
     .EXAMPLE
-    New-AutopilotClientConfiguration `
+    New-AutoPilotImporterClientConfiguration `
         -SubscriptionId '00000000-0000-0000-0000-000000000000' `
         -ResourceGroupName 'rg-autopilot-import' `
         -TenantId '11111111-1111-1111-1111-111111111111' `
@@ -362,6 +700,9 @@ function New-AutopilotClientConfiguration {
         -Force
 
     Creates or replaces C:\AutopilotImport\client.settings.json.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
 
     .OUTPUTS
     System.IO.FileInfo. Returns the created client.settings.json file.
@@ -469,14 +810,59 @@ function Import-AutopilotDevice {
     .SYNOPSIS
     Imports Windows Autopilot devices from a CSV through the secured Function.
 
+    .DESCRIPTION
+    Validates an Autopilot hardware-hash CSV and submits one authenticated API
+    request per device. Deployment settings are read from client.settings.json
+    unless explicit connection parameters override them. ValidateOnly performs
+    all local CSV checks without signing in or calling the service.
+
     .PARAMETER CsvPath
-    CSV containing Device Serial Number and Hardware Hash columns.
+    Path to a non-empty CSV containing Device Serial Number and Hardware Hash
+    columns. Each hardware hash must be valid, non-empty Base64.
 
     .PARAMETER GroupTag
     Group Tag requested for every device in the CSV.
 
+    .PARAMETER FunctionUrl
+    HTTPS URL of the Autopilot import Function endpoint. Overrides functionUrl
+    from client.settings.json.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API, beginning with
+    api://. Overrides apiApplicationIdUri from client.settings.json.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire the API access token. Overrides
+    tenantId from client.settings.json.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json. The persisted user configuration is
+    used when this parameter is omitted.
+
     .PARAMETER ValidateOnly
     Validates the CSV without authentication or API calls.
+
+    .EXAMPLE
+    Import-AutopilotDevice `
+        -CsvPath '.\AutopilotHWID.csv' `
+        -GroupTag 'Shared'
+
+    Validates and imports every device using the installed client settings.
+
+    .EXAMPLE
+    Import-AutopilotDevice `
+        -CsvPath '.\AutopilotHWID.csv' `
+        -GroupTag 'Shared' `
+        -ValidateOnly
+
+    Validates the CSV and returns a summary without authenticating or importing.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject validation summary when ValidateOnly is set. Otherwise,
+    returns one enriched service response per submitted device.
     #>
     [CmdletBinding()]
     param(
@@ -518,6 +904,8 @@ function Import-AutopilotDevice {
         throw "The Autopilot CSV is missing required columns: $($missingColumns -join ', ')."
     }
 
+    # Materialize and validate every row before authentication or network I/O,
+    # preventing a partially submitted batch when a later row is malformed.
     $devices = for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
         $serialNumber = [string] $rows[$rowIndex].'Device Serial Number'
         $hardwareIdentifier = [string] $rows[$rowIndex].'Hardware Hash'
@@ -588,14 +976,58 @@ function Get-AutopilotImportStatus {
     .SYNOPSIS
     Returns the current Intune processing status of an Autopilot import.
 
+    .DESCRIPTION
+    Calls the secured import endpoint with an import ID and enriches the service
+    response with statusDescription and isFinal. With Wait, the command polls
+    until the import and extension-attribute processing reaches a final state or
+    the timeout expires.
+
+    .PARAMETER ImportId
+    Import identifier returned by Import-AutopilotDevice.
+
+    .PARAMETER FunctionUrl
+    HTTPS URL of the Autopilot import Function endpoint. Overrides functionUrl
+    from client.settings.json.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API. Overrides the
+    configured apiApplicationIdUri value.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire an API token.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
     .PARAMETER Wait
-    Polls until Intune returns complete or error, or TimeoutSeconds expires.
+    Polls until the result is final or TimeoutSeconds expires.
 
     .PARAMETER PollIntervalSeconds
     Seconds between requests when Wait is specified. The default is 15.
 
     .PARAMETER TimeoutSeconds
     Maximum wait time in seconds. The default is 1800 (30 minutes).
+
+    .EXAMPLE
+    Get-AutopilotImportStatus `
+        -ImportId '11111111-1111-1111-1111-111111111111'
+
+    Returns the current status without waiting.
+
+    .EXAMPLE
+    Get-AutopilotImportStatus `
+        -ImportId '11111111-1111-1111-1111-111111111111' `
+        -Wait `
+        -PollIntervalSeconds 30 `
+        -TimeoutSeconds 1800
+
+    Polls every 30 seconds for up to 30 minutes.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject containing the service status, statusDescription, and isFinal.
     #>
     [CmdletBinding()]
     param(
@@ -653,11 +1085,148 @@ function Get-AutopilotImportStatus {
         if (-not $Wait -or $result.isFinal) {
             return $result
         }
+        # Include the next sleep interval so polling never intentionally waits
+        # beyond the caller's timeout.
         if ($stopwatch.Elapsed.TotalSeconds + $PollIntervalSeconds -gt $TimeoutSeconds) {
             throw "Autopilot import '$ImportId' did not reach a final state within $TimeoutSeconds seconds. Last status: $($result.status)."
         }
         Start-Sleep -Seconds $PollIntervalSeconds
     } while ($true)
+}
+
+function Get-AutopilotImportHistory {
+    <#
+    .SYNOPSIS
+    Returns Autopilot import operations for an application manager.
+
+    .DESCRIPTION
+    Calls the manager-protected import history endpoint and returns recent
+    imported Windows Autopilot device identities with their Intune status and
+    error details. The caller must be allowed by the application's manager
+    policy or, when enabled, have an Intune Role Administrator assignment.
+
+    Existing client configurations remain supported: when ImportHistoryUrl is
+    omitted, the endpoint is derived from managementUrl.
+
+    .PARAMETER Top
+    Maximum number of import operations to return. The default is 100 and the
+    supported range is 1 through 1000.
+
+    .PARAMETER ImportHistoryUrl
+    HTTPS URL of the import history management endpoint. Overrides the URL
+    derived from managementUrl in client.settings.json.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire an API token.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .PARAMETER Raw
+    Returns the unchanged response envelope, including count and correlationId.
+
+    .EXAMPLE
+    Get-AutopilotImportHistory
+
+    Returns up to 100 import operations using client.settings.json.
+
+    .EXAMPLE
+    Get-AutopilotImportHistory -Top 500 |
+        Where-Object Status -eq 'error'
+
+    Returns failed operations from the latest 500 records available in Intune.
+
+    .OUTPUTS
+    PSCustomObject import records. With Raw, returns the unchanged API response.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateRange(1, 1000)]
+        [int] $Top = 100,
+
+        [ValidatePattern('^https://')]
+        [string] $ImportHistoryUrl,
+
+        [ValidatePattern('^api://')]
+        [string] $ApiApplicationIdUri,
+
+        [string] $TenantId,
+
+        [string] $ConfigPath,
+
+        [switch] $Raw
+    )
+
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        importHistoryUrl = $ImportHistoryUrl
+        apiApplicationIdUri = $ApiApplicationIdUri
+        tenantId = $TenantId
+    }
+    $url = if ($configuration.ContainsKey('importHistoryUrl') -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $configuration.importHistoryUrl)) {
+        [string] $configuration.importHistoryUrl
+    }
+    else {
+        $managementUrl = Get-ConfigurationValue `
+            $configuration `
+            managementUrl `
+            'ManagementUrl'
+        if ($managementUrl -notmatch '/tag-policy/?$') {
+            throw "ImportHistoryUrl cannot be derived from managementUrl '$managementUrl'. Provide -ImportHistoryUrl."
+        }
+        $managementUrl -replace '/tag-policy/?$', '/imports'
+    }
+    $audience = Get-ConfigurationValue `
+        $configuration `
+        apiApplicationIdUri `
+        'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue `
+        $configuration `
+        tenantId `
+        'TenantId'
+    $token = Get-ClientAccessToken $resolvedTenantId $audience
+
+    try {
+        $response = Invoke-RestMethod `
+            -Method Get `
+            -Uri "$($url.TrimEnd('/'))?top=$Top" `
+            -Authentication Bearer `
+            -Token $token `
+            -ErrorAction Stop
+    }
+    catch {
+        $serviceResponse = $null
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $serviceResponse = $_.ErrorDetails.Message | ConvertFrom-Json
+            }
+            catch {
+                $serviceResponse = $null
+            }
+        }
+        $message = 'Could not retrieve the Autopilot import history.'
+        if ($serviceResponse -and
+            $serviceResponse.PSObject.Properties['error']) {
+            $message += " Service error: $($serviceResponse.error)."
+        }
+        else {
+            $message += " $($_.Exception.Message)"
+        }
+        if ($serviceResponse -and
+            $serviceResponse.PSObject.Properties['correlationId']) {
+            $message += " Correlation ID: $($serviceResponse.correlationId)."
+        }
+        throw $message
+    }
+
+    if ($Raw) {
+        return $response
+    }
+    return @($response.imports)
 }
 
 function Get-AutopilotTagPolicy {
@@ -674,6 +1243,38 @@ function Get-AutopilotTagPolicy {
     Returns the unchanged response from the management API without resolving
     group display names. Use this switch for automation that relies on the
     response envelope and its policy property.
+
+    .PARAMETER ManagementUrl
+    HTTPS URL of the Group Tag policy management endpoint. Overrides
+    managementUrl from client.settings.json.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used for API and Microsoft Graph authentication.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Get-AutopilotTagPolicy
+
+    Returns policy rules with Entra group display names.
+
+    .EXAMPLE
+    $response = Get-AutopilotTagPolicy -Raw
+    $response.policy
+
+    Returns the unchanged API response for automation.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject policy rows with GroupName, Tags, GroupId, and optional
+    restricted management administrative unit and correlation ID. With Raw,
+    returns the unchanged management API response.
     #>
     [CmdletBinding()]
     param(
@@ -702,6 +1303,8 @@ function Get-AutopilotTagPolicy {
         return
     }
 
+    # The Function API returns object IDs; a separate Graph token is required
+    # only to enrich the human-facing output with group display names.
     $graphToken = Get-ClientAccessToken `
         $resolvedTenantId `
         'https://graph.microsoft.com/'
@@ -741,6 +1344,8 @@ function Get-AutopilotTagPolicy {
                 -NotePropertyValue ([string] $response.correlationId)
         }
 
+        # Keep GroupId available to pipelines while presenting the more useful
+        # name and tags in PowerShell's default table view.
         $defaultProperties = [Collections.Generic.List[string]]::new()
         $defaultProperties.Add('GroupName')
         $defaultProperties.Add('Tags')
@@ -781,6 +1386,40 @@ function Add-AutopilotTagPolicy {
     Optional display name of the restricted management administrative unit.
     The policy format applies this MAU to all rules. If omitted, the current
     policy value is retained.
+
+    .PARAMETER ManagementUrl
+    HTTPS URL of the Group Tag policy management endpoint.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used for API and group-name resolution.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Add-AutopilotTagPolicy `
+        -Group 'Autopilot Operators' `
+        -GroupTag 'Shared', 'Kiosk'
+
+    Adds two allowed Group Tags to the uniquely named Entra group.
+
+    .EXAMPLE
+    Add-AutopilotTagPolicy `
+        -Group '11111111-1111-1111-1111-111111111111' `
+        -GroupTag 'Shared' `
+        -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
+        -WhatIf
+
+    Previews a policy update by group object ID and an associated restricted MAU.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject returned by the policy management API when the update runs.
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
@@ -829,6 +1468,8 @@ function Add-AutopilotTagPolicy {
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
 
+    # GUID input avoids a Graph lookup; display names must resolve to exactly
+    # one group to prevent updating the wrong policy principal.
     $parsedGroupId = [guid]::Empty
     $groupDisplayName = $null
     if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
@@ -864,6 +1505,8 @@ function Add-AutopilotTagPolicy {
         -Token $apiToken `
         -ErrorAction Stop
     $currentPolicy = @($currentResponse.policy)
+    # Index the current rules by normalized group ID to merge tags without
+    # discarding unrelated groups or their existing assignments.
     $rulesByGroup = [ordered]@{}
     foreach ($rule in $currentPolicy) {
         $currentGroupId = ([guid] $rule.groupId).ToString()
@@ -875,6 +1518,8 @@ function Add-AutopilotTagPolicy {
             Select-Object -Unique
     )
 
+    # Preserve the configured restricted MAU unless the caller explicitly
+    # supplies a replacement value.
     if ($PSBoundParameters.ContainsKey(
             'RestrictedManagementAdministrativeUnitName')) {
         $mauName = $RestrictedManagementAdministrativeUnitName.Trim()
@@ -945,6 +1590,38 @@ function Remove-AutopilotTagPolicy {
     .PARAMETER GroupTag
     Optional Autopilot Group Tags to remove from the selected group's rule.
     Omit this parameter to remove the complete rule.
+
+    .PARAMETER ManagementUrl
+    HTTPS URL of the Group Tag policy management endpoint.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used for API and group-name resolution.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Remove-AutopilotTagPolicy `
+        -Group 'Autopilot Operators' `
+        -GroupTag 'Kiosk'
+
+    Removes one Group Tag while preserving the group's other tags.
+
+    .EXAMPLE
+    Remove-AutopilotTagPolicy `
+        -Group '11111111-1111-1111-1111-111111111111' `
+        -WhatIf
+
+    Previews removal of the complete policy rule for the group.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject returned by the policy management API when the update runs.
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
@@ -1015,6 +1692,8 @@ function Remove-AutopilotTagPolicy {
         throw "Entra group '$Group' does not have a Group Tag policy rule."
     }
 
+    # Supplying GroupTag means a partial update; omitting it removes the entire
+    # group rule while still preserving every unrelated rule.
     $removeTags = @()
     if ($PSBoundParameters.ContainsKey('GroupTag')) {
         $removeTags = @($GroupTag | ForEach-Object { $_.Trim() } |
@@ -1117,7 +1796,55 @@ function Remove-AutopilotTagPolicy {
 }
 
 function Set-AutopilotTagPolicy {
-    <# .SYNOPSIS Replaces the complete group-to-tag policy. #>
+    <#
+    .SYNOPSIS
+    Replaces the complete group-to-tag policy.
+
+    .DESCRIPTION
+    Validates and replaces all Group Tag authorization rules through the secured
+    management API. Every rule maps one Microsoft Entra group object ID to one
+    or more permitted Autopilot Group Tags. Rules omitted from the supplied set
+    are removed from the policy.
+
+    .PARAMETER TagAuthorizationRule
+    Complete policy in <group-object-id>=<tag1>,<tag2> format. Each group object
+    ID must be a GUID and each rule must contain at least one Group Tag.
+
+    .PARAMETER RestrictedManagementAdministrativeUnitName
+    Optional display name of the restricted management administrative unit
+    associated with all rules. Supply an empty string to disable automatic
+    administrative-unit membership.
+
+    .PARAMETER ManagementUrl
+    HTTPS URL of the Group Tag policy management endpoint.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire the API token.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json. Values not supplied explicitly are
+    read from this file.
+
+    .EXAMPLE
+    Set-AutopilotTagPolicy `
+        -TagAuthorizationRule @(
+            '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
+            '22222222-2222-2222-2222-222222222222=Engineering'
+        ) `
+        -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
+        -WhatIf
+
+    Validates and previews replacement of the complete policy.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject returned by the policy management API when the update runs.
+    #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(Mandatory)][string[]] $TagAuthorizationRule,
@@ -1132,6 +1859,8 @@ function Set-AutopilotTagPolicy {
         managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
     }
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    # Reuse the runtime module's policy parser so client-side validation stays
+    # identical to the Function's accepted rule format.
     $coreModulePath = Get-CoreModulePath
     Import-Module $coreModulePath -Force
     $policy = @(ConvertTo-TagAuthorizationPolicy `
@@ -1154,7 +1883,63 @@ function Set-AutopilotTagPolicy {
 }
 
 function Update-AutopilotTagPolicyManager {
-    <# .SYNOPSIS Adds and removes explicit Group Tag managers atomically. #>
+    <#
+    .SYNOPSIS
+    Adds and removes explicit Group Tag managers atomically.
+
+    .DESCRIPTION
+    Updates the MANAGER_AUTHORIZATION_POLICY application setting of an existing
+    Autopilot Import Function App. The command preserves the installing user,
+    keeps Intune Role Administrator access enabled, and verifies that the caller
+    has an effective Owner or Contributor assignment on the Function App or a
+    parent scope before applying the change.
+
+    Values not supplied explicitly are resolved from client.settings.json.
+
+    .PARAMETER AddPrincipalId
+    Microsoft Entra object IDs of users or groups to add as explicit Group Tag
+    managers.
+
+    .PARAMETER RemovePrincipalId
+    Microsoft Entra object IDs of users or groups to remove. The identity that
+    installed the solution cannot be removed.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the Function App.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for Azure authentication.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the Function App.
+
+    .PARAMETER FunctionAppName
+    Name of the Autopilot Import Function App to update.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Update-AutopilotTagPolicyManager `
+        -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
+        -RemovePrincipalId '22222222-2222-2222-2222-222222222222'
+
+    Adds one manager and removes another using the installed client settings.
+
+    .EXAMPLE
+    Update-AutopilotTagPolicyManager `
+        -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
+        -WhatIf
+
+    Authenticates, validates authorization, and previews the resulting policy
+    without updating the Function App setting.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
+    #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [guid[]] $AddPrincipalId,
@@ -1192,6 +1977,8 @@ function Update-AutopilotTagPolicyManager {
     $plainToken = if ($managementTokenResult.Token -is [Security.SecureString]) {
         ConvertFrom-SecureString $managementTokenResult.Token -AsPlainText
     } else { [string] $managementTokenResult.Token }
+    # Decode the Azure-issued access token only to identify the signed-in
+    # principal whose effective role assignments must be checked.
     $payload = $plainToken.Split('.')[1].Replace('-', '+').Replace('_', '/')
     $payload = $payload.PadRight($payload.Length + ((4 - $payload.Length % 4) % 4), '=')
     $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
@@ -1203,6 +1990,8 @@ function Update-AutopilotTagPolicyManager {
         throw "Only an Owner or Contributor of Function App '$resolvedFunctionName' may change its Group Tag managers."
     }
 
+    # Round-trip every existing setting because Set-AzWebApp replaces the
+    # complete AppSettings collection rather than patching a single key.
     $appSettings = @{}
     foreach ($setting in @($functionApp.SiteConfig.AppSettings)) {
         $appSettings[[string] $setting.Name] = [string] $setting.Value
@@ -1217,6 +2006,8 @@ function Update-AutopilotTagPolicyManager {
             ForEach-Object { ([guid] $_).ToString() })
     }
     catch { throw "The existing MANAGER_AUTHORIZATION_POLICY is invalid: $($_.Exception.Message)" }
+    # The installer identity is the recovery administrator and must remain in
+    # the policy even when it also appears in the requested removal set.
     if ($installerId -in $removeIds) { throw 'The installing user cannot be removed.' }
     $updatedIds = @(@($additionalIds) + $addIds | Where-Object {
         $_ -notin $removeIds -and $_ -ne $installerId
@@ -1238,7 +2029,56 @@ function Update-AutopilotTagPolicyManager {
 }
 
 function Add-AutopilotTagPolicyManager {
-    <# .SYNOPSIS Adds explicit Group Tag manager users or groups. #>
+    <#
+    .SYNOPSIS
+    Adds explicit users or groups to the Group Tag manager policy.
+
+    .DESCRIPTION
+    Adds Microsoft Entra principal object IDs to the Function App's explicit
+    Group Tag manager list. This command delegates authentication, authorization
+    checks, deduplication, and the update to Update-AutopilotTagPolicyManager.
+
+    .PARAMETER PrincipalId
+    Microsoft Entra object IDs of users or groups to add as managers.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the Function App. The configured value is
+    used when omitted.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for Azure authentication. The configured value
+    is used when omitted.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the Function App. The configured value is used
+    when omitted.
+
+    .PARAMETER FunctionAppName
+    Name of the Function App to update. The configured value is used when
+    omitted.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Add-AutopilotTagPolicyManager `
+        -PrincipalId '11111111-1111-1111-1111-111111111111'
+
+    Adds one explicit manager using the installed client settings.
+
+    .EXAMPLE
+    Add-AutopilotTagPolicyManager `
+        -PrincipalId '11111111-1111-1111-1111-111111111111' `
+        -WhatIf
+
+    Previews the manager policy update.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
+    #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
@@ -1261,7 +2101,58 @@ function Add-AutopilotTagPolicyManager {
 }
 
 function Remove-AutopilotTagPolicyManager {
-    <# .SYNOPSIS Removes explicit Group Tag manager users or groups. #>
+    <#
+    .SYNOPSIS
+    Removes explicit users or groups from the Group Tag manager policy.
+
+    .DESCRIPTION
+    Removes Microsoft Entra principal object IDs from the Function App's
+    explicit Group Tag manager list. The identity that installed the solution
+    remains protected. This command delegates validation and the update to
+    Update-AutopilotTagPolicyManager.
+
+    .PARAMETER PrincipalId
+    Microsoft Entra object IDs of users or groups to remove. The installing
+    identity cannot be removed.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the Function App. The configured value is
+    used when omitted.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for Azure authentication. The configured value
+    is used when omitted.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the Function App. The configured value is used
+    when omitted.
+
+    .PARAMETER FunctionAppName
+    Name of the Function App to update. The configured value is used when
+    omitted.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Remove-AutopilotTagPolicyManager `
+        -PrincipalId '11111111-1111-1111-1111-111111111111'
+
+    Removes one explicit manager using the installed client settings.
+
+    .EXAMPLE
+    Remove-AutopilotTagPolicyManager `
+        -PrincipalId '11111111-1111-1111-1111-111111111111' `
+        -WhatIf
+
+    Previews the manager policy update.
+
+    .INPUTS
+    None. This command does not accept pipeline input.
+
+    .OUTPUTS
+    PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
+    #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
@@ -1284,10 +2175,11 @@ function Remove-AutopilotTagPolicyManager {
 }
 
 Export-ModuleMember -Function @(
-    'New-AutopilotClientConfiguration',
-    'Get-AutopilotClientConfiguration',
+    'New-AutoPilotImporterClientConfiguration',
+    'Get-AutoPilotImporterClientConfiguration',
     'Import-AutopilotDevice',
     'Get-AutopilotImportStatus',
+    'Get-AutopilotImportHistory',
     'Get-AutopilotTagPolicy',
     'Add-AutopilotTagPolicy',
     'Remove-AutopilotTagPolicy',
