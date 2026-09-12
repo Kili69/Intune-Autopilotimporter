@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -11,7 +11,10 @@ Discovers the installed client configuration, reads the current Group Tag
 policy through the Function management API, preserves configured policy
 managers and optional RMAU, and reads the deployed extension attribute and
 region from Azure. It then invokes Install-AutopilotImport.ps1 with the
-existing resource names.
+existing resource names. When this changes Application Insights from a
+previously linked Log Analytics workspace to the integrated workspace in the
+Function resource group, the script identifies the old workspace that can be
+deleted after its remaining use and historical telemetry have been reviewed.
 
 .PARAMETER ConfigPath
 Path to the installed client.settings.json. When omitted, the newest version
@@ -33,6 +36,13 @@ Name of the resource group containing the existing Function App.
 
 .PARAMETER FunctionAppName
 Name of the existing Azure Function App.
+
+.PARAMETER FunctionUrl
+HTTPS URL of the existing Azure Function App, including an optional API path.
+The script derives the Function App name from an azurewebsites.net hostname and
+searches the subscriptions available to the signed-in Azure account to resolve
+the subscription, tenant, and resource group. Values discovered from this URL
+take precedence over an automatically selected client configuration.
 
 .PARAMETER ApiAudience
 Optional API audience override. When omitted, it is read from the installed
@@ -91,6 +101,14 @@ Updates the deployment without prompting for execution confirmation.
 
 .EXAMPLE
 .\Update-AutopilotImport.ps1 `
+    -FunctionUrl 'https://func-autopilot-contoso.azurewebsites.net/api/ui/index.html' `
+    -InstallMissingModules
+
+Discovers the deployment from its Function URL and updates it. The signed-in
+Azure account must be able to read the Function App and its subscription.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 `
     -SubscriptionId '00000000-0000-0000-0000-000000000000' `
     -TenantId '11111111-1111-1111-1111-111111111111' `
     -ResourceGroupName 'rg-autopilot-import' `
@@ -130,6 +148,8 @@ param(
     [string] $ResourceGroupName,
 
     [string] $FunctionAppName,
+
+    [string] $FunctionUrl,
 
     [ValidatePattern('^api://')]
     [string] $ApiAudience,
@@ -330,6 +350,113 @@ function Get-AutopilotUpdateConfigurationValue {
     return $null
 }
 
+function Resolve-AutopilotFunctionAppFromUrl {
+    <#
+    .SYNOPSIS
+    Resolves an Azure Function App resource from its public URL.
+
+    .DESCRIPTION
+    Derives the Function App name from an azurewebsites.net hostname and
+    searches either one requested subscription or every subscription available
+    to the signed-in Azure account. Exactly one matching Function App is
+    required.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Url,
+
+        [string] $SubscriptionId
+    )
+
+    $parsedUrl = $null
+    if (-not [uri]::TryCreate(
+            $Url.Trim(),
+            [UriKind]::Absolute,
+            [ref] $parsedUrl
+        ) -or $parsedUrl.Scheme -ne 'https') {
+        throw "FunctionUrl must be an absolute HTTPS URL. Received '$Url'."
+    }
+    if ($parsedUrl.Host -notmatch `
+        '^(?<name>[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?)\.azurewebsites\.net$') {
+        throw "FunctionUrl must use the Function App's azurewebsites.net hostname. Received '$($parsedUrl.Host)'."
+    }
+    $functionAppName = $Matches.name
+
+    $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+        @(Get-AzSubscription -ErrorAction Stop)
+    }
+    else {
+        @(Get-AzSubscription `
+            -SubscriptionId $SubscriptionId `
+            -ErrorAction Stop)
+    }
+    if ($subscriptions.Count -eq 0) {
+        throw 'No accessible Azure subscriptions were found for Function URL discovery.'
+    }
+
+    $matches = [Collections.Generic.List[object]]::new()
+    foreach ($subscription in $subscriptions) {
+        try {
+            Set-AzContext `
+                -Subscription $subscription.Id `
+                -Tenant $subscription.TenantId `
+                -WhatIf:$false `
+                -ErrorAction Stop | Out-Null
+            $filter = [uri]::EscapeDataString(
+                "resourceType eq 'Microsoft.Web/sites' and name eq '$functionAppName'"
+            )
+            $response = Invoke-AzRestMethod `
+                -Method GET `
+                -Path "/subscriptions/$($subscription.Id)/resources?api-version=2021-04-01&`$filter=$filter" `
+                -ErrorAction Stop
+            if ($response.StatusCode -ge 400) {
+                Write-Verbose "Function URL discovery returned HTTP $($response.StatusCode) for subscription '$($subscription.Id)'."
+                continue
+            }
+            foreach ($resource in @(($response.Content | ConvertFrom-Json).value)) {
+                if ([string] $resource.type -ine 'Microsoft.Web/sites' -or
+                    [string] $resource.name -ine $functionAppName) {
+                    continue
+                }
+                $resourceIdMatch = [regex]::Match(
+                    [string] $resource.id,
+                    '^/subscriptions/(?<subscription>[^/]+)/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Web/sites/(?<name>[^/]+)$',
+                    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+                )
+                if ($resourceIdMatch.Success) {
+                    $matches.Add([pscustomobject]@{
+                            SubscriptionId   = $resourceIdMatch.Groups['subscription'].Value
+                            TenantId         = [string] $subscription.TenantId
+                            ResourceGroupName = $resourceIdMatch.Groups['resourceGroup'].Value
+                            FunctionAppName  = $resourceIdMatch.Groups['name'].Value
+                            FunctionUrl      = "https://$($parsedUrl.Host)"
+                        })
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Function URL discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
+        }
+    }
+
+    if ($matches.Count -eq 0) {
+        $scopeDescription = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+            'the accessible Azure subscriptions'
+        }
+        else {
+            "subscription '$SubscriptionId'"
+        }
+        throw "Function App '$functionAppName' was not found in $scopeDescription. Verify the URL and Azure access."
+    }
+    if ($matches.Count -gt 1) {
+        $locations = $matches | ForEach-Object {
+            "$($_.SubscriptionId)/$($_.ResourceGroupName)"
+        }
+        throw "Function URL '$Url' matched more than one accessible Function App: $($locations -join ', '). Use -SubscriptionId to select one deployment."
+    }
+    return $matches[0]
+}
+
 function Get-AutopilotClientToolsPath {
     <#
     .SYNOPSIS
@@ -482,6 +609,72 @@ function Get-UpdateWebClientId {
     return $webClientId
 }
 
+function Get-UpdateApplicationInsightsWorkspaceResourceId {
+    <#
+    .SYNOPSIS
+    Reads the workspace linked to the existing Application Insights resource.
+
+    .DESCRIPTION
+    Returns no value when Application Insights or its workspace linkage cannot
+    be read. Workspace migration detection is informational and must not block
+    an otherwise valid update.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [string] $SubscriptionId,
+
+        [Parameter(Mandatory)]
+        [string] $ResourceGroupName,
+
+        [Parameter(Mandatory)]
+        [string] $FunctionAppName
+    )
+
+    $applicationInsightsResourceId = `
+        "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Insights/components/$FunctionAppName-insights"
+    try {
+        $response = Invoke-AzRestMethod `
+            -Method GET `
+            -Path "${applicationInsightsResourceId}?api-version=2020-02-02"
+        if ($response.StatusCode -ge 400) {
+            Write-Verbose "Application Insights workspace lookup returned HTTP $($response.StatusCode)."
+            return $null
+        }
+
+        $applicationInsights = $response.Content | ConvertFrom-Json
+        return [string] $applicationInsights.properties.WorkspaceResourceId
+    }
+    catch {
+        Write-Verbose "Application Insights workspace lookup failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Write-UpdateLogAnalyticsWorkspaceMigrationNotice {
+    <#
+    .SYNOPSIS
+    Reports an old workspace after Application Insights was migrated.
+    #>
+    param(
+        [string] $PreviousWorkspaceResourceId,
+
+        [Parameter(Mandatory)]
+        [string] $IntegratedWorkspaceResourceId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PreviousWorkspaceResourceId) -or
+        $PreviousWorkspaceResourceId.TrimEnd('/').Equals(
+            $IntegratedWorkspaceResourceId.TrimEnd('/'),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+
+    Write-Warning @"
+Application Insights now uses the integrated Log Analytics workspace '$IntegratedWorkspaceResourceId'. The previously linked workspace '$PreviousWorkspaceResourceId' can be deleted if no other resource uses it and its historical telemetry is no longer required.
+"@
+}
+
 function Test-AzurePermissionPattern {
     param(
         [Parameter(Mandatory)]
@@ -510,6 +703,7 @@ function Assert-AzureUpdatePermissions {
         'Microsoft.Storage/storageAccounts/write'
         'Microsoft.Storage/storageAccounts/blobServices/write'
         'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.OperationalInsights/workspaces/write'
         'Microsoft.Insights/components/write'
         'Microsoft.Web/serverfarms/write'
         'Microsoft.Web/sites/write'
@@ -555,6 +749,7 @@ function Assert-AzureUpdatePermissions {
                 'Microsoft.Storage/storageAccounts/write' { 'Storage accounts' }
                 'Microsoft.Storage/storageAccounts/blobServices/write' { 'Blob services' }
                 'Microsoft.Storage/storageAccounts/blobServices/containers/write' { 'Blob containers' }
+                'Microsoft.OperationalInsights/workspaces/write' { 'Log Analytics workspaces' }
                 'Microsoft.Insights/components/write' { 'Application Insights' }
                 'Microsoft.Web/serverfarms/write' { 'App Service plans' }
                 'Microsoft.Web/sites/write' { 'Function Apps' }
@@ -644,8 +839,38 @@ $configuredFunctionAppName = Get-AutopilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'functionAppName'
 
+$hasFunctionUrl = $PSBoundParameters.ContainsKey('FunctionUrl')
+$discoveredFunctionApp = $null
+if ($hasFunctionUrl) {
+    if (-not $currentContext) {
+        Connect-AzAccount | Out-Null
+        $currentContext = Get-AzContext -ErrorAction Stop
+    }
+    $discoveryParameters = @{ Url = $FunctionUrl }
+    if ($PSBoundParameters.ContainsKey('SubscriptionId')) {
+        $discoveryParameters.SubscriptionId = $SubscriptionId
+    }
+    $discoveredFunctionApp = Resolve-AutopilotFunctionAppFromUrl `
+        @discoveryParameters
+
+    foreach ($identityParameter in @{
+            TenantId         = $discoveredFunctionApp.TenantId
+            ResourceGroupName = $discoveredFunctionApp.ResourceGroupName
+            FunctionAppName  = $discoveredFunctionApp.FunctionAppName
+        }.GetEnumerator()) {
+        if ($PSBoundParameters.ContainsKey($identityParameter.Key) -and
+            [string] $PSBoundParameters[$identityParameter.Key] -ine
+                [string] $identityParameter.Value) {
+            throw "FunctionUrl resolves $($identityParameter.Key) to '$($identityParameter.Value)', which conflicts with the supplied value '$($PSBoundParameters[$identityParameter.Key])'."
+        }
+    }
+    Write-Host "Function URL resolved to '$($discoveredFunctionApp.FunctionAppName)' in resource group '$($discoveredFunctionApp.ResourceGroupName)' and subscription '$($discoveredFunctionApp.SubscriptionId)'."
+}
+
 $SubscriptionId = Read-AutopilotUpdateValue `
-    -CurrentValue $(if ($PSBoundParameters.ContainsKey('SubscriptionId')) {
+    -CurrentValue $(if ($discoveredFunctionApp) {
+        $discoveredFunctionApp.SubscriptionId
+    } elseif ($PSBoundParameters.ContainsKey('SubscriptionId')) {
         $SubscriptionId
     } else { $configuredSubscriptionId }) `
     -Prompt 'Azure Subscription ID' `
@@ -653,7 +878,9 @@ $SubscriptionId = Read-AutopilotUpdateValue `
         [string] $currentContext.Subscription.Id
     })
 $TenantId = Read-AutopilotUpdateValue `
-    -CurrentValue $(if ($PSBoundParameters.ContainsKey('TenantId')) {
+    -CurrentValue $(if ($discoveredFunctionApp) {
+        $discoveredFunctionApp.TenantId
+    } elseif ($PSBoundParameters.ContainsKey('TenantId')) {
         $TenantId
     } else { $configuredTenantId }) `
     -Prompt 'Entra Tenant ID' `
@@ -669,14 +896,18 @@ if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
     throw 'Entra Tenant ID must be a GUID.'
 }
 $ResourceGroupName = Read-AutopilotUpdateValue `
-    -CurrentValue $(if ($PSBoundParameters.ContainsKey('ResourceGroupName')) {
+    -CurrentValue $(if ($discoveredFunctionApp) {
+        $discoveredFunctionApp.ResourceGroupName
+    } elseif ($PSBoundParameters.ContainsKey('ResourceGroupName')) {
         $ResourceGroupName
     } else { $configuredResourceGroupName }) `
     -Prompt 'Azure Resource Group' `
     -DefaultValue 'rg-autopilot-import'
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
 $FunctionAppName = Read-AutopilotUpdateValue `
-    -CurrentValue $(if ($PSBoundParameters.ContainsKey('FunctionAppName')) {
+    -CurrentValue $(if ($discoveredFunctionApp) {
+        $discoveredFunctionApp.FunctionAppName
+    } elseif ($PSBoundParameters.ContainsKey('FunctionAppName')) {
         $FunctionAppName
     } else { $configuredFunctionAppName }) `
     -Prompt 'Azure Function App name' `
@@ -731,6 +962,13 @@ $site = $siteResponse.Content | ConvertFrom-Json
 if (-not $site.id) {
     throw "Function App '$FunctionAppName' was not found."
 }
+$previousApplicationInsightsWorkspaceResourceId = `
+    Get-UpdateApplicationInsightsWorkspaceResourceId `
+        -SubscriptionId $SubscriptionId `
+        -ResourceGroupName $ResourceGroupName `
+        -FunctionAppName $FunctionAppName
+$integratedLogAnalyticsWorkspaceResourceId = `
+    "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$FunctionAppName-la"
 $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
@@ -743,7 +981,8 @@ $configuredApiAudience = Get-AutopilotUpdateConfigurationValue `
 $resolvedApiAudience = if ($PSBoundParameters.ContainsKey('ApiAudience')) {
     $ApiAudience
 }
-elseif (-not [string]::IsNullOrWhiteSpace($configuredApiAudience)) {
+elseif (-not $hasFunctionUrl -and
+    -not [string]::IsNullOrWhiteSpace($configuredApiAudience)) {
     $configuredApiAudience
 }
 else {
@@ -769,7 +1008,8 @@ if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
 $resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
     $ManagementUrl
 }
-elseif (-not [string]::IsNullOrWhiteSpace($configuredManagementUrl)) {
+elseif (-not $hasFunctionUrl -and
+    -not [string]::IsNullOrWhiteSpace($configuredManagementUrl)) {
     $configuredManagementUrl
 }
 else {
@@ -873,19 +1113,30 @@ if (-not $Force -and
     return
 }
 
-& $installerPath @installerParameters -Confirm:$false
+$deploymentResult = & $installerPath @installerParameters -Confirm:$false
+Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
+    -PreviousWorkspaceResourceId `
+        $previousApplicationInsightsWorkspaceResourceId `
+    -IntegratedWorkspaceResourceId $integratedLogAnalyticsWorkspaceResourceId
+$deploymentResult
 
 #endregion Invoke idempotent installer
 }
 catch {
     $isUpdatePermissionError = `
         $_.Exception.Data['AutopilotUpdatePermissionError'] -eq $true
+    $isMicrosoftGraphPermissionError = `
+        $_.Exception.Data['AutopilotGraphPermissionError'] -eq $true
     $errorDetails = @(
         "Timestamp: $(Get-Date -Format 'o')"
         "Script: $PSCommandPath"
         "Message: $($_.Exception.Message)"
         if ($isUpdatePermissionError) {
             "Permission details: $($_.Exception.Data['PermissionDetails'])"
+        }
+        if ($isMicrosoftGraphPermissionError) {
+            "Permission details: $($_.Exception.Data['PermissionDetails'])"
+            "Installer log: $($_.Exception.Data['InstallerLogPath'])"
         }
         'Error record:'
         ($_ | Format-List * -Force | Out-String)
@@ -905,6 +1156,28 @@ catch {
         -Encoding utf8
     if ($isUpdatePermissionError) {
         Write-Error $_.Exception.Message -ErrorAction Continue
+        return
+    }
+    if ($isMicrosoftGraphPermissionError) {
+        Write-Host
+        Write-Host 'Update stopped: Microsoft Entra permission required' `
+            -ForegroundColor Red
+        Write-Host (
+            "The Microsoft Graph account '$($_.Exception.Data['GraphAccount'])' " +
+            'cannot update the Autopilot Import app registrations.'
+        )
+        Write-Host
+        Write-Host 'Next steps:' -ForegroundColor Yellow
+        Write-Host '  1. Assign or activate Application Administrator or Cloud Application Administrator for this account.'
+        Write-Host '  2. Wait until the role assignment is active.'
+        Write-Host '  3. Rerun this update with -ForceGraphSignIn and sign in with the authorized account.'
+        Write-Host
+        Write-Host 'Azure Owner or Contributor permissions are not sufficient for this Microsoft Entra change.'
+        Write-Host
+        Write-Host "Detailed logs:" -ForegroundColor DarkGray
+        Write-Host "  Installer: $($_.Exception.Data['InstallerLogPath'])" `
+            -ForegroundColor DarkGray
+        Write-Host "  Update:    $setupLogPath" -ForegroundColor DarkGray
         return
     }
     Write-Error "Update failed. Detailed error information was written to '$setupLogPath'." `

@@ -48,6 +48,7 @@ param installerPrincipalId string
 
 var storageAccountName = take(toLower(replace('${functionAppName}${uniqueString(resourceGroup().id)}', '-', '')), 24)
 var applicationInsightsName = '${functionAppName}-insights'
+var logAnalyticsWorkspaceName = '${functionAppName}-la'
 var hostingPlanName = '${functionAppName}-plan'
 var azurePowerShellClientId = '1950a258-227b-4e31-a9cf-717495945fc2'
 var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
@@ -83,12 +84,24 @@ resource configurationContainer 'Microsoft.Storage/storageAccounts/blobServices/
   }
 }
 
+resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logAnalyticsWorkspaceName
+  location: location
+  properties: {
+    retentionInDays: 30
+    sku: {
+      name: 'PerGB2018'
+    }
+  }
+}
+
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: applicationInsightsName
   location: location
   kind: 'web'
   properties: {
     Application_Type: 'web'
+    WorkspaceResourceId: logAnalyticsWorkspace.id
   }
 }
 

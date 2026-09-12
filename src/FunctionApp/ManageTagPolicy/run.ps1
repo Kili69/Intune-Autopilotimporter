@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -28,44 +28,6 @@ function Send-JsonResponse {
         Headers    = $responseHeaders
         Body       = ($Body | ConvertTo-Json -Depth 8 -Compress)
     })
-}
-
-function Test-IntuneRoleAdministrator {
-    param(
-        [Parameter(Mandatory)]
-        [object] $Principal
-    )
-
-    $tokenResult = Get-AzAccessToken `
-        -ResourceUrl 'https://graph.microsoft.com/' `
-        -ErrorAction Stop
-    $accessToken = if ($tokenResult.Token -is [Security.SecureString]) {
-        ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
-    }
-    else {
-        [string] $tokenResult.Token
-    }
-    $headers = @{ Authorization = "Bearer $accessToken" }
-
-    $roleAssignments = @()
-    $requestUri = "https://graph.microsoft.com/v1.0/deviceManagement/roleAssignments?`$expand=roleDefinition(`$select=id,displayName)&`$select=id,members"
-    while ($requestUri) {
-        $assignmentResponse = Invoke-RestMethod `
-            -Method Get `
-            -Uri $requestUri `
-            -Headers $headers
-        $roleAssignments += @($assignmentResponse.value)
-        $requestUri = if ($assignmentResponse.PSObject.Properties.Name -contains '@odata.nextLink') {
-            [string] $assignmentResponse.'@odata.nextLink'
-        }
-        else {
-            $null
-        }
-    }
-
-    return Test-IntuneRoleAdministratorAssignment `
-        -Principal $Principal `
-        -RoleAssignment $roleAssignments
 }
 
 $managerPolicyJson = $env:MANAGER_AUTHORIZATION_POLICY

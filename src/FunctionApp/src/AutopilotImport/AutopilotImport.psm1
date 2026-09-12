@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -442,6 +442,56 @@ function Test-TagPolicyManagerPrincipal {
     }).Count -gt 0
 }
 
+function Test-IntuneRoleAdministrator {
+    <#
+    .SYNOPSIS
+    Tests whether a caller has an Intune Role Administrator assignment.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing object and group claims.
+
+    .OUTPUTS
+    System.Boolean. True when an Intune Role Administrator assignment covers
+    the caller or one of its claimed groups.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal
+    )
+
+    $tokenResult = Get-AzAccessToken `
+        -ResourceUrl 'https://graph.microsoft.com/' `
+        -ErrorAction Stop
+    $accessToken = if ($tokenResult.Token -is [Security.SecureString]) {
+        ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
+    }
+    else {
+        [string] $tokenResult.Token
+    }
+    $headers = @{ Authorization = "Bearer $accessToken" }
+
+    $roleAssignments = @()
+    $requestUri = "https://graph.microsoft.com/v1.0/deviceManagement/roleAssignments?`$expand=roleDefinition(`$select=id,displayName)&`$select=id,members"
+    while ($requestUri) {
+        $assignmentResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri $requestUri `
+            -Headers $headers
+        $roleAssignments += @($assignmentResponse.value)
+        $requestUri = if ($assignmentResponse.PSObject.Properties.Name -contains '@odata.nextLink') {
+            [string] $assignmentResponse.'@odata.nextLink'
+        }
+        else {
+            $null
+        }
+    }
+
+    return Test-IntuneRoleAdministratorAssignment `
+        -Principal $Principal `
+        -RoleAssignment $roleAssignments
+}
+
 function Test-TagManagerPolicyAdministratorRole {
     <#
     .SYNOPSIS
@@ -773,6 +823,7 @@ Export-ModuleMember -Function @(
     'Get-AutopilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',
+    'Test-IntuneRoleAdministrator',
     'Test-TagManagerPolicyAdministratorRole',
     'Test-IntuneRoleAdministratorAssignment',
     'ConvertFrom-ClientPrincipalHeader',

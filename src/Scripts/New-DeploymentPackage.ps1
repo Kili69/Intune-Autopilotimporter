@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -270,6 +270,7 @@ Assert-BuiltWebFrontend `
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
     @{ Source = 'AUTHOR'; Destination = 'AUTHOR' }
+    @{ Source = 'History.md'; Destination = 'History.md' }
     @{ Source = 'README.md'; Destination = 'README.md' }
     @{ Source = 'VERSION'; Destination = 'VERSION' }
     @{ Source = 'src\FunctionApp\host.json'; Destination = 'host.json' }
@@ -282,6 +283,7 @@ $packageEntries = @(
     @{ Source = 'src\Installer\Update-AutopilotImport.ps1'; Destination = 'Update-AutopilotImport.ps1' }
     @{ Source = 'src\FunctionApp\ImportDevice'; Destination = 'ImportDevice' }
     @{ Source = 'src\FunctionApp\GetAuthorizedTags'; Destination = 'GetAuthorizedTags' }
+    @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }

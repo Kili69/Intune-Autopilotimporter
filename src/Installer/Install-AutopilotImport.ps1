@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -933,6 +933,7 @@ function Assert-AzureDeploymentPermissions {
         'Microsoft.Storage/storageAccounts/write'
         'Microsoft.Storage/storageAccounts/blobServices/write'
         'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.OperationalInsights/workspaces/write'
         'Microsoft.Insights/components/write'
         'Microsoft.Web/serverfarms/write'
         'Microsoft.Web/sites/write'
@@ -987,6 +988,8 @@ function Assert-AzureDeploymentPermissions {
                 'Create or update the Blob service'
             'Microsoft.Storage/storageAccounts/blobServices/containers/write' = `
                 'Create or update Blob containers'
+            'Microsoft.OperationalInsights/workspaces/write' = `
+                'Create or update the Log Analytics workspace'
             'Microsoft.Insights/components/write' = `
                 'Create or update Application Insights'
             'Microsoft.Web/serverfarms/write' = `
@@ -1688,6 +1691,42 @@ $result
 catch {
     $isDeploymentPermissionError = `
         $_.Exception.Data['AutopilotDeploymentPermissionError'] -eq $true
+    $isMicrosoftGraphAuthorizationError =
+        [string] $_.FullyQualifiedErrorId -match 'Microsoft\.Graph' -or
+        [string] $_.TargetObject -match 'graph\.microsoft\.com'
+    $errorRecordDetails = $_ | Format-List * -Force | Out-String
+    $exceptionDetails = $_.Exception | Format-List * -Force | Out-String
+    $isMicrosoftGraphPermissionError =
+        $isMicrosoftGraphAuthorizationError -and
+        @($errorRecordDetails, $exceptionDetails) -join [Environment]::NewLine `
+            -match 'Authorization_RequestDenied|Forbidden'
+    $graphAccount = $null
+    $graphPermissionDetails = $null
+    if ($isMicrosoftGraphPermissionError) {
+        $entraApplicationVariable = Get-Variable `
+            -Name entraApplication `
+            -ErrorAction SilentlyContinue
+        $graphAccount = if ($entraApplicationVariable -and
+            $entraApplicationVariable.Value -and
+            $entraApplicationVariable.Value.PSObject.Properties[
+                'InstallingUserPrincipalName']) {
+            [string] $entraApplicationVariable.Value.InstallingUserPrincipalName
+        }
+        else {
+            'the currently signed-in Microsoft Graph account'
+        }
+        $graphPermissionDetails = @(
+            'The Microsoft Graph account cannot update the Entra application.'
+            "Account: $graphAccount"
+            ''
+            'This update modifies the existing Autopilot Import app registrations. The selected account needs an active Microsoft Entra Application Administrator or Cloud Application Administrator role. Azure subscription or resource-group roles do not grant this permission.'
+            ''
+            'To continue:'
+            '1. Assign or activate one of these Microsoft Entra roles for the account, then wait for the assignment to become effective; or use another account that already has the role.'
+            '2. Rerun .\Update-AutopilotImport.ps1 with the same parameters and add -ForceGraphSignIn.'
+            '3. Complete the device-code sign-in with the account that has the Entra role.'
+        ) -join [Environment]::NewLine
+    }
     $errorDetails = @(
         "Timestamp: $(Get-Date -Format 'o')"
         "Script: $PSCommandPath"
@@ -1697,11 +1736,15 @@ catch {
             "Missing actions: $($_.Exception.Data['MissingActions'])"
         }
         'Error record:'
-        ($_ | Format-List * -Force | Out-String)
+        $errorRecordDetails
         'Exception:'
-        ($_.Exception | Format-List * -Force | Out-String)
+        $exceptionDetails
         'Script stack trace:'
         $_.ScriptStackTrace
+        if ($graphPermissionDetails) {
+            'Operator guidance:'
+            $graphPermissionDetails
+        }
     ) -join [Environment]::NewLine
     if ($setupTranscriptActive) {
         Stop-Transcript -WhatIf:$false | Out-Null
@@ -1712,18 +1755,21 @@ catch {
         -Value $errorDetails `
         -WhatIf:$false `
         -Encoding utf8
-    Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
-        -ErrorAction Continue
     if ($isDeploymentPermissionError) {
         throw
     }
-    $isMicrosoftGraphAuthorizationError =
-        [string] $_.FullyQualifiedErrorId -match 'Microsoft\.Graph' -or
-        [string] $_.TargetObject -match 'graph\.microsoft\.com'
-    if ($isMicrosoftGraphAuthorizationError -and
-        $errorDetails -match 'Authorization_RequestDenied|Forbidden') {
-        throw 'Microsoft Graph application update permissions are insufficient. Assign the updating account the Application Administrator or Cloud Application Administrator Microsoft Entra role, then sign in again and rerun the update.'
+    if ($isMicrosoftGraphPermissionError) {
+        $permissionException = [InvalidOperationException]::new(
+            'Microsoft Entra permission is required to update the app registrations.'
+        )
+        $permissionException.Data['AutopilotGraphPermissionError'] = $true
+        $permissionException.Data['GraphAccount'] = $graphAccount
+        $permissionException.Data['PermissionDetails'] = $graphPermissionDetails
+        $permissionException.Data['InstallerLogPath'] = $setupLogPath
+        throw $permissionException
     }
+    Write-Error "Installation failed. Detailed error information was written to '$setupLogPath'." `
+        -ErrorAction Continue
     if ($errorDetails -match `
         'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
         throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'

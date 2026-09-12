@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260911.1
+# Project-Version: 1.1.20260912.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -190,7 +190,7 @@ Describe 'Client configuration creation' {
     It 'creates client.settings.json in an optional directory' {
         $outputPath = Join-Path $TestDrive 'configuration'
         $warnings = @()
-        $settingsFile = New-AutopilotClientConfiguration `
+        $settingsFile = New-AutoPilotImporterClientConfiguration `
             -SubscriptionId '11111111-1111-1111-1111-111111111111' `
             -ResourceGroupName 'rg-autopilot-import' `
             -TenantId '22222222-2222-2222-2222-222222222222' `
@@ -225,7 +225,7 @@ Describe 'Client configuration creation' {
         New-Item -Path $currentDirectory -ItemType Directory | Out-Null
         Push-Location $currentDirectory
         try {
-            $settingsFile = New-AutopilotClientConfiguration `
+            $settingsFile = New-AutoPilotImporterClientConfiguration `
                 -SubscriptionId '11111111-1111-1111-1111-111111111111' `
                 -ResourceGroupName 'rg-autopilot-import' `
                 -TenantId '22222222-2222-2222-2222-222222222222' `
@@ -254,7 +254,7 @@ Describe 'Client configuration creation' {
         'existing' | Set-Content -LiteralPath $settingsPath
 
         {
-            New-AutopilotClientConfiguration `
+            New-AutoPilotImporterClientConfiguration `
                 -SubscriptionId '11111111-1111-1111-1111-111111111111' `
                 -ResourceGroupName 'rg-autopilot-import' `
                 -TenantId '22222222-2222-2222-2222-222222222222' `
@@ -274,9 +274,71 @@ Describe 'Client configuration display' {
     }
 
     It 'exports the configuration display command' {
-        Get-Command Get-AutopilotClientConfiguration `
+        Get-Command Get-AutoPilotImporterClientConfiguration `
             -Module AutopilotImport.Client |
             Should -Not -BeNullOrEmpty
+    }
+
+    It 'bootstraps and persists configuration from the Function URL' {
+        $settingsPath = Join-Path $TestDrive 'profile\client.settings.json'
+        Mock Get-DefaultClientConfigurationPath `
+            -ModuleName AutopilotImport.Client { $settingsPath }
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                redirectUri = 'https://func-example.azurewebsites.net/api/ui/index.html'
+                importUrl = 'https://func-example.azurewebsites.net/api/devices/import'
+                tagsUrl = 'https://func-example.azurewebsites.net/api/devices/tags'
+            }
+        }
+
+        $configuration = Get-AutoPilotImporterClientConfiguration `
+            -FunctionUrl 'https://func-example.azurewebsites.net/api/ui/index.html'
+        $persistedConfiguration = `
+            Get-AutoPilotImporterClientConfiguration
+
+        Test-Path -LiteralPath $settingsPath -PathType Leaf | Should -BeTrue
+        $configuration.ConfigPath | Should -Be `
+            ([IO.Path]::GetFullPath($settingsPath))
+        $persistedConfiguration.FunctionUrl | Should -Be `
+            'https://func-example.azurewebsites.net/api/devices/import'
+        $persistedConfiguration.ManagementUrl | Should -Be `
+            'https://func-example.azurewebsites.net/api/management/tag-policy'
+        $persistedConfiguration.ApiApplicationIdUri | Should -Be `
+            'api://33333333-3333-3333-3333-333333333333'
+        $persistedConfiguration.TenantId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $persistedConfiguration.FunctionAppName | Should -Be 'func-example'
+        $persistedConfiguration.WebClientId | Should -Be `
+            '44444444-4444-4444-4444-444444444444'
+        $persistedConfiguration.SubscriptionId | Should -BeNullOrEmpty
+        $persistedConfiguration.ResourceGroupName | Should -BeNullOrEmpty
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'Get' -and
+                $Uri -eq 'https://func-example.azurewebsites.net/api/ui/config'
+            } `
+            -Times 1
+    }
+
+    It 'rejects a runtime import URL from a different origin' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://attacker.example/api/devices/import'
+            }
+        }
+
+        {
+            Get-AutoPilotImporterClientConfiguration `
+                -FunctionUrl 'https://func-example.azurewebsites.net' `
+                -ConfigPath (Join-Path $TestDrive 'rejected.settings.json')
+        } | Should -Throw '*import URL from a different origin*'
     }
 
     It 'returns all deployment and endpoint values from the selected file' {
@@ -293,7 +355,7 @@ Describe 'Client configuration display' {
             webClientId = '44444444-4444-4444-4444-444444444444'
         } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
 
-        $configuration = Get-AutopilotClientConfiguration `
+        $configuration = Get-AutoPilotImporterClientConfiguration `
             -ConfigPath $settingsPath
 
         $configuration.SubscriptionId | Should -Be `
@@ -320,7 +382,7 @@ Describe 'Client configuration display' {
         $settingsPath = Join-Path $TestDrive 'missing.settings.json'
 
         {
-            Get-AutopilotClientConfiguration -ConfigPath $settingsPath
+            Get-AutoPilotImporterClientConfiguration -ConfigPath $settingsPath
         } | Should -Throw "Client configuration '$settingsPath' was not found*"
     }
 
@@ -331,7 +393,7 @@ Describe 'Client configuration display' {
             Set-Content -LiteralPath $settingsPath
 
         {
-            Get-AutopilotClientConfiguration -ConfigPath $settingsPath
+            Get-AutoPilotImporterClientConfiguration -ConfigPath $settingsPath
         } | Should -Throw 'Function URL is missing*'
     }
 }
@@ -414,6 +476,129 @@ Describe 'Client import status metadata' {
         }
 
         $result.isFinal | Should -BeTrue
+    }
+}
+
+Describe 'Client import history' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+    }
+
+    BeforeEach {
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                imports = @(
+                    [pscustomobject]@{
+                        importId     = '11111111-1111-1111-1111-111111111111'
+                        serialNumber = 'SERIAL-001'
+                        groupTag     = 'Standard'
+                        status       = 'complete'
+                    }
+                    [pscustomobject]@{
+                        importId     = '22222222-2222-2222-2222-222222222222'
+                        serialNumber = 'SERIAL-002'
+                        groupTag     = 'Kiosk'
+                        status       = 'error'
+                    }
+                )
+                count = 2
+                correlationId = '33333333-3333-3333-3333-333333333333'
+            }
+        }
+    }
+
+    It 'returns manager-visible import operations as pipeline objects' {
+        $result = @(Get-AutopilotImportHistory `
+            -Top 250 `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555')
+
+        $result.Count | Should -Be 2
+        $result[0].serialNumber | Should -Be 'SERIAL-001'
+        $result[1].status | Should -Be 'error'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Get' -and
+                $Uri -eq `
+                    'https://func.example/api/management/imports?top=250'
+            }
+    }
+
+    It 'derives the history endpoint from an existing client configuration' {
+        $configPath = Join-Path $TestDrive 'client.settings.json'
+        @{
+            managementUrl = `
+                'https://func.example/api/management/tag-policy'
+            apiApplicationIdUri = `
+                'api://44444444-4444-4444-4444-444444444444'
+            tenantId = '55555555-5555-5555-5555-555555555555'
+        } | ConvertTo-Json | Set-Content -LiteralPath $configPath
+
+        Get-AutopilotImportHistory -ConfigPath $configPath | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Uri -eq `
+                    'https://func.example/api/management/imports?top=100'
+            }
+    }
+
+    It 'returns the response envelope when Raw is specified' {
+        $result = Get-AutopilotImportHistory `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' `
+            -Raw
+
+        $result.count | Should -Be 2
+        $result.correlationId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+    }
+}
+
+Describe 'Manager import history endpoint' {
+    BeforeAll {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $historyFunction = Get-Content `
+            -LiteralPath (Join-Path `
+                $projectRoot `
+                'src\FunctionApp\GetImportHistory\run.ps1') `
+            -Raw
+    }
+
+    It 'uses the same explicit and Intune manager authorization as tag policy management' {
+        $historyFunction | Should -Match 'Test-TagPolicyManagerPrincipal'
+        $historyFunction | Should -Match 'allowIntuneRoleAdministrators'
+        $historyFunction | Should -Match 'Test-IntuneRoleAdministrator'
+        $historyFunction | Should -Match "'importHistoryForbidden'"
+    }
+
+    It 'validates the result limit and stops Graph pagination at that limit' {
+        $historyFunction | Should -Match '\$parsedTop -lt 1'
+        $historyFunction | Should -Match '\$parsedTop -gt 1000'
+        $historyFunction | Should -Match "'@odata\.nextLink'"
+        $historyFunction | Should -Match '\$imports\.Count -lt \$top'
+        $historyFunction | Should -Match '\$imports\.Count -ge \$top'
+    }
+
+    It 'queries and returns operational fields without sensitive import payloads' {
+        $historyFunction | Should -Match `
+            '\?\$select=id,importId,serialNumber,groupTag,state&\$top=100'
+        $historyFunction | Should -Match 'deviceImportStatus'
+        $historyFunction | Should -Match 'deviceErrorCode'
+        $historyFunction | Should -Not -Match '\.hardwareIdentifier'
+        $historyFunction | Should -Not -Match '\.productKey'
     }
 }
 
@@ -1378,7 +1563,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 11
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 12
         Remove-Module AutopilotImport.Client
     }
 }
@@ -1396,6 +1581,7 @@ Describe 'Update script deployment discovery' {
         )
         foreach ($functionName in @(
                 'Resolve-AutopilotUpdateConfigPath',
+                'Resolve-AutopilotFunctionAppFromUrl',
             'Read-AutopilotUpdateValue',
             'Get-AutopilotUpdateConfigurationValue',
                 'Get-AutopilotClientToolsPath',
@@ -1403,6 +1589,8 @@ Describe 'Update script deployment discovery' {
                 'Get-UpdateRestrictedManagementAdministrativeUnitName',
                 'Assert-AutopilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
+                'Get-UpdateApplicationInsightsWorkspaceResourceId',
+                'Write-UpdateLogAnalyticsWorkspaceMigrationNotice',
                 'Test-AzurePermissionPattern',
                 'Assert-AzureUpdatePermissions'
             )) {
@@ -1429,6 +1617,7 @@ Describe 'Update script deployment discovery' {
                 'TenantId',
                 'ResourceGroupName',
                 'FunctionAppName',
+                'FunctionUrl',
                 'ApiAudience',
                 'ManagementUrl'
             )) {
@@ -1437,6 +1626,84 @@ Describe 'Update script deployment discovery' {
         }
         $updateAst.Extent.Text | Should -Match `
             '(?s)Resolve-AutopilotUpdateConfigPath\s+.*?-AllowMissing'
+    }
+
+    It 'resolves deployment identity from a Function URL' {
+        Mock Get-AzSubscription {
+            [pscustomobject]@{
+                Id       = '11111111-1111-1111-1111-111111111111'
+                TenantId = '22222222-2222-2222-2222-222222222222'
+            }
+        }
+        Mock Set-AzContext { }
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content    = @{
+                    value = @(@{
+                        id = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot-test'
+                        name = 'func-autopilot-test'
+                        type = 'Microsoft.Web/sites'
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $deployment = Resolve-AutopilotFunctionAppFromUrl `
+            -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
+
+        $deployment.SubscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $deployment.TenantId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $deployment.ResourceGroupName | Should -Be 'rg-autopilot'
+        $deployment.FunctionAppName | Should -Be 'func-autopilot-test'
+        Should -Invoke Get-AzSubscription -Times 1
+        Should -Invoke Set-AzContext -Times 1
+    }
+
+    It 'rejects a Function URL outside azurewebsites.net' {
+        {
+            Resolve-AutopilotFunctionAppFromUrl `
+                -Url 'https://example.test/api/devices/import'
+        } | Should -Throw '*azurewebsites.net*'
+    }
+
+    It 'passes FunctionUrl to the discovery helper as Url' {
+        $updateAst.Extent.Text | Should -Match `
+            '\$discoveryParameters\s*=\s*@\{\s*Url\s*=\s*\$FunctionUrl\s*\}'
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)Resolve-AutopilotFunctionAppFromUrl\s+.*?@discoveryParameters'
+    }
+
+    It 'requires an unambiguous Function URL discovery result' {
+        Mock Get-AzSubscription {
+            @(
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+                [pscustomobject]@{ Id = 'sub-two'; TenantId = 'tenant-two' }
+            )
+        }
+        Mock Set-AzContext { }
+        Mock Invoke-AzRestMethod {
+            $subscriptionId = if ($Path -match '/subscriptions/([^/]+)/') {
+                $Matches[1]
+            }
+            [pscustomobject]@{
+                StatusCode = 200
+                Content    = @{
+                    value = @(@{
+                        id = "/subscriptions/$subscriptionId/resourceGroups/rg-$subscriptionId/providers/Microsoft.Web/sites/func-shared"
+                        name = 'func-shared'
+                        type = 'Microsoft.Web/sites'
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        {
+            Resolve-AutopilotFunctionAppFromUrl `
+                -Url 'https://func-shared.azurewebsites.net'
+        } | Should -Throw '*Use -SubscriptionId*'
     }
 
     It 'uses Documents AutopilotImport when no client tools path is installed' {
@@ -1661,6 +1928,74 @@ Describe 'Update script deployment discovery' {
             Should -Be $expected
     }
 
+    It 'reads the workspace currently linked to Application Insights' {
+        $expectedWorkspaceId = `
+            '/subscriptions/sub-old/resourceGroups/ai-managed/providers/Microsoft.OperationalInsights/workspaces/managed-insights-ws'
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    properties = @{
+                        WorkspaceResourceId = $expectedWorkspaceId
+                    }
+                } | ConvertTo-Json -Depth 4
+            }
+        }
+
+        $actualWorkspaceId = `
+            Get-UpdateApplicationInsightsWorkspaceResourceId `
+                -SubscriptionId 'sub-current' `
+                -ResourceGroupName 'rg-autopilot-import' `
+                -FunctionAppName 'func-autopilot-test'
+
+        $actualWorkspaceId | Should -Be $expectedWorkspaceId
+        Should -Invoke Invoke-AzRestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'GET' -and
+            $Path -eq '/subscriptions/sub-current/resourceGroups/rg-autopilot-import/providers/Microsoft.Insights/components/func-autopilot-test-insights?api-version=2020-02-02'
+        }
+    }
+
+    It 'warns after switching from a previously linked workspace' {
+        $previousWorkspaceId = `
+            '/subscriptions/sub-old/resourceGroups/ai-managed/providers/Microsoft.OperationalInsights/workspaces/managed-insights-ws'
+        $integratedWorkspaceId = `
+            '/subscriptions/sub-current/resourceGroups/rg-autopilot-import/providers/Microsoft.OperationalInsights/workspaces/func-autopilot-test-la'
+
+        $warning = Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
+            -PreviousWorkspaceResourceId $previousWorkspaceId `
+            -IntegratedWorkspaceResourceId $integratedWorkspaceId `
+            3>&1
+
+        $warning | Out-String | Should -Match `
+            ([regex]::Escape($previousWorkspaceId))
+        $warning | Out-String | Should -Match 'can be deleted'
+        $warning | Out-String | Should -Match `
+            'historical telemetry is no longer required'
+    }
+
+    It 'does not warn without a workspace migration' -TestCases @(
+        @{ PreviousWorkspaceId = $null }
+        @{
+            PreviousWorkspaceId = `
+                '/SUBSCRIPTIONS/sub-current/RESOURCEGROUPS/rg-autopilot-import/providers/Microsoft.OperationalInsights/workspaces/func-autopilot-test-la/'
+        }
+    ) {
+        param($PreviousWorkspaceId)
+
+        $warning = Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
+            -PreviousWorkspaceResourceId $PreviousWorkspaceId `
+            -IntegratedWorkspaceResourceId `
+                '/subscriptions/sub-current/resourceGroups/rg-autopilot-import/providers/Microsoft.OperationalInsights/workspaces/func-autopilot-test-la' `
+            3>&1
+
+        @($warning).Count | Should -Be 0
+    }
+
+    It 'emits the migration notice only after the installer succeeds' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)\$deploymentResult = & \$installerPath.+?Write-UpdateLogAnalyticsWorkspaceMigrationNotice.+?\$deploymentResult'
+    }
+
     It 'reports only missing Azure capabilities without Verbose' {
         Mock Invoke-AzRestMethod {
             [pscustomobject]@{
@@ -1684,7 +2019,7 @@ Describe 'Update script deployment discovery' {
         } | Should -Throw -PassThru
 
         $errorRecord.Exception.Message | Should -Be `
-            'Missing Azure permissions for: Storage accounts, Blob services, Blob containers, Application Insights, App Service plans, Function Apps, Function App configuration.'
+            'Missing Azure permissions for: Storage accounts, Blob services, Blob containers, Log Analytics workspaces, Application Insights, App Service plans, Function Apps, Function App configuration.'
         $errorRecord.Exception.Message | Should -Not -Match `
             'subscriptions|Microsoft\.|Assign|Connect-AzAccount'
         $errorRecord.Exception.Data['AutopilotUpdatePermissionError'] |
@@ -2032,6 +2367,34 @@ Describe 'Azure deployment permission validation' {
             'AutopilotDeploymentPermissionError'] | Should -BeTrue
     }
 
+    It 'requires permission to create the Log Analytics workspace' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{
+                        actions = @('*')
+                        notActions = @(
+                            'Microsoft.OperationalInsights/workspaces/write'
+                        )
+                    })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' `
+                -ResourceGroupExists
+        } | Should -Throw -PassThru
+
+        $errorRecord.Exception.Message | Should -Match `
+            'Microsoft\.OperationalInsights/workspaces/write'
+        $errorRecord.Exception.Message | Should -Match `
+            'Create or update the Log Analytics workspace'
+    }
+
     It 'recommends Contributor when only resource writes are missing' {
         Mock Invoke-AzRestMethod {
             [pscustomobject]@{
@@ -2156,6 +2519,30 @@ Describe 'Installer Entra deployment diagnostics' {
         $installer | Should -Match 'graph\\\.microsoft\\\.com'
         $installer | Should -Match `
             'Application Administrator or Cloud Application Administrator'
+        $installer | Should -Match `
+            'Azure subscription or resource-group roles do not grant this permission'
+        $installer | Should -Match `
+            'Update-AutopilotImport\.ps1.*-ForceGraphSignIn'
+        $installer | Should -Match `
+            'Complete the device-code sign-in'
+        $installer | Should -Match 'AutopilotGraphPermissionError'
+        $installer | Should -Match "Data\['GraphAccount'\]"
+        $installer | Should -Match "Data\['InstallerLogPath'\]"
+    }
+
+    It 'renders Graph permission guidance without a generic update error' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $updater = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Installer\Update-AutopilotImport.ps1') `
+            -Raw
+
+        $updater | Should -Match 'AutopilotGraphPermissionError'
+        $updater | Should -Match `
+            'Update stopped: Microsoft Entra permission required'
+        $updater | Should -Match `
+            'Rerun this update with -ForceGraphSignIn'
+        $updater | Should -Match `
+            '(?s)if \(\$isMicrosoftGraphPermissionError\).*?Write-Host.*?return'
     }
 
     It 'does not authenticate to Graph when Entra configuration is skipped' {
@@ -2513,6 +2900,25 @@ Describe 'Storage Account update compatibility' {
     }
 }
 
+Describe 'Application Insights workspace infrastructure' {
+    It 'creates and links Log Analytics in the Function resource group' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $template = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Infrastructure\main.bicep') `
+            -Raw
+
+        $template | Should -Match `
+            "var logAnalyticsWorkspaceName = '\$\{functionAppName\}-la'"
+        $template | Should -Match `
+            "resource logAnalyticsWorkspace 'Microsoft\.OperationalInsights/workspaces@2023-09-01'"
+        $template | Should -Match 'retentionInDays:\s*30'
+        $template | Should -Match `
+            "sku:\s*\{\s*name:\s*'PerGB2018'"
+        $template | Should -Match `
+            'WorkspaceResourceId:\s*logAnalyticsWorkspace\.id'
+    }
+}
+
 Describe 'Updater web client ID fallback' {
     It 'checks whether WebClientId was supplied before comparing it as a GUID' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -2633,6 +3039,7 @@ Describe 'Web frontend response types' {
         $expectedRoutes = @{
             'ImportDevice'      = 'api/devices/import'
             'GetAuthorizedTags' = 'api/devices/tags'
+            'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
             'WebFrontend'       = 'api/ui/{*path}'
         }
@@ -2964,6 +3371,7 @@ Describe 'Deployment package' {
         try {
             $entries = @($archive.Entries.FullName)
             foreach ($requiredEntry in @(
+                    'History.md'
                     'README.md'
                     'Install-AutopilotImport.ps1'
                     'Update-AutopilotImport.ps1'
@@ -2978,6 +3386,8 @@ Describe 'Deployment package' {
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
                     'GetAuthorizedTags/function.json'
+                    'GetImportHistory/function.json'
+                    'GetImportHistory/run.ps1'
                     'proxies.json'
                     'WebFrontend/function.json'
                     'WebFrontend/wwwroot/index.html'
