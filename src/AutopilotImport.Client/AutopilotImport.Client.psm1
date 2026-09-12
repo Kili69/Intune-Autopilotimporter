@@ -1370,22 +1370,21 @@ function Add-AutopilotTagPolicy {
     Adds an Entra group and its allowed Group Tags to the policy.
 
     .DESCRIPTION
-    Accepts either an Entra group object ID or an exact group display name.
-    Existing rules are preserved and tags for an existing group are merged.
-    When no restricted management administrative unit is specified, the
-    currently configured MAU is preserved.
+    Accepts an Entra group object ID. Existing rules are preserved and tags
+    for an existing group are merged. When no restricted management
+    administrative unit is specified, that rule's current RMAU is preserved.
 
-    .PARAMETER Group
-    Entra group object ID or exact display name. If multiple groups have the
-    same display name, use the object ID to select one unambiguously.
+    .PARAMETER GroupId
+    Entra group object ID. Group is retained as an alias for compatibility.
 
     .PARAMETER GroupTag
     One or more allowed Autopilot Group Tags for the group.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
     Optional display name of the restricted management administrative unit.
-    The policy format applies this MAU to all rules. If omitted, the current
-    policy value is retained.
+    The value applies only to the added or updated group rule. If omitted, an
+    existing value for that rule is retained; a new rule has no RMAU. Supply
+    an empty string to remove the RMAU from this rule.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1394,21 +1393,21 @@ function Add-AutopilotTagPolicy {
     Application ID URI exposed by the secured Function API.
 
     .PARAMETER TenantId
-    Microsoft Entra tenant ID used for API and group-name resolution.
+    Microsoft Entra tenant ID used for API authentication.
 
     .PARAMETER ConfigPath
     Optional path to client.settings.json.
 
     .EXAMPLE
     Add-AutopilotTagPolicy `
-        -Group 'Autopilot Operators' `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared', 'Kiosk'
 
-    Adds two allowed Group Tags to the uniquely named Entra group.
+    Adds two allowed Group Tags to the Entra group.
 
     .EXAMPLE
     Add-AutopilotTagPolicy `
-        -Group '11111111-1111-1111-1111-111111111111' `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared' `
         -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
@@ -1424,9 +1423,8 @@ function Add-AutopilotTagPolicy {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
-        [Alias('GroupId', 'GroupName')]
-        [string] $Group,
+        [Alias('Group')]
+        [guid] $GroupId,
 
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -1434,7 +1432,8 @@ function Add-AutopilotTagPolicy {
         [string[]] $GroupTag,
 
         [Alias('Mau')]
-        [ValidateLength(1, 256)]
+        [AllowEmptyString()]
+        [ValidateLength(0, 256)]
         [string] $RestrictedManagementAdministrativeUnitName,
 
         [ValidatePattern('^https://')][string] $ManagementUrl,
@@ -1468,35 +1467,7 @@ function Add-AutopilotTagPolicy {
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
 
-    # GUID input avoids a Graph lookup; display names must resolve to exactly
-    # one group to prevent updating the wrong policy principal.
-    $parsedGroupId = [guid]::Empty
-    $groupDisplayName = $null
-    if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
-        $resolvedGroupId = $parsedGroupId.ToString()
-    }
-    else {
-        $graphToken = Get-ClientAccessToken `
-            $resolvedTenantId `
-            'https://graph.microsoft.com/'
-        $escapedName = $Group.Trim().Replace("'", "''")
-        $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
-        $groupResponse = Invoke-RestMethod `
-            -Method Get `
-            -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
-            -Authentication Bearer `
-            -Token $graphToken `
-            -ErrorAction Stop
-        $matchingGroups = @($groupResponse.value)
-        if ($matchingGroups.Count -eq 0) {
-            throw "Entra group '$Group' was not found. Specify its exact display name or object ID."
-        }
-        if ($matchingGroups.Count -gt 1) {
-            throw "Multiple Entra groups are named '$Group'. Specify the group object ID instead."
-        }
-        $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
-        $groupDisplayName = [string] $matchingGroups[0].displayName
-    }
+    $resolvedGroupId = $GroupId.ToString()
 
     $currentResponse = Invoke-RestMethod `
         -Method Get `
@@ -1506,11 +1477,19 @@ function Add-AutopilotTagPolicy {
         -ErrorAction Stop
     $currentPolicy = @($currentResponse.policy)
     # Index the current rules by normalized group ID to merge tags without
-    # discarding unrelated groups or their existing assignments.
+    # discarding unrelated groups or their individual RMAU assignments.
     $rulesByGroup = [ordered]@{}
+    $mauByGroup = @{}
     foreach ($rule in $currentPolicy) {
         $currentGroupId = ([guid] $rule.groupId).ToString()
         $rulesByGroup[$currentGroupId] = @($rule.tags)
+        $mauByGroup[$currentGroupId] = if ($rule.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']) {
+            [string] $rule.restrictedManagementAdministrativeUnitName
+        }
+        else {
+            ''
+        }
     }
     $rulesByGroup[$resolvedGroupId] = @(
         @($rulesByGroup[$resolvedGroupId]) + $tags |
@@ -1518,45 +1497,28 @@ function Add-AutopilotTagPolicy {
             Select-Object -Unique
     )
 
-    # Preserve the configured restricted MAU unless the caller explicitly
-    # supplies a replacement value.
     if ($PSBoundParameters.ContainsKey(
             'RestrictedManagementAdministrativeUnitName')) {
-        $mauName = $RestrictedManagementAdministrativeUnitName.Trim()
+        $mauByGroup[$resolvedGroupId] =
+            $RestrictedManagementAdministrativeUnitName.Trim()
     }
-    else {
-        $configuredMauNames = @($currentPolicy |
-            ForEach-Object {
-                if ($_.PSObject.Properties[
-                        'restrictedManagementAdministrativeUnitName']) {
-                    $_.restrictedManagementAdministrativeUnitName
-                }
-            } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
-            Select-Object -Unique)
-        $mauName = if ($configuredMauNames.Count -gt 0) {
-            [string] $configuredMauNames[0]
+    $updatedPolicy = @($rulesByGroup.Keys | ForEach-Object {
+        $policyEntry = [ordered]@{
+            groupId = $_
+            tags = @($rulesByGroup[$_])
         }
-        else {
-            ''
+        if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
+            $policyEntry.restrictedManagementAdministrativeUnitName =
+                $mauByGroup[$_].Trim()
         }
-    }
-    $rules = @($rulesByGroup.Keys | ForEach-Object {
-        "$_=$(@($rulesByGroup[$_]) -join ',')"
+        [pscustomobject] $policyEntry
     })
     $body = @{
-        rules = $rules
-        restrictedManagementAdministrativeUnitName = $mauName
+        policy = $updatedPolicy
     } | ConvertTo-Json -Depth 4 -Compress
 
-    $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
-        $resolvedGroupId
-    }
-    else {
-        "$groupDisplayName ($resolvedGroupId)"
-    }
     if (-not $PSCmdlet.ShouldProcess(
-            $target,
+            $resolvedGroupId,
             "Add Group Tags '$($tags -join ', ')' to the Autopilot policy")) {
         return
     }
@@ -1726,8 +1688,7 @@ function Remove-AutopilotTagPolicy {
             throw 'The last Group Tag cannot be removed from a policy rule. Omit -GroupTag to remove the complete group rule.'
         }
 
-        $remainingPolicy = @($currentPolicy)
-        $rules = @($remainingPolicy | ForEach-Object {
+        $remainingPolicy = @($currentPolicy | ForEach-Object {
             $ruleGroupId = ([guid] $_.groupId).ToString()
             $ruleTags = if ($ruleGroupId -eq $resolvedGroupId) {
                 $remainingTags
@@ -1735,7 +1696,18 @@ function Remove-AutopilotTagPolicy {
             else {
                 @($_.tags)
             }
-            "$ruleGroupId=$($ruleTags -join ',')"
+            $policyEntry = [ordered]@{
+                groupId = $ruleGroupId
+                tags = @($ruleTags)
+            }
+            if ($_.PSObject.Properties[
+                    'restrictedManagementAdministrativeUnitName'] -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string] $_.restrictedManagementAdministrativeUnitName)) {
+                $policyEntry.restrictedManagementAdministrativeUnitName =
+                    ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+            }
+            [pscustomobject] $policyEntry
         })
     }
     else {
@@ -1745,28 +1717,9 @@ function Remove-AutopilotTagPolicy {
         if ($remainingPolicy.Count -eq 0) {
             throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
         }
-        $rules = @($remainingPolicy | ForEach-Object {
-            "$(([guid] $_.groupId).ToString())=$(@($_.tags) -join ',')"
-        })
-    }
-    $configuredMauNames = @($remainingPolicy |
-        ForEach-Object {
-            if ($_.PSObject.Properties[
-                    'restrictedManagementAdministrativeUnitName']) {
-                $_.restrictedManagementAdministrativeUnitName
-            }
-        } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
-        Select-Object -Unique)
-    $mauName = if ($configuredMauNames.Count -gt 0) {
-        [string] $configuredMauNames[0]
-    }
-    else {
-        ''
     }
     $body = @{
-        rules = $rules
-        restrictedManagementAdministrativeUnitName = $mauName
+        policy = $remainingPolicy
     } | ConvertTo-Json -Depth 4 -Compress
 
     $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
@@ -1807,13 +1760,15 @@ function Set-AutopilotTagPolicy {
     are removed from the policy.
 
     .PARAMETER TagAuthorizationRule
-    Complete policy in <group-object-id>=<tag1>,<tag2> format. Each group object
-    ID must be a GUID and each rule must contain at least one Group Tag.
+    Complete policy as <group-object-id>=<tag1>,<tag2> strings or rule objects
+    with groupId, tags, and an optional
+    restrictedManagementAdministrativeUnitName. Each group object ID must be a
+    GUID and each rule must contain at least one Group Tag.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
-    Optional display name of the restricted management administrative unit
-    associated with all rules. Supply an empty string to disable automatic
-    administrative-unit membership.
+    Optional fallback RMAU applied to legacy string rules. Rule objects can
+    specify their own RMAU. Supply an empty string to disable automatic
+    administrative-unit membership for legacy string rules.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1831,13 +1786,20 @@ function Set-AutopilotTagPolicy {
     .EXAMPLE
     Set-AutopilotTagPolicy `
         -TagAuthorizationRule @(
-            '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
-            '22222222-2222-2222-2222-222222222222=Engineering'
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Standard', 'Kiosk')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Engineering')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+            }
         ) `
-        -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
 
-    Validates and previews replacement of the complete policy.
+    Previews a complete policy with an individual RMAU for each rule.
 
     .INPUTS
     None. This command does not accept pipeline input.
@@ -1847,7 +1809,7 @@ function Set-AutopilotTagPolicy {
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
-        [Parameter(Mandatory)][string[]] $TagAuthorizationRule,
+        [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
         [string] $RestrictedManagementAdministrativeUnitName,
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
@@ -1874,9 +1836,7 @@ function Set-AutopilotTagPolicy {
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
     $body = @{
-        rules = @($TagAuthorizationRule)
-        restrictedManagementAdministrativeUnitName = `
-            $RestrictedManagementAdministrativeUnitName
+        policy = $policy
     } | ConvertTo-Json -Depth 4 -Compress
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body

@@ -116,8 +116,14 @@ try {
     else {
         $Request.Body
     }
+    $submittedRules = if ($requestBody.PSObject.Properties['policy']) {
+        @($requestBody.policy)
+    }
+    else {
+        @($requestBody.rules)
+    }
     $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
-        -Rules @($requestBody.rules) `
+        -Rules $submittedRules `
         -RestrictedManagementAdministrativeUnitName `
             ([string] $requestBody.restrictedManagementAdministrativeUnitName))
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress

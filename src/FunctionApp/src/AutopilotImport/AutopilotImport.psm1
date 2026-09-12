@@ -90,7 +90,8 @@ function ConvertTo-TagAuthorizationPolicy {
     Converts group-to-tag rules into a normalized authorization policy.
 
     .PARAMETER Rules
-    Rules in the form <group-object-id>=<tag1>,<tag2>.
+    Rules in the form <group-object-id>=<tag1>,<tag2>, or rule objects with
+    groupId, tags, and an optional restrictedManagementAdministrativeUnitName.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
     Optional display name of the restricted management administrative unit to
@@ -104,7 +105,7 @@ function ConvertTo-TagAuthorizationPolicy {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string[]] $Rules,
+        [object[]] $Rules,
 
         [string] $RestrictedManagementAdministrativeUnitName
     )
@@ -121,20 +122,40 @@ function ConvertTo-TagAuthorizationPolicy {
     }
 
     $rulesByGroup = @{}
+    $mauByGroup = @{}
     foreach ($rule in $enteredRules) {
-        $separatorIndex = $rule.IndexOf('=')
-        if ($separatorIndex -lt 1 -or $separatorIndex -eq $rule.Length - 1) {
-            throw "Invalid TagAuthorizationRule '$rule'. Expected '<group-object-id>=<tag1>,<tag2>'."
+        if ($rule -is [string]) {
+            $separatorIndex = $rule.IndexOf('=')
+            if ($separatorIndex -lt 1 -or $separatorIndex -eq $rule.Length - 1) {
+                throw "Invalid TagAuthorizationRule '$rule'. Expected '<group-object-id>=<tag1>,<tag2>'."
+            }
+            $groupId = $rule.Substring(0, $separatorIndex).Trim()
+            $tags = @($rule.Substring($separatorIndex + 1).Split(','))
+            $ruleMauName = $RestrictedManagementAdministrativeUnitName
+        }
+        else {
+            if (-not $rule.PSObject.Properties['groupId'] -or
+                -not $rule.PSObject.Properties['tags']) {
+                throw 'Policy rule objects must contain groupId and tags properties.'
+            }
+            $groupId = [string] $rule.groupId
+            $tags = @($rule.tags)
+            $ruleMauName = if ($rule.PSObject.Properties[
+                    'restrictedManagementAdministrativeUnitName']) {
+                [string] $rule.restrictedManagementAdministrativeUnitName
+            }
+            else {
+                $RestrictedManagementAdministrativeUnitName
+            }
         }
 
-        $groupId = $rule.Substring(0, $separatorIndex).Trim()
         $parsedGroupId = [guid]::Empty
         if (-not [guid]::TryParse($groupId, [ref] $parsedGroupId)) {
             throw "Group Object ID '$groupId' must be a GUID."
         }
         $normalizedGroupId = $parsedGroupId.ToString()
 
-        $tags = @($rule.Substring($separatorIndex + 1).Split(',') | ForEach-Object {
+        $tags = @($tags | ForEach-Object {
             $_.Trim()
         } | Where-Object {
             -not [string]::IsNullOrWhiteSpace($_)
@@ -146,11 +167,24 @@ function ConvertTo-TagAuthorizationPolicy {
             if ($tag.Length -gt 128) {
                 throw "Device Tag '$tag' must not exceed 128 characters."
             }
+            if ($tag.Contains(',')) {
+                throw "Device Tag '$tag' must not contain a comma."
+            }
+        }
+
+        $normalizedMauName = ([string] $ruleMauName).Trim()
+        if ($normalizedMauName.Length -gt 256) {
+            throw 'Restricted management administrative unit name must not exceed 256 characters.'
+        }
+        if ($mauByGroup.ContainsKey($normalizedGroupId) -and
+            $mauByGroup[$normalizedGroupId] -ne $normalizedMauName) {
+            throw "Group '$normalizedGroupId' has conflicting restricted management administrative units."
         }
 
         $rulesByGroup[$normalizedGroupId] = @(
             @($rulesByGroup[$normalizedGroupId]) + $tags | Select-Object -Unique
         )
+        $mauByGroup[$normalizedGroupId] = $normalizedMauName
     }
 
     return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
@@ -158,10 +192,9 @@ function ConvertTo-TagAuthorizationPolicy {
             groupId = $_
             tags    = @($rulesByGroup[$_] | Sort-Object)
         }
-        if (-not [string]::IsNullOrWhiteSpace(
-                $RestrictedManagementAdministrativeUnitName)) {
+        if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
             $policyEntry.restrictedManagementAdministrativeUnitName =
-                $RestrictedManagementAdministrativeUnitName.Trim()
+            $mauByGroup[$_]
         }
         [pscustomobject] $policyEntry
     })
@@ -179,6 +212,10 @@ function Resolve-RestrictedManagementAdministrativeUnitName {
     .PARAMETER GroupTag
     Group Tag whose restricted management administrative unit name is resolved.
 
+    .PARAMETER Principal
+    Optional decoded Easy Auth principal. When supplied, only policy rules for
+    the caller's Entra groups participate in RMAU resolution.
+
     .OUTPUTS
     System.String, or null when no administrative unit is configured for the
     Group Tag.
@@ -188,11 +225,28 @@ function Resolve-RestrictedManagementAdministrativeUnitName {
         [object[]] $Policy = @(),
 
         [Parameter(Mandatory)]
-        [string] $GroupTag
+        [string] $GroupTag,
+
+        [object] $Principal
     )
 
+    $callerGroupIds = if ($null -ne $Principal) {
+        $groupClaimTypes = @(
+            'groups',
+            'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+        )
+        @($Principal.claims | Where-Object {
+            $_.typ -in $groupClaimTypes
+        } | ForEach-Object {
+            [string] $_.val
+        })
+    }
+    else {
+        @()
+    }
     $administrativeUnitNames = @($Policy | Where-Object {
         @($_.tags) -contains $GroupTag -and
+        ($null -eq $Principal -or [string] $_.groupId -in $callerGroupIds) -and
         $_.PSObject.Properties['restrictedManagementAdministrativeUnitName'] -and
         -not [string]::IsNullOrWhiteSpace(
             [string] $_.restrictedManagementAdministrativeUnitName)

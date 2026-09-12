@@ -673,14 +673,6 @@ Describe 'Adding a Client Group Tag policy rule' {
             ConvertTo-SecureString 'token' -AsPlainText -Force
         }
         Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
-            if ($Uri -like 'https://graph.microsoft.com/*') {
-                return [pscustomobject]@{
-                    value = @([pscustomobject]@{
-                        id          = '22222222-2222-2222-2222-222222222222'
-                        displayName = 'Autopilot Import Operators'
-                    })
-                }
-            }
             if ($Method -eq 'Get') {
                 return [pscustomobject]@{
                     policy = @([pscustomobject]@{
@@ -695,10 +687,11 @@ Describe 'Adding a Client Group Tag policy rule' {
         }
     }
 
-    It 'resolves a group name and preserves the existing MAU' {
+    It 'assigns the new rule its own RMAU and preserves the existing rule RMAU' {
         $result = Add-AutopilotTagPolicy `
-            -Group 'Autopilot Import Operators' `
+            -GroupId '22222222-2222-2222-2222-222222222222' `
             -GroupTag 'Kiosk' `
+            -Mau 'Kiosk Devices' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444' `
@@ -709,16 +702,22 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard' -and
-                $Body -match '22222222-2222-2222-2222-222222222222=Kiosk' -and
-                $Body -match 'Autopilot Devices'
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match '22222222-2222-2222-2222-222222222222' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Kiosk' -and
+                $Body -match 'Autopilot Devices' -and
+                $Body -match 'Kiosk Devices'
             } `
             -Times 1
+            Should -Invoke Get-ClientAccessToken `
+                -ModuleName AutopilotImport.Client `
+                -Times 1
     }
 
     It 'accepts an object ID, merges tags, and sets the specified MAU' {
         Add-AutopilotTagPolicy `
-            -Group '11111111-1111-1111-1111-111111111111' `
+            -GroupId '11111111-1111-1111-1111-111111111111' `
             -GroupTag @('Standard', 'Shared') `
             -Mau 'Privileged Autopilot Devices' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -730,17 +729,15 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard,Shared' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Shared' -and
                 $Body -match 'Privileged Autopilot Devices'
             } `
             -Times 1
-        Should -Invoke Invoke-RestMethod `
-            -ModuleName AutopilotImport.Client `
-            -ParameterFilter { $Uri -like 'https://graph.microsoft.com/*' } `
-            -Times 0
     }
 
-    It 'does not update the policy with WhatIf' {
+    It 'retains Group as an alias and does not update with WhatIf' {
         Add-AutopilotTagPolicy `
             -Group '11111111-1111-1111-1111-111111111111' `
             -GroupTag 'Shared' `
@@ -770,7 +767,7 @@ Describe 'Adding a Client Group Tag policy rule' {
 
         {
             Add-AutopilotTagPolicy `
-                -Group '11111111-1111-1111-1111-111111111111' `
+                -GroupId '11111111-1111-1111-1111-111111111111' `
                 -GroupTag 'Shared' `
                 -ManagementUrl 'https://func.example/api/management/tag-policy' `
                 -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -782,7 +779,26 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '"restrictedManagementAdministrativeUnitName":""'
+                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
+            } `
+            -Times 1
+    }
+
+    It 'removes the RMAU only from the selected rule when Mau is empty' {
+        Add-AutopilotTagPolicy `
+            -GroupId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Shared' `
+            -Mau '' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'Put' -and
+                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
             } `
             -Times 1
     }
@@ -843,7 +859,8 @@ Describe 'Removing a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
                 $Body -notmatch '22222222-2222-2222-2222-222222222222' -and
                 $Body -match 'Autopilot Devices'
             } `
@@ -900,12 +917,12 @@ Describe 'Removing a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match `
-                    '11111111-1111-1111-1111-111111111111=Standard,Shared' -and
-                $Body -notmatch `
-                    '11111111-1111-1111-1111-111111111111=[^"\r\n]*Kiosk' -and
-                $Body -match `
-                    '22222222-2222-2222-2222-222222222222=Legacy' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Shared' -and
+                $Body -notmatch 'Kiosk' -and
+                $Body -match '22222222-2222-2222-2222-222222222222' -and
+                $Body -match 'Legacy' -and
                 $Body -match 'Autopilot Devices'
             } `
             -Times 1
@@ -1233,6 +1250,14 @@ Describe 'Installer tag authorization rules' {
         Invoke-Expression $functionAst.Extent.Text
     }
 
+    It 'accepts structured policy rule objects at the installer entry point' {
+        $parameter = $installerAst.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -eq 'TagAuthorizationRule'
+        }
+
+        $parameter.StaticType | Should -Be ([object[]])
+    }
+
     It 'consolidates tags for the same group' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
             '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
@@ -1258,6 +1283,55 @@ Describe 'Installer tag authorization rules' {
         AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Standard' | Should -Be 'RMAU-Autopilot'
+    }
+
+    It 'preserves a different restricted administrative unit for each rule' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Standard')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Kiosk')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Kiosk'
+            }
+        )
+
+        $policy[0].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-Standard'
+        $policy[1].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-Kiosk'
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Kiosk' | Should -Be 'RMAU-Kiosk'
+    }
+
+    It 'resolves the RMAU from the caller group when rules share a tag' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Shared')
+                restrictedManagementAdministrativeUnitName = 'RMAU-One'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Shared')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Two'
+            }
+        )
+        $principal = [pscustomobject]@{
+            claims = @([pscustomobject]@{
+                typ = 'groups'
+                val = '22222222-2222-2222-2222-222222222222'
+            })
+        }
+
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Shared' `
+            -Principal $principal | Should -Be 'RMAU-Two'
     }
 
     It 'keeps the current policy shape when no administrative unit is configured' {
@@ -1586,7 +1660,6 @@ Describe 'Update script deployment discovery' {
             'Get-AutopilotUpdateConfigurationValue',
                 'Get-AutopilotClientToolsPath',
                 'ConvertTo-UpdateTagAuthorizationRules',
-                'Get-UpdateRestrictedManagementAdministrativeUnitName',
                 'Assert-AutopilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
                 'Get-UpdateApplicationInsightsWorkspaceResourceId',
@@ -1783,16 +1856,20 @@ Describe 'Update script deployment discovery' {
             Should -Be (Join-Path $TestDrive 'AutopilotImport')
     }
 
-    It 'converts the current policy into installer rules' {
+    It 'converts the current policy into installer rules with individual RMAUs' {
         $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags    = @('PAW-CSM', 'BG-Default')
+                restrictedManagementAdministrativeUnitName = 'RMAU-PAW'
             }
         ))
 
-        $rules | Should -Be `
-            '11111111-1111-1111-1111-111111111111=PAW-CSM,BG-Default'
+        $rules[0].groupId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $rules[0].tags | Should -Be @('PAW-CSM', 'BG-Default')
+        $rules[0].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-PAW'
     }
 
     It 'keeps a single preserved installer rule as an array' {
@@ -1842,28 +1919,6 @@ Describe 'Update script deployment discovery' {
         $webClientIdParameter.StaticType | Should -Be ([guid])
         $updateAst.Extent.Text | Should -Match `
             'InstallerPrincipalId\s*=\s*\$installerPrincipalId'
-    }
-
-    It 'supports an existing policy without RMAU metadata' {
-        $policy = [pscustomobject]@{
-            groupId = '11111111-1111-1111-1111-111111111111'
-            tags    = @('Standard')
-        }
-
-        Get-UpdateRestrictedManagementAdministrativeUnitName `
-            -Policy $policy | Should -BeNullOrEmpty
-    }
-
-    It 'preserves the configured RMAU name' {
-        $policy = [pscustomobject]@{
-            groupId = '11111111-1111-1111-1111-111111111111'
-            tags    = @('Standard')
-            restrictedManagementAdministrativeUnitName = `
-                'RMAU-Autopilot'
-        }
-
-        Get-UpdateRestrictedManagementAdministrativeUnitName `
-            -Policy $policy | Should -Be 'RMAU-Autopilot'
     }
 
     It 'reports a concise Function App settings permission error' {
@@ -3067,6 +3122,20 @@ Describe 'Web frontend response types' {
         $rootProxy.responseOverrides.'response.statusCode' | Should -Be '302'
         $rootProxy.responseOverrides.'response.headers.Location' |
             Should -Be '/api/ui/index.html'
+    }
+
+    It 'accepts per-rule policy objects with a legacy rules fallback' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $managementFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ManageTagPolicy\run.ps1') `
+            -Raw
+
+        $managementFunction | Should -Match `
+            "PSObject\.Properties\['policy'\]"
+        $managementFunction | Should -Match '@\(\$requestBody\.policy\)'
+        $managementFunction | Should -Match '@\(\$requestBody\.rules\)'
+        $managementFunction | Should -Match '-Rules\s+\$submittedRules'
     }
 }
 

@@ -81,13 +81,15 @@ Optional token audience accepted by Easy Auth. The default is api:// followed
 by the Entra application Client ID.
 
 .PARAMETER TagAuthorizationRule
-One or more group-to-tag rules in the form
-<Entra-group-object-ID>=<tag1>,<tag2>. Missing rules are requested interactively.
+One or more group-to-tag rules as <Entra-group-object-ID>=<tag1>,<tag2>
+strings or objects with groupId, tags, and an optional
+restrictedManagementAdministrativeUnitName. Missing rules are requested
+interactively.
 
 .PARAMETER RestrictedManagementAdministrativeUnitName
-Optional display name of a restricted management administrative unit. Imported
-devices are added to this unit after Intune creates their Entra device. Leave
-empty to keep the current behavior.
+Optional fallback RMAU applied to string rules. Rule objects can specify an
+individual RMAU. Imported devices are added to the matching rule's unit after
+Intune creates their Entra device.
 
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
@@ -197,7 +199,7 @@ param(
 
     [string] $ApiAudience,
 
-    [string[]] $TagAuthorizationRule,
+    [object[]] $TagAuthorizationRule,
 
     [string] $RestrictedManagementAdministrativeUnitName,
 
@@ -510,20 +512,24 @@ function ConvertTo-TagAuthorizationPolicy {
 
     .PARAMETER Rules
     Optional authorization rules in the format
-    <Entra-group-object-ID>=<tag1>,<tag2>. Multiple entries for the same group
-    are consolidated by the AutopilotImport module.
+    <Entra-group-object-ID>=<tag1>,<tag2>, or rule objects with an optional
+    restrictedManagementAdministrativeUnitName. Multiple entries for the same
+    group are consolidated by the AutopilotImport module.
 
     .OUTPUTS
     System.Object[]. Authorization policy entries containing a groupId and the
     corresponding collection of allowed tags.
     #>
     param(
-        [string[]] $Rules,
+        [object[]] $Rules,
 
         [string] $RestrictedManagementAdministrativeUnitName
     )
 
-    $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $enteredRules = @($Rules | Where-Object {
+        $null -ne $_ -and
+        ($_ -isnot [string] -or -not [string]::IsNullOrWhiteSpace($_))
+    })
     if ($enteredRules.Count -eq 0) {
         Write-Host "`nConfigure which Entra groups may assign which Device Tags." -ForegroundColor Cyan
         Write-Host 'Use the Entra group Object ID, not its display name.'

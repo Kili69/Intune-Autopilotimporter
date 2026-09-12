@@ -498,19 +498,18 @@ function Get-AutopilotClientToolsPath {
 function ConvertTo-UpdateTagAuthorizationRules {
     <#
     .SYNOPSIS
-    Converts the deployed Group Tag policy into installer rule strings.
+    Converts the deployed Group Tag policy into installer rule objects.
 
     .DESCRIPTION
-    Validates every policy entry and converts it to the
-    <group-object-id>=<tag1>,<tag2> format accepted by
-    Install-AutopilotImport.ps1. Invalid or empty policies terminate the
+    Validates every policy entry and preserves its optional restricted
+    management administrative unit. Invalid or empty policies terminate the
     update before deployment changes are made.
 
     .PARAMETER Policy
     Group Tag policy objects returned by Get-AutopilotTagPolicy.
 
     .OUTPUTS
-    System.String[]. Installer-compatible Group Tag authorization rules.
+    System.Object[]. Installer-compatible Group Tag authorization rules.
     #>
     param([Parameter(Mandatory)][object[]] $Policy)
 
@@ -522,46 +521,23 @@ function ConvertTo-UpdateTagAuthorizationRules {
             $tags.Count -eq 0) {
             throw 'The current Group Tag policy contains an invalid rule.'
         }
-        "$($_.groupId)=$($tags -join ',')"
+        $rule = [ordered]@{
+            groupId = ([guid] $_.groupId).ToString()
+            tags = $tags
+        }
+        if ($_.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName'] -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string] $_.restrictedManagementAdministrativeUnitName)) {
+            $rule.restrictedManagementAdministrativeUnitName =
+                ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+        }
+        [pscustomobject] $rule
     })
     if ($rules.Count -eq 0) {
         throw 'The current Group Tag policy is empty.'
     }
     return $rules
-}
-
-function Get-UpdateRestrictedManagementAdministrativeUnitName {
-    <#
-    .SYNOPSIS
-    Reads the administrative unit preserved by the current policy.
-
-    .DESCRIPTION
-    Returns the single non-empty restricted management administrative unit
-    name stored in the policy. The update stops when policy entries disagree,
-    because choosing one value could silently change deployment behavior.
-
-    .PARAMETER Policy
-    Current Group Tag policy objects. Older policies may omit the
-    restrictedManagementAdministrativeUnitName property.
-
-    .OUTPUTS
-    System.String. The configured administrative unit name, or no output when
-    the existing policy does not configure one.
-    #>
-    param([object[]] $Policy = @())
-
-    $names = @($Policy | Where-Object {
-        $_.PSObject.Properties[
-            'restrictedManagementAdministrativeUnitName'
-        ] -and -not [string]::IsNullOrWhiteSpace(
-            [string] $_.restrictedManagementAdministrativeUnitName)
-    } | ForEach-Object {
-        ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
-    } | Select-Object -Unique)
-    if ($names.Count -gt 1) {
-        throw 'The current Group Tag policy contains multiple restricted management administrative units.'
-    }
-    return $names | Select-Object -First 1
 }
 
 function Assert-AutopilotAppSettingsResponse {
@@ -1030,9 +1006,7 @@ $tagAuthorizationRules = @(
     ConvertTo-UpdateTagAuthorizationRules `
         -Policy @($policyResponse.policy)
 )
-$restrictedManagementAdministrativeUnitName = `
-    Get-UpdateRestrictedManagementAdministrativeUnitName `
-        -Policy @($policyResponse.policy)
+$restrictedManagementAdministrativeUnitName = ''
 
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
@@ -1075,7 +1049,7 @@ Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host "  Restricted management AU: $restrictedManagementAdministrativeUnitName"
+Write-Host '  Restricted management AU: preserved per policy rule'
 Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 

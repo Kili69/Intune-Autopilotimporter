@@ -283,41 +283,33 @@ once.
 
 Parameters:
 
-- `-Group` accepts either the Entra group object ID or its exact display name.
-    `-GroupId` and `-GroupName` are aliases for this parameter.
+- `-GroupId` accepts the Entra group object ID. `-Group` remains available as
+    an alias for compatibility.
 - `-GroupTag` accepts one or more Autopilot Group Tags. `-Tag` is an alias.
 - `-Mau` optionally sets the restricted management administrative unit for the
-    complete policy. The full parameter name is
-    `-RestrictedManagementAdministrativeUnitName`. If omitted, the currently
-    configured MAU is preserved.
+    added or updated rule. The full parameter name is
+    `-RestrictedManagementAdministrativeUnitName`. If omitted, an existing
+    RMAU for that rule is preserved; a new rule has no RMAU. Supply an empty
+    string to remove the RMAU from that rule.
 - `-WhatIf` previews the update without writing it to the Azure Function.
-
-Add a group by its exact Entra display name:
-
-```powershell
-Add-AutopilotTagPolicy `
-    -Group 'Autopilot Import Operators' `
-    -GroupTag 'Autopilot-Standard', 'Autopilot-Kiosk'
-```
 
 Add a group by its object ID and set the MAU:
 
 ```powershell
 Add-AutopilotTagPolicy `
-    -Group '11111111-1111-1111-1111-111111111111' `
+    -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Privileged' `
     -Mau 'MAU-Autopilot-Devices' `
     -WhatIf
 ```
 
-If more than one Entra group has the same display name, the object ID is
-required. Run the command without `-WhatIf` to apply the change.
+Run the command without `-WhatIf` to apply the change.
 
 Add another tag to an existing group rule without changing its other tags:
 
 ```powershell
 Add-AutopilotTagPolicy `
-    -Group '11111111-1111-1111-1111-111111111111' `
+    -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Shared'
 ```
 
@@ -325,8 +317,8 @@ Add-AutopilotTagPolicy `
 
 `Remove-AutopilotTagPolicy` removes selected tags from one Entra group when
 `-GroupTag` is supplied. Without `-GroupTag`, it removes the complete Group Tag
-rule for that group. Other group rules and the configured MAU remain unchanged.
-The command does not delete the group from Entra.
+rule for that group. Other group rules and their individual RMAUs remain
+unchanged. The command does not delete the group from Entra.
 
 Parameters:
 
@@ -367,20 +359,36 @@ Function requires at least one group-to-tag rule. Run the command without
 
 #### Replace the Complete Group Tag Policy
 
+Each rule can specify its own restricted management administrative unit.
 Preview the complete desired policy before applying it:
 
 ```powershell
 Set-AutopilotTagPolicy `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
-        '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
-    -RestrictedManagementAdministrativeUnitName 'MAU-Autopilot-Devices' `
+    -TagAuthorizationRule @(
+        [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('Autopilot-Standard', 'Autopilot-Kiosk')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+        }
+        [pscustomobject]@{
+            groupId = '33333333-3333-3333-3333-333333333333'
+            tags = @('Autopilot-Privileged')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Privileged'
+        }
+    ) `
     -WhatIf
 ```
 
-Run the same command without `-WhatIf` to apply it. Omit a previous rule to remove that group. Set `-RestrictedManagementAdministrativeUnitName` to an empty string to disable automatic MAU membership.
+Run the same command without `-WhatIf` to apply it. Omit a previous rule to
+remove that group. Omit `restrictedManagementAdministrativeUnitName` from a
+rule to disable automatic RMAU membership for that rule. Legacy string rules
+remain supported; `-RestrictedManagementAdministrativeUnitName` acts as their
+shared fallback.
 
-The MAU must already exist, have `isMemberManagementRestricted` enabled, and have a unique display name. Without a configured MAU, imports continue without automatic administrative-unit membership.
+Every configured RMAU must already exist, have
+`isMemberManagementRestricted` enabled, and have a unique display name.
+Without a configured RMAU on the matching rule, imports continue without
+automatic administrative-unit membership.
 
 ### Change Group Tag Managers
 
@@ -1004,6 +1012,255 @@ The configuration must contain these values:
 Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in a centrally managed location and pass its path with `-ConfigPath`. When the script remains in the repository layout under `scripts`, its default is the repository-root `client.settings.json`. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which is useful when one PC targets multiple environments.
 
 The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
+
+## REST API Reference
+
+The Azure Function exposes REST endpoints for importing devices, reading
+authorized Group Tags, inspecting import history, and managing the Group Tag
+policy. Replace `<function-app>` in the paths below with the deployed Function
+App hostname:
+
+```text
+https://<function-app>.azurewebsites.net
+```
+
+### Authentication and Authorization
+
+Protected endpoints require an OAuth 2.0 bearer token for the configured
+`API_AUDIENCE` and its `DeviceHash.Import` scope:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+Azure App Service Authentication validates the token before forwarding the
+request. The Function uses the resulting Easy Auth principal to authorize the
+operation. Clients must not create or trust an `x-ms-client-principal` header
+themselves.
+
+Device endpoints authorize callers through their Entra group claims and the
+Group Tag policy. Management endpoints additionally require the caller to be
+the installing principal, a configured manager user or group, or, when
+enabled, a current Intune Role Administrator.
+
+Successful and error responses include an `X-Correlation-Id` header and a
+matching `correlationId` JSON property. Use this value when correlating client
+errors with Application Insights logs.
+
+| Method | Route | Authorization | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/devices/tags` | Authorized importer | List Group Tags available to the caller |
+| `POST` | `/api/devices/import` | Authorized importer | Submit an Autopilot device identity |
+| `GET` | `/api/devices/import?importId=<guid>` | Authorized importer | Read import and post-processing status |
+| `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
+| `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
+| `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
+
+### Get Authorized Group Tags
+
+```http
+GET /api/devices/tags
+```
+
+The response contains only tags assigned to at least one Entra group in the
+caller's token:
+
+```json
+{
+    "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Submit an Autopilot Device
+
+```http
+POST /api/devices/import
+Content-Type: application/json
+```
+
+```json
+{
+    "serialNumber": "PC-0001",
+    "hardwareIdentifier": "<base64-encoded-hardware-hash>",
+    "groupTag": "Autopilot-Standard"
+}
+```
+
+`serialNumber`, `hardwareIdentifier`, and `groupTag` are required. The server
+validates the requested tag against the caller's groups and resolves the RMAU
+from the matching policy rule. A successful submission returns HTTP `202`:
+
+```json
+{
+    "importId": "00000000-0000-0000-0000-000000000000",
+    "serialNumber": "PC-0001",
+    "groupTag": "Autopilot-Standard",
+    "status": "notReceived",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Get Import Status
+
+```http
+GET /api/devices/import?importId=<import-id>
+```
+
+The caller must still be authorized for the Group Tag attached to the import.
+The response combines the Intune import state with the asynchronous Entra
+device attribute and RMAU processing state:
+
+```json
+{
+    "importId": "00000000-0000-0000-0000-000000000000",
+    "serialNumber": "PC-0001",
+    "groupTag": "Autopilot-Standard",
+    "status": "complete",
+    "workflowStatus": "complete",
+    "deviceErrorCode": 0,
+    "deviceErrorName": null,
+    "extensionAttributeName": "extensionAttribute1",
+    "extensionAttributeStatus": "complete",
+    "extensionAttributeValue": "Autopilot-Standard",
+    "entraDeviceId": "00000000-0000-0000-0000-000000000000",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Only `workflowStatus: complete` confirms completion of both the Intune import
+and the configured Entra post-processing.
+
+### Get Import History
+
+```http
+GET /api/management/imports?top=100
+```
+
+`top` is optional, defaults to `100`, and must be between `1` and `1000`. The
+response intentionally excludes hardware hashes and product keys:
+
+```json
+{
+    "imports": [
+        {
+            "importId": "00000000-0000-0000-0000-000000000000",
+            "batchImportId": "00000000-0000-0000-0000-000000000000",
+            "serialNumber": "PC-0001",
+            "groupTag": "Autopilot-Standard",
+            "status": "complete",
+            "deviceErrorCode": 0,
+            "deviceErrorName": null
+        }
+    ],
+    "count": 1,
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Read the Group Tag Policy
+
+```http
+GET /api/management/tag-policy
+```
+
+The response uses the normalized policy format. Every rule can have its own
+optional RMAU:
+
+```json
+{
+    "policy": [
+        {
+            "groupId": "11111111-1111-1111-1111-111111111111",
+            "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+        },
+        {
+            "groupId": "22222222-2222-2222-2222-222222222222",
+            "tags": ["Autopilot-Privileged"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+        }
+    ],
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Replace the Group Tag Policy
+
+```http
+PUT /api/management/tag-policy
+Content-Type: application/json
+```
+
+The operation replaces the complete policy. Omitted rules are removed. Use the
+structured `policy` format to configure an individual RMAU for each rule:
+
+```json
+{
+    "policy": [
+        {
+            "groupId": "11111111-1111-1111-1111-111111111111",
+            "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+        },
+        {
+            "groupId": "22222222-2222-2222-2222-222222222222",
+            "tags": ["Autopilot-Privileged"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+        }
+    ]
+}
+```
+
+Omit `restrictedManagementAdministrativeUnitName` from a rule when imports
+matching that rule must not add the device to an RMAU. Each `groupId` must be a
+GUID, each rule must contain at least one tag, tags must not exceed 128
+characters or contain commas, and an RMAU name must not exceed 256 characters.
+
+The legacy request format remains accepted for compatibility. Its single RMAU
+is applied to every supplied string rule:
+
+```json
+{
+    "rules": [
+        "11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk"
+    ],
+    "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+}
+```
+
+Both formats return HTTP `200` with the normalized `policy` array and a
+`correlationId`.
+
+### Public UI Endpoints
+
+`GET /` redirects to `/api/ui/index.html`. `GET /api/ui/config` returns the
+public MSAL and API configuration required by the browser client, while
+`GET /api/ui/{*path}` serves the static frontend. These routes do not expose
+policy or import data and are the only routes that do not require an access
+token.
+
+### Error Responses
+
+Errors use a stable JSON envelope:
+
+```json
+{
+    "error": "invalidRequest",
+    "message": "Human-readable details when safe to return",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Common status codes are:
+
+- `400 Bad Request`: malformed input, invalid IDs, or an invalid policy
+- `401 Unauthorized`: authentication is missing or invalid
+- `403 Forbidden`: the caller is not authorized for the tag or management API
+- `404 Not Found`: a requested static frontend resource does not exist
+- `500 Internal Server Error`: required service configuration is missing or invalid
+- `502 Bad Gateway`: a Microsoft Graph operation failed
+- `503 Service Unavailable`: manager authorization could not be verified
 
 ## Troubleshooting
 

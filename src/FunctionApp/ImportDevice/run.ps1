@@ -280,7 +280,8 @@ try {
     $restrictedManagementAdministrativeUnitName = `
         Resolve-RestrictedManagementAdministrativeUnitName `
             -Policy $tagAuthorizationPolicy `
-            -GroupTag $groupTag
+            -GroupTag $groupTag `
+            -Principal $principal
 }
 catch [System.UnauthorizedAccessException] {
     Send-JsonResponse -StatusCode Forbidden -Body @{

@@ -22,14 +22,15 @@ Returns the currently configured Group Tag authorization policy with Entra
 group display names without changing it.
 
 .PARAMETER TagAuthorizationRule
-Complete set of authorization rules in the form
-<group-object-id>=<tag1>,<tag2>. This parameter replaces the existing policy
-and is required unless List is specified.
+Complete set of authorization rules as <group-object-id>=<tag1>,<tag2> strings
+or objects with groupId, tags, and an optional
+restrictedManagementAdministrativeUnitName. This parameter replaces the
+existing policy and is required unless List is specified.
 
 .PARAMETER RestrictedManagementAdministrativeUnitName
-Optional display name of the restricted management administrative unit to
-associate with every policy rule. Imported devices using a matching Group Tag
-are added to this unit after their Entra device becomes available.
+Optional fallback RMAU to associate with legacy string rules. Rule objects can
+specify an individual RMAU. Imported devices using a matching Group Tag are
+added to the rule's unit after their Entra device becomes available.
 
 .PARAMETER ManagementUrl
 HTTPS URL of the Function App tag-policy management endpoint. When omitted,
@@ -62,14 +63,21 @@ Returns the current Group Tag authorization policy with Entra group names.
 .EXAMPLE
 .\Set-TagAuthorizationPolicy.ps1 `
     -TagAuthorizationRule @(
-        '11111111-1111-1111-1111-111111111111=Sales,Shared'
-        '22222222-2222-2222-2222-222222222222=Engineering'
+        [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('Sales', 'Shared')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Sales'
+        }
+        [pscustomobject]@{
+            groupId = '22222222-2222-2222-2222-222222222222'
+            tags = @('Engineering')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+        }
     ) `
-    -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
     -ConfigPath '.\client.settings.json'
 
-Replaces the complete policy and associates its Group Tags with the named
-restricted management administrative unit.
+Replaces the complete policy and associates each rule with its own restricted
+management administrative unit.
 #>
 
 [CmdletBinding(DefaultParameterSetName = 'Set', SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -78,7 +86,7 @@ param(
     [switch] $List,
 
     [Parameter(Mandatory, ParameterSetName = 'Set')]
-    [string[]] $TagAuthorizationRule,
+    [object[]] $TagAuthorizationRule,
 
     [Parameter(ParameterSetName = 'Set')]
     [string] $RestrictedManagementAdministrativeUnitName,
