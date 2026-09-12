@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260912.2` - 2026-09-12
+
+- Changed the GitHub package workflow so every successful push still publishes
+  a workflow artifact and successful `main` pushes additionally commit the
+  current ZIP under `InstallationPackage`.
+- Removed the legacy `artifacts` directory during automated main-package
+  publication and prevented recursive CI runs with a skip marker.
+
 ## `1.1.20260912.1` - 2026-09-12
 
 - Standardized the project structure, developer documentation, and PowerShell
