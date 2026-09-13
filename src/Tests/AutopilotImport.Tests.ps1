@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.7
+# Project-Version: 1.1.20260913.8
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1718,6 +1718,11 @@ Describe 'Installer client tools package' {
             'Join-Path\s+\$documentsPath\s+''AutopilotImport'''
         $installerAst.Extent.Text | Should -Not -Match `
             'defaultClientToolsPath\s*=.*PowerShell\\Scripts\\AutopilotImport'
+    }
+
+    It 'keeps formatted status output out of the installer result stream' {
+        $installerAst.Extent.Text | Should -Match `
+            '(?s)Write-Host "`nInstallation completed\.".*?\$result\s*\|\s*Format-List\s*\|\s*Out-Host\s+\$result'
     }
 
     It 'installs compatibility scripts and a versioned client module with defaults' {

@@ -4,6 +4,11 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.8` - 2026-09-13
+
+- Fixed updates failing after a successful installation because formatted
+  installer status output was mixed with the structured deployment result.
+
 ## `1.1.20260913.7` - 2026-09-13
 
 - Updated the system-wide `AutopilotImport.Client` PowerShell module and its

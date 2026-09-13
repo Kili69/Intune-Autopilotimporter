@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.7
+# Project-Version: 1.1.20260913.8
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1689,7 +1689,7 @@ $result = [pscustomobject]@{
 }
 
 Write-Host "`nInstallation completed." -ForegroundColor Green
-$result | Format-List
+$result | Format-List | Out-Host
 $result
 
 #endregion Result
