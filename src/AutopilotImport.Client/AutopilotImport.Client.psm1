@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.8
+# Project-Version: 1.1.20260913.9
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1635,7 +1635,8 @@ function Remove-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject returned by the policy management API when the update runs.
+    System.String success message with GroupId, GroupName, RemovedTags,
+    RuleRemoved, CorrelationId, Updated, and ApiResponse metadata.
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
@@ -1788,7 +1789,7 @@ function Remove-AutopilotTagPolicy {
         return
     }
 
-    Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
         -Authentication Bearer `
@@ -1796,6 +1797,43 @@ function Remove-AutopilotTagPolicy {
         -ContentType 'application/json' `
         -Body $body `
         -ErrorAction Stop
+
+    $groupLabel = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
+        $resolvedGroupId
+    }
+    else {
+        $groupDisplayName
+    }
+    $message = if ($removeTags.Count -eq 0) {
+        "The tag policy for group '$groupLabel' was removed."
+    }
+    elseif ($removeTags.Count -eq 1) {
+        "Group Tag '$($removeTags[0])' was removed from the tag policy for group '$groupLabel'."
+    }
+    else {
+        "Group Tags '$($removeTags -join ', ')' were removed from the tag policy for group '$groupLabel'."
+    }
+    $message | Add-Member `
+        -NotePropertyMembers @{
+            GroupId      = $resolvedGroupId
+            GroupName    = $groupDisplayName
+            RemovedTags  = @($removeTags)
+            RuleRemoved  = $removeTags.Count -eq 0
+            CorrelationId = if ($response.PSObject.Properties['correlationId']) {
+                [string] $response.correlationId
+            }
+            else {
+                $null
+            }
+            Updated      = if ($response.PSObject.Properties['updated']) {
+                [bool] $response.updated
+            }
+            else {
+                $true
+            }
+            ApiResponse  = $response
+        } `
+        -PassThru
 }
 
 function Set-AutopilotTagPolicy {

@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.8
+# Project-Version: 1.1.20260913.9
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -650,6 +650,7 @@ Describe 'Client Group Tag policy display' {
                     groupId = '11111111-1111-1111-1111-111111111111'
                     tags    = @('Standard', 'Kiosk')
                 })
+                functionVersion = '1.1.20260913.9'
                 correlationId = '22222222-2222-2222-2222-222222222222'
             }
         }
@@ -690,6 +691,7 @@ Describe 'Client Group Tag policy display' {
 
         $result.policy[0].groupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
+        $result.functionVersion | Should -Be '1.1.20260913.9'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter { $Uri -like 'https://graph.microsoft.com/*' } `
@@ -998,6 +1000,15 @@ Describe 'Removing a Client Group Tag policy rule' {
             -Confirm:$false
 
         $result.updated | Should -BeTrue
+        [string] $result | Should -Be `
+            "The tag policy for group 'Obsolete Autopilot Group' was removed."
+        ($result | Out-String).Trim() | Should -Be `
+            "The tag policy for group 'Obsolete Autopilot Group' was removed."
+        $result.GroupId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.GroupName | Should -Be 'Obsolete Autopilot Group'
+        $result.RuleRemoved | Should -BeTrue
+        $result.RemovedTags | Should -BeNullOrEmpty
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
@@ -1056,6 +1067,12 @@ Describe 'Removing a Client Group Tag policy rule' {
             -Confirm:$false
 
         $result.updated | Should -BeTrue
+        [string] $result | Should -Be `
+            "Group Tag 'Kiosk' was removed from the tag policy for group '11111111-1111-1111-1111-111111111111'."
+        $result.GroupId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $result.RuleRemoved | Should -BeFalse
+        $result.RemovedTags | Should -Be 'Kiosk'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
@@ -3077,6 +3094,23 @@ Describe 'Tag policy manager authorization' {
             -Principal $principal `
             -ManagerPolicy $policyWithEmptyManagers |
             Should -Be $false
+    }
+}
+
+Describe 'Function version reporting' {
+    It 'returns the deployed project version in management responses' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $managementFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ManageTagPolicy\run.ps1') `
+            -Raw
+
+        $managementFunction | Should -Match `
+            '''X-AutopilotImport-Version''\s*=\s*\$functionVersion'
+        ([regex]::Matches(
+                $managementFunction,
+                'functionVersion\s*=\s*\$functionVersion')).Count |
+            Should -Be 2
     }
 }
 

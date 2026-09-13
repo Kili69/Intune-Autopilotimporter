@@ -239,6 +239,26 @@ The default timeout is 30 minutes with a 15-second polling interval. Override th
 
 ## Autopilot-importer management
 
+### Check Installed and Deployed Versions
+
+Compare the active PowerShell module with the Function code currently serving
+the management API:
+
+```powershell
+$moduleVersion = (Get-Module AutopilotImport.Client).Version
+$functionVersion = (Get-AutopilotTagPolicy -Raw).functionVersion
+
+[pscustomobject]@{
+    PowerShellModule = $moduleVersion
+    AzureFunction    = $functionVersion
+}
+```
+
+Import `AutopilotImport.Client` first if `Get-Module` returns no result. The
+Function version is also returned in the `X-AutopilotImport-Version` response
+header. Updating the Function deployment and updating client modules are
+separate operations, so their versions can temporarily differ.
+
 ### Read Import History
 
 The installing user, configured manager users or groups, and current members
@@ -385,6 +405,13 @@ last tag cannot be removed from a group rule. Omit `-GroupTag` to remove that
 complete rule instead. The last policy rule cannot be removed because the
 Function requires at least one group-to-tag rule. Run the command without
 `-WhatIf` to apply the removal.
+
+After a successful complete-rule removal, the command prints a concise message
+such as `The tag policy for group 'Obsolete Autopilot Group' was removed.`
+Removing selected tags produces the corresponding tag-specific message. The
+returned string also exposes `GroupId`, `GroupName`, `RemovedTags`,
+`RuleRemoved`, `CorrelationId`, `Updated`, and `ApiResponse` properties for
+automation.
 
 #### Replace the Complete Group Tag Policy
 

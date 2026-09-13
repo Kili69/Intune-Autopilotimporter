@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.9` - 2026-09-13
+
+- Changed `Remove-AutopilotTagPolicy` to return a concise human-readable
+  success message with structured removal metadata instead of displaying the
+  complete policy response.
+- Added the deployed Function version to Group Tag management responses and
+  documented how to compare it with the active PowerShell module version.
+
 ## `1.1.20260913.8` - 2026-09-13
 
 - Fixed updates failing after a successful installation because formatted
