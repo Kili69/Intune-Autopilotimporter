@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.12
+# Project-Version: 1.1.20260913.13
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -410,6 +410,122 @@ function Get-ClientAccessToken {
         [string] $tokenResult.Token
     }
     return ConvertTo-SecureString $plainToken -AsPlainText -Force
+}
+
+function Resolve-ClientFunctionAppFromUrl {
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern('^https://')]
+        [string] $FunctionUrl,
+
+        [Parameter(Mandatory)]
+        [string] $TenantId,
+
+        [string] $SubscriptionId
+    )
+
+    Assert-ClientCommand -Name @(
+        'Get-AzContext'
+        'Get-AzSubscription'
+        'Get-AzWebApp'
+        'Set-AzContext'
+    )
+    $functionUri = [uri] $FunctionUrl
+    $hostName = $functionUri.Host
+    [void] (Get-ClientAccessToken `
+        -TenantId $TenantId `
+        -ResourceUrl 'https://management.azure.com/' `
+        -SubscriptionId $SubscriptionId)
+    $originalContext = Get-AzContext -ErrorAction SilentlyContinue
+    $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+        @(Get-AzSubscription -TenantId $TenantId -ErrorAction Stop)
+    }
+    else {
+        @(Get-AzSubscription `
+            -SubscriptionId $SubscriptionId `
+            -TenantId $TenantId `
+            -ErrorAction Stop)
+    }
+    $matches = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($subscription in $subscriptions) {
+            try {
+                $subscriptionContext = Set-AzContext `
+                    -Tenant $subscription.TenantId `
+                    -Subscription $subscription.Id `
+                    -WhatIf:$false `
+                    -ErrorAction Stop
+                foreach ($webApp in @(Get-AzWebApp `
+                        -DefaultProfile $subscriptionContext `
+                        -ErrorAction Stop)) {
+                    $hostNames = @($webApp.HostNames) +
+                        @($webApp.DefaultHostName)
+                    if ([string] $webApp.Kind -like '*functionapp*' -and
+                        $hostName -in $hostNames) {
+                        $matches.Add([pscustomobject]@{
+                                SubscriptionId = [string] $subscription.Id
+                                ResourceGroupName = [string] $webApp.ResourceGroup
+                                FunctionAppName = [string] $webApp.Name
+                            })
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Function App discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
+            }
+        }
+    }
+    finally {
+        if ($originalContext) {
+            Set-AzContext `
+                -Context $originalContext `
+                -WhatIf:$false `
+                -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+    if ($matches.Count -eq 0) {
+        throw "No accessible Azure Function App uses hostname '$hostName'. Verify Azure access or pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+    }
+    if ($matches.Count -gt 1) {
+        throw "Hostname '$hostName' matched more than one accessible Azure Function App. Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+    }
+    return $matches[0]
+}
+
+function Save-ClientDeploymentConfiguration {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable] $Configuration,
+
+        [Parameter(Mandatory)]
+        [object] $Deployment
+    )
+
+    $settingsPath = [string] $Configuration.ConfigPath
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        return
+    }
+    $settings = Get-Content -LiteralPath $settingsPath -Raw |
+        ConvertFrom-Json -AsHashtable
+    $settings['subscriptionId'] = [string] $Deployment.SubscriptionId
+    $settings['resourceGroupName'] = [string] $Deployment.ResourceGroupName
+    $settings['functionAppName'] = [string] $Deployment.FunctionAppName
+    $temporaryPath = "$settingsPath.tmp"
+    try {
+        $settings | ConvertTo-Json | Set-Content `
+            -LiteralPath $temporaryPath `
+            -Encoding utf8NoBOM
+        Move-Item `
+            -LiteralPath $temporaryPath `
+            -Destination $settingsPath `
+            -Force
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $temporaryPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-CoreModulePath {
@@ -2137,6 +2253,13 @@ function Update-AutopilotTagPolicyManager {
     )
 
     Assert-ClientCommand -Name 'Get-AzWebApp', 'Get-AzRoleAssignment', 'Set-AzWebApp', 'Set-AzContext'
+    $addIds = @($AddPrincipalId | Where-Object { $null -ne $_ } |
+        ForEach-Object { $_.ToString() })
+    $removeIds = @($RemovePrincipalId | Where-Object { $null -ne $_ } |
+        ForEach-Object { $_.ToString() })
+    if ($addIds.Count -eq 0 -and $removeIds.Count -eq 0) {
+        throw 'Specify at least one principal ID to add or remove.'
+    }
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         subscriptionId = $SubscriptionId; tenantId = $TenantId
         resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
@@ -2155,22 +2278,27 @@ function Update-AutopilotTagPolicyManager {
     )
     if ($missingDeploymentValues.Count -gt 0) {
         $configuredFunctionUrl = [string] $configuration['functionUrl']
+        $configuredTenantId = Get-ConfigurationValue `
+            $configuration tenantId 'TenantId'
         if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
-            $configuredFunctionUrl = '<Function-URL>'
+            throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
         }
-        throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Save them by running Get-AutoPilotImporterClientConfiguration -FunctionUrl '$configuredFunctionUrl' -SubscriptionId '<Subscription-ID>' -ResourceGroupName '<Resource-Group>' -FunctionAppName '<Function-App-Name>', or pass the missing values directly to this command."
+        Write-Verbose "Discovering Azure Function App deployment details for '$configuredFunctionUrl'."
+        $deployment = Resolve-ClientFunctionAppFromUrl `
+            -FunctionUrl $configuredFunctionUrl `
+            -TenantId $configuredTenantId `
+            -SubscriptionId ([string] $configuration['subscriptionId'])
+        $configuration['subscriptionId'] = $deployment.SubscriptionId
+        $configuration['resourceGroupName'] = $deployment.ResourceGroupName
+        $configuration['functionAppName'] = $deployment.FunctionAppName
+        Save-ClientDeploymentConfiguration `
+            -Configuration $configuration `
+            -Deployment $deployment
     }
     $resolvedSubscriptionId = Get-ConfigurationValue $configuration subscriptionId 'SubscriptionId'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $resolvedResourceGroup = Get-ConfigurationValue $configuration resourceGroupName 'ResourceGroupName'
     $resolvedFunctionName = Get-ConfigurationValue $configuration functionAppName 'FunctionAppName'
-    $addIds = @($AddPrincipalId | Where-Object { $null -ne $_ } |
-        ForEach-Object { $_.ToString() })
-    $removeIds = @($RemovePrincipalId | Where-Object { $null -ne $_ } |
-        ForEach-Object { $_.ToString() })
-    if ($addIds.Count -eq 0 -and $removeIds.Count -eq 0) {
-        throw 'Specify at least one principal ID to add or remove.'
-    }
 
     [void](Get-ClientAccessToken $resolvedTenantId 'https://management.azure.com/' $resolvedSubscriptionId)
     Set-AzContext -Tenant $resolvedTenantId -Subscription $resolvedSubscriptionId -WhatIf:$false | Out-Null

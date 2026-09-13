@@ -714,9 +714,14 @@ Get-AutoPilotImporterClientConfiguration `
 The configuration remains in
 `$HOME\.autopilotimporter\client.settings.json` across module updates.
 
-Administrators who also need Azure control-plane values for manager-policy
-commands can add them to the same persistent profile. `FunctionAppName` is the
-Azure resource name, not a custom DNS name:
+Manager-policy commands automatically search accessible subscriptions in the
+configured tenant when Azure deployment values are missing. They match the
+configured Function hostname, including a custom DNS name, against the Function
+App hostname bindings and persist a unique match in the client profile.
+
+When discovery cannot find a unique Function App, administrators can add the
+Azure control-plane values explicitly. `FunctionAppName` is the Azure resource
+name, not a custom DNS name:
 
 ```powershell
 Get-AutoPilotImporterClientConfiguration `
@@ -726,9 +731,8 @@ Get-AutoPilotImporterClientConfiguration `
     -FunctionAppName '<Function-App-Name>'
 ```
 
-Running the URL bootstrap again preserves existing Azure deployment details
-unless explicit replacement values are supplied. This prevents a refresh from
-breaking `Add-AutopilotTagPolicyManager` and related commands.
+Running the URL bootstrap again preserves discovered or explicitly configured
+Azure deployment details unless explicit replacement values are supplied.
 
 To create a separate administrative configuration file instead, use
 `New-AutoPilotImporterClientConfiguration`. By default, it creates

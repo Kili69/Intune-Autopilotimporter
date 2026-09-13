@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.12
+# Project-Version: 1.1.20260913.13
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -485,6 +485,7 @@ Describe 'Client manager policy App Settings' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
             '..\AutopilotImport.Client\AutopilotImport.Client.psm1'
+        Import-Module $clientModulePath -Force
         $tokens = $null
         $parseErrors = $null
         $clientModuleAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -497,6 +498,10 @@ Describe 'Client manager policy App Settings' {
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
             $node.Name -eq 'Update-AutopilotTagPolicyManager'
         }, $true) | Select-Object -First 1
+        $resolvedClientModulePath = (Resolve-Path $clientModulePath).Path
+        $clientModule = Get-Module AutopilotImport.Client |
+            Where-Object Path -eq $resolvedClientModulePath |
+            Select-Object -First 1
     }
 
     It 'passes manager policy JSON to Az.Websites as a string value' {
@@ -506,21 +511,171 @@ Describe 'Client manager policy App Settings' {
             '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
     }
 
-    It 'explains how to add Azure details missing after URL bootstrap' {
+    It 'discovers Azure details missing after URL bootstrap' {
         $settingsPath = Join-Path $TestDrive 'client.settings.json'
         @{
             functionUrl = 'https://autopilot.example/api/devices/import'
             tenantId = '22222222-2222-2222-2222-222222222222'
         } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
         Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+        Mock Resolve-ClientFunctionAppFromUrl `
+            -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                SubscriptionId = '33333333-3333-3333-3333-333333333333'
+                ResourceGroupName = 'rg-autopilot-import'
+                FunctionAppName = 'func-autopilot-import'
+            }
+        }
+        Mock Save-ClientDeploymentConfiguration `
+            -ModuleName AutopilotImport.Client
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Set-AzContext -ModuleName AutopilotImport.Client
+        Mock Get-AzWebApp -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Id = '/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg-autopilot-import/providers/Microsoft.Web/sites/func-autopilot-import'
+                SiteConfig = [pscustomobject]@{
+                    AppSettings = @(
+                        [pscustomobject]@{
+                            Name = 'MANAGER_AUTHORIZATION_POLICY'
+                            Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":[],"allowIntuneRoleAdministrators":true}'
+                        }
+                    )
+                }
+            }
+        }
+        Mock Get-AzAccessToken -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Token = ConvertTo-SecureString `
+                    'eyJhbGciOiJub25lIn0.eyJvaWQiOiI1NTU1NTU1NS01NTU1LTU1NTUtNTU1NS01NTU1NTU1NTU1NTUifQ.' `
+                    -AsPlainText -Force
+            }
+        }
+        Mock Get-AzRoleAssignment -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                RoleDefinitionName = 'Owner'
+                Scope = '/subscriptions/33333333-3333-3333-3333-333333333333'
+            }
+        }
+        Mock Import-Module -ModuleName AutopilotImport.Client
+        Mock Get-CoreModulePath -ModuleName AutopilotImport.Client {
+            'AutopilotImport.psm1'
+        }
+        Mock Test-TagManagerPolicyAdministratorRole `
+            -ModuleName AutopilotImport.Client { $true }
+        Mock Set-AzWebApp -ModuleName AutopilotImport.Client
 
-        {
-            Update-AutopilotTagPolicyManager `
-                -AddPrincipalId `
-                    '11111111-1111-1111-1111-111111111111' `
-                -ConfigPath $settingsPath
-        } | Should -Throw `
-            "*missing: SubscriptionId, ResourceGroupName, FunctionAppName*Get-AutoPilotImporterClientConfiguration -FunctionUrl 'https://autopilot.example/api/devices/import'*-SubscriptionId*"
+        $result = Update-AutopilotTagPolicyManager `
+            -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
+            -ConfigPath $settingsPath `
+            -Confirm:$false
+
+        $result.FunctionAppName | Should -Be 'func-autopilot-import'
+        Should -Invoke Resolve-ClientFunctionAppFromUrl `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $FunctionUrl -eq `
+                    'https://autopilot.example/api/devices/import' -and
+                $TenantId -eq `
+                    '22222222-2222-2222-2222-222222222222'
+            }
+        Should -Invoke Save-ClientDeploymentConfiguration `
+            -ModuleName AutopilotImport.Client `
+            -Times 1
+    }
+
+    It 'resolves a Function App by its custom hostname' {
+        $azureContext = `
+            [Microsoft.Azure.Commands.Profile.Models.Core.PSAzureContext]::new()
+        Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Get-AzContext -ModuleName AutopilotImport.Client {
+            $azureContext
+        }
+        Mock Get-AzSubscription -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Id = '33333333-3333-3333-3333-333333333333'
+                TenantId = '22222222-2222-2222-2222-222222222222'
+            }
+        }
+        Mock Set-AzContext -ModuleName AutopilotImport.Client {
+            $azureContext
+        }
+        Mock Get-AzWebApp -ModuleName AutopilotImport.Client {
+            @(
+                [pscustomobject]@{
+                    Kind = 'app'
+                    Name = 'unrelated-web-app'
+                    ResourceGroup = 'rg-web'
+                    HostNames = @('autopilot.example')
+                    DefaultHostName = 'unrelated.azurewebsites.net'
+                }
+                [pscustomobject]@{
+                    Kind = 'functionapp'
+                    Name = 'func-autopilot-import'
+                    ResourceGroup = 'rg-autopilot-import'
+                    HostNames = @(
+                        'func-autopilot-import.azurewebsites.net'
+                        'autopilot.example'
+                    )
+                    DefaultHostName = `
+                        'func-autopilot-import.azurewebsites.net'
+                }
+            )
+        }
+
+        $deployment = & $clientModule {
+            Resolve-ClientFunctionAppFromUrl `
+                -FunctionUrl `
+                    'https://autopilot.example/api/devices/import' `
+                -TenantId '22222222-2222-2222-2222-222222222222'
+        }
+
+        $deployment.SubscriptionId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+        $deployment.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $deployment.FunctionAppName | Should -Be `
+            'func-autopilot-import'
+        Should -Invoke Set-AzContext `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter { $Context -eq $azureContext }
+    }
+
+    It 'persists discovered Azure deployment details in the client profile' {
+        $settingsPath = Join-Path $TestDrive 'persisted.settings.json'
+        @{
+            functionUrl = 'https://autopilot.example/api/devices/import'
+            tenantId = '22222222-2222-2222-2222-222222222222'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+
+        & $clientModule {
+            param($Path)
+            Save-ClientDeploymentConfiguration `
+                -Configuration @{
+                    ConfigPath = $Path
+                } `
+                -Deployment ([pscustomobject]@{
+                    SubscriptionId = `
+                        '33333333-3333-3333-3333-333333333333'
+                    ResourceGroupName = 'rg-autopilot-import'
+                    FunctionAppName = 'func-autopilot-import'
+                })
+        } $settingsPath
+
+        $settings = Get-Content -LiteralPath $settingsPath -Raw |
+            ConvertFrom-Json
+        $settings.subscriptionId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+        $settings.resourceGroupName | Should -Be 'rg-autopilot-import'
+        $settings.functionAppName | Should -Be 'func-autopilot-import'
+        $settings.functionUrl | Should -Be `
+            'https://autopilot.example/api/devices/import'
     }
 }
 
