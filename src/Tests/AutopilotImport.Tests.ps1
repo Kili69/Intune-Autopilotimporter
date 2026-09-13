@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.5
+# Project-Version: 1.1.20260913.6
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2415,13 +2415,33 @@ Describe 'Installer packaged web frontend fallback' {
         Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
     }
 
-    It 'rebuilds the frontend in CI before creating the deployment package' {
+    It 'rebuilds the frontend in GitHub CI only when its source changes' {
         $workflow = Get-Content `
             -LiteralPath (Join-Path $PSScriptRoot '..\..\.github\workflows\deployment-package.yml') `
             -Raw
 
         $workflow | Should -Match `
+            '(?s)Detect web frontend changes.*?src/Web.*?Build web frontend'
+        $workflow | Should -Match `
+            "if: steps\.web_changes\.outputs\.changed == 'true'"
+        $workflow | Should -Match `
             '(?s)Build web frontend.*?npm ci.*?npm run build.*?Build deployment package'
+    }
+
+    It 'rebuilds the frontend in Azure CI only when its source changes' {
+        $pipeline = Get-Content `
+            -LiteralPath (Join-Path $PSScriptRoot '..\..\azure-pipelines.yml') `
+            -Raw
+
+        $pipeline | Should -Match `
+            '(?s)git diff.*?HEAD\^.*?HEAD.*?src/Web.*?Detect web frontend changes'
+        $pipeline | Should -Match `
+            '(?s)Detect web frontend changes.*?Use Node\.js 22'
+        $conditionMatches = [regex]::Matches(
+            $pipeline,
+            "condition: eq\(variables\['webFrontendChanged'\], 'true'\)"
+        )
+        $conditionMatches.Count | Should -Be 2
     }
 }
 
@@ -3482,7 +3502,7 @@ Describe 'Project metadata entries' {
         }
     }
 
-    It 'rejects a prebuilt web frontend with a stale project version' {
+    It 'accepts a prebuilt web frontend with an independent version' {
         $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
         $assetRoot = Join-Path $webRoot 'assets'
         New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
@@ -3493,29 +3513,7 @@ Describe 'Project metadata entries' {
             -LiteralPath (Join-Path $assetRoot 'index-test.js') `
             -Value 'const version = "1.0.20260902.1";'
 
-        {
-            Assert-BuiltWebFrontend `
-                -Root $TestDrive `
-                -ProjectVersion '1.1.20260911.1'
-        } | Should -Throw '*does not contain project version 1.1.20260911.1*'
-    }
-
-    It 'accepts a prebuilt web frontend with the central project version' {
-        $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
-        $assetRoot = Join-Path $webRoot 'assets'
-        New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
-        Set-Content `
-            -LiteralPath (Join-Path $webRoot 'index.html') `
-            -Value '<script type="module" src="/api/ui/assets/index-test.js"></script>'
-        Set-Content `
-            -LiteralPath (Join-Path $assetRoot 'index-test.js') `
-            -Value 'const version = "1.1.20260911.1";'
-
-        {
-            Assert-BuiltWebFrontend `
-                -Root $TestDrive `
-                -ProjectVersion '1.1.20260911.1'
-        } | Should -Not -Throw
+        { Assert-BuiltWebFrontend -Root $TestDrive } | Should -Not -Throw
     }
 
     It 'rejects a PowerShell marker that differs from the central version' {

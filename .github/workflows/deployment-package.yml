@@ -44,7 +44,28 @@ jobs:
         shell: pwsh
         run: Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
 
+      - name: Detect web frontend changes
+        id: web_changes
+        shell: pwsh
+        env:
+          BASE_COMMIT: ${{ github.event.before }}
+          HEAD_COMMIT: ${{ github.sha }}
+        run: |
+          $baseCommit = $env:BASE_COMMIT
+          if ([string]::IsNullOrWhiteSpace($baseCommit) -or
+              $baseCommit -match '^0+$') {
+            $baseCommit = "$env:HEAD_COMMIT^"
+          }
+          $changedFiles = @(git diff --name-only `
+            $baseCommit `
+            $env:HEAD_COMMIT `
+            -- `
+            src/Web)
+          $changed = ($changedFiles.Count -gt 0).ToString().ToLowerInvariant()
+          "changed=$changed" >> $env:GITHUB_OUTPUT
+
       - name: Build web frontend
+        if: steps.web_changes.outputs.changed == 'true'
         working-directory: src/Web
         shell: pwsh
         run: |

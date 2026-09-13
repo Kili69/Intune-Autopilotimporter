@@ -884,6 +884,9 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 
 GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
 
+The CI workflows rebuild and test the web frontend only when files under
+`src/Web` changed. Other changes reuse the committed frontend bundle.
+
 After a successful push to `main`, GitHub Actions also commits the current ZIP
 to the `InstallationPackage` directory on `main`. The publish commit uses
 `[skip ci]` to prevent a recursive workflow run. Each publication removes
@@ -968,6 +971,10 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 #### 4. Publish the Function Code
 
 The ZIP archive must contain `host.json` at its root:
+
+Rebuild the web frontend first only when files under `src/Web` changed. For
+documentation, PowerShell module, installer, or backend Function changes, use
+the existing bundle under `src/FunctionApp/WebFrontend/wwwroot`.
 
 ```powershell
 Push-Location .\src\Web
@@ -1557,7 +1564,8 @@ process, installation package mapping, CI sequence, and build troubleshooting.
 ### Build the Frontend Locally
 
 The frontend source is located under `src/Web`, while the Azure Function that
-serves it is located under `src/FunctionApp/WebFrontend`. Build and test it with:
+serves it is located under `src/FunctionApp/WebFrontend`. Build and test it only
+after changing files under `src/Web`:
 
 ```powershell
 Set-Location .\src\Web
@@ -1569,7 +1577,9 @@ npm run check
 bundle under `src\FunctionApp\WebFrontend\wwwroot`. The generated
 `src\Web\node_modules`, `src\Web\tsconfig.tsbuildinfo`, and
 `src\FunctionApp\WebFrontend\wwwroot` paths are intentionally ignored by Git
-and are recreated during a local build or deployment.
+and are recreated during a frontend build. The version displayed by the web
+frontend remains unchanged for documentation, PowerShell module, installer,
+and backend Function-only releases.
 
 ### Publish the OOBE Helper to PowerShell Gallery
 

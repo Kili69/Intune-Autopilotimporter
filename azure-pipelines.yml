@@ -20,8 +20,19 @@ stages:
       - job: Pester
         steps:
           - checkout: self
+            fetchDepth: 0
+          - pwsh: |
+              $changedFiles = @(git diff `
+                --name-only `
+                HEAD^ `
+                HEAD `
+                -- src/Web)
+              $changed = ($changedFiles.Count -gt 0).ToString().ToLowerInvariant()
+              Write-Host "##vso[task.setvariable variable=webFrontendChanged]$changed"
+            displayName: Detect web frontend changes
           - task: NodeTool@0
             displayName: Use Node.js 22
+            condition: eq(variables['webFrontendChanged'], 'true')
             inputs:
               versionSpec: '22.x'
           - script: |
@@ -29,6 +40,7 @@ stages:
               npm run check
             workingDirectory: src/Web
             displayName: Test and build web frontend
+            condition: eq(variables['webFrontendChanged'], 'true')
           - task: PowerShell@2
             displayName: Run Pester tests
             inputs:

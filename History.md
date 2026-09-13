@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.6` - 2026-09-13
+
+- Decoupled the prebuilt web frontend version from the central package version
+  so documentation, PowerShell module, installer, and backend Function changes
+  can reuse the existing frontend bundle.
+- Changed GitHub Actions and Azure Pipelines to test and rebuild the frontend
+  only when files under `src/Web` change.
+
 ## `1.1.20260913.5` - 2026-09-13
 
 - Prevented mutating client module commands from prompting automatically,

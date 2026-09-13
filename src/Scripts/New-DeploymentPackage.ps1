@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.5
+# Project-Version: 1.1.20260913.6
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -27,9 +27,10 @@ the files required to install, update, and operate Autopilot Import. Package
 content is selected from an explicit allowlist so local configuration, tests,
 logs, repository metadata, and generated files are not included.
 
-Before packaging, the script verifies that PowerShell version markers, the
-client module manifest, and the version embedded in the built web frontend all
-match VERSION. Package creation stops when any version is inconsistent.
+Before packaging, the script verifies that PowerShell version markers and the
+client module manifest match VERSION. It also verifies that the prebuilt web
+frontend and all assets referenced by its index exist. The web frontend keeps
+its previously built version until its source changes.
 
 The archive contains a top-level directory named
 Intune-autopilotImporter-<branch><version>. An existing archive for the same
@@ -91,10 +92,7 @@ $ErrorActionPreference = 'Stop'
 function Assert-BuiltWebFrontend {
     param(
         [Parameter(Mandatory)]
-        [string] $Root,
-
-        [Parameter(Mandatory)]
-        [string] $ProjectVersion
+        [string] $Root
     )
 
     $sourceWebRoot = Join-Path $Root `
@@ -119,7 +117,7 @@ function Assert-BuiltWebFrontend {
         throw "The prebuilt web frontend index does not reference any assets: $indexPath"
     }
 
-    $javaScriptAssets = @()
+    $hasJavaScriptAsset = $false
     foreach ($assetMatch in $assetMatches) {
         $relativePath = $assetMatch.Groups['path'].Value.Replace(
             '/',
@@ -130,33 +128,12 @@ function Assert-BuiltWebFrontend {
             throw "The prebuilt web frontend asset is missing: $assetPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
         }
         if ([IO.Path]::GetExtension($assetPath) -eq '.js') {
-            $javaScriptAssets += $assetPath
+            $hasJavaScriptAsset = $true
         }
     }
 
-    if ($javaScriptAssets.Count -eq 0) {
+    if (-not $hasJavaScriptAsset) {
         throw "The prebuilt web frontend index does not reference a JavaScript asset: $indexPath"
-    }
-
-    $embeddedVersions = @(
-        foreach ($assetPath in $javaScriptAssets) {
-            $assetContent = Get-Content -LiteralPath $assetPath -Raw
-            [regex]::Matches(
-                $assetContent,
-                '(?<!\d)(?<version>\d+\.\d+\.\d{8}\.\d+)(?!\d)'
-            ) | ForEach-Object {
-                $_.Groups['version'].Value
-            }
-        }
-    ) | Select-Object -Unique
-    if ($embeddedVersions -notcontains $ProjectVersion) {
-        throw "The prebuilt web frontend does not contain project version $ProjectVersion. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
-    }
-    $unexpectedVersions = @(
-        $embeddedVersions | Where-Object { $_ -ne $ProjectVersion }
-    )
-    if ($unexpectedVersions.Count -gt 0) {
-        throw "The prebuilt web frontend contains unexpected project version(s): $($unexpectedVersions -join ', '). Expected only $ProjectVersion."
     }
 }
 
@@ -263,9 +240,7 @@ $packagePath = Join-Path $OutputDirectory "$packageName.zip"
 Assert-ProjectVersionConsistency `
     -Root $ProjectRoot `
     -ProjectVersion $projectVersion
-Assert-BuiltWebFrontend `
-    -Root $ProjectRoot `
-    -ProjectVersion $projectVersion
+Assert-BuiltWebFrontend -Root $ProjectRoot
 
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
