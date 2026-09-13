@@ -243,7 +243,36 @@ The default timeout is 30 minutes with a 15-second polling interval. Override th
 
 The installing user, configured manager users or groups, and current members
 of the Intune RBAC role `Intune Role Administrator` can read recent import
-operations and their current Intune status:
+operations and their current Intune status. The command is exported by the
+`AutopilotImport.Client` module. It is not a standalone script in the extracted
+deployment package. Install the generated client module package as described
+under [Distribute the Import Client to Additional PCs](#5-distribute-the-import-client-to-additional-pcs),
+then open a new PowerShell 7 session.
+
+Verify which installed module version provides the command:
+
+```powershell
+Get-Command Get-AutopilotImportHistory -All |
+    Select-Object Name, Version, Source
+```
+
+If an older module is already loaded in the current session, load the newest
+installed version:
+
+```powershell
+$module = Get-Module -ListAvailable AutopilotImport.Client |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+if (-not $module) {
+    throw 'AutopilotImport.Client is not installed. Extract the generated client module package into a directory listed in $env:PSModulePath.'
+}
+
+Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
+Import-Module $module.Path -Force
+```
+
+Then retrieve the import history:
 
 ```powershell
 Get-AutopilotImportHistory

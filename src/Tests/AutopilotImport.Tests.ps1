@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.3
+# Project-Version: 1.1.20260913.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1745,6 +1745,9 @@ Describe 'Installer client tools package' {
             $autoloadedCommand.Module.Path | Should -Be `
                 (Join-Path $autoloadModuleRoot `
                     "AutopilotImport.Client\$moduleVersion\AutopilotImport.Client.psm1")
+            Get-Command Get-AutopilotImportHistory `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
         }
         finally {
             Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue

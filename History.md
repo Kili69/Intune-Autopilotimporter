@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.4` - 2026-09-13
+
+- Clarified that `Get-AutopilotImportHistory` is provided by the installed
+  client module and documented how to detect and replace an older loaded
+  module version.
+- Added package coverage that verifies the import-history command is exported
+  through PowerShell module autoloading.
+
 ## `1.1.20260913.3` - 2026-09-13
 
 - Fixed Group Tag policy updates so a restricted management administrative
