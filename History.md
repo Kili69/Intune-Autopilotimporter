@@ -4,6 +4,12 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.14` - 2026-09-13
+
+- Clarified that adding or removing Group Tag managers requires an effective
+  Azure Owner or Contributor assignment; Group Tag manager or Intune Role
+  Administrator authorization alone does not permit manager-list changes.
+
 ## `1.1.20260913.13` - 2026-09-13
 
 - Added automatic Azure Function App discovery for manager-policy commands by

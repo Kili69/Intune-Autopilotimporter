@@ -461,13 +461,28 @@ automatic administrative-unit membership.
 
 ### Change Group Tag Managers
 
-Only a principal with an effective Azure `Owner` or `Contributor` assignment on the Function App, its resource group, or its subscription may change the explicit manager list:
+`Add-AutopilotTagPolicyManager`, `Remove-AutopilotTagPolicyManager`, and
+`Update-AutopilotTagPolicyManager` can be run only by a principal with an
+effective Azure `Owner` or `Contributor` assignment on the Function App, its
+resource group, or its subscription. Being an explicitly configured Group Tag
+manager or an Intune Role Administrator does not grant permission to change the
+manager list.
 
 ```powershell
 Update-AutopilotTagPolicyManager `
     -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
     -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
     -WhatIf
+```
+
+The convenience commands enforce the same Azure role check:
+
+```powershell
+Add-AutopilotTagPolicyManager `
+    -PrincipalId '44444444-4444-4444-4444-444444444444'
+
+Remove-AutopilotTagPolicyManager `
+    -PrincipalId '33333333-3333-3333-3333-333333333333'
 ```
 
 The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
