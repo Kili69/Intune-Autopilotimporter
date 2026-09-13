@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.6
+# Project-Version: 1.1.20260913.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -11,7 +11,8 @@ Discovers the installed client configuration, reads the current Group Tag
 policy through the Function management API, preserves configured policy
 managers and optional RMAU, and reads the deployed extension attribute and
 region from Azure. It then invokes Install-AutopilotImport.ps1 with the
-existing resource names. When this changes Application Insights from a
+existing resource names and synchronizes the updated client module to the
+system-wide Windows PowerShell module directory. When this changes Application Insights from a
 previously linked Log Analytics workspace to the integrated workspace in the
 Function resource group, the script identifies the old workspace that can be
 deleted after its remaining use and historical telemetry have been reviewed.
@@ -133,7 +134,8 @@ Install-AutopilotImport.ps1.
 .NOTES
 The updating account needs permission to read the Function App configuration,
 update its Azure resources, and read the current Group Tag policy through the
-Function management API.
+Function management API. Run the script from an elevated PowerShell 7 session
+so it can update the system-wide client module under Program Files.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -493,6 +495,109 @@ function Get-AutopilotClientToolsPath {
         throw "ClientToolsPath cannot be derived from '$SettingsPath'. Use -ClientToolsPath."
     }
     return Split-Path $modulesDirectory -Parent
+}
+
+function Assert-SystemWideClientModuleAccess {
+    if (-not $IsWindows) {
+        throw 'Updating the system-wide client module requires Windows.'
+    }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Run Update-AutopilotImport.ps1 from an elevated PowerShell 7 session so the system-wide client module can be updated.'
+    }
+}
+
+function Install-SystemWideAutopilotClientModule {
+    <#
+    .SYNOPSIS
+    Synchronizes the updated client module to the system-wide module path.
+
+    .PARAMETER SourceSettingsPath
+    Path to client.settings.json in the newly installed version directory.
+
+    .PARAMETER DestinationRoot
+    AutopilotImport.Client module root. Defaults to the system-wide Windows
+    PowerShell module directory below Program Files.
+
+    .OUTPUTS
+    System.String. Full path to the system-wide client.settings.json file.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $SourceSettingsPath,
+
+        [string] $DestinationRoot
+    )
+
+    $sourceSettings = Get-Item -LiteralPath $SourceSettingsPath -ErrorAction Stop
+    $sourceVersionDirectory = $sourceSettings.Directory.FullName
+    $manifestPath = Join-Path $sourceVersionDirectory `
+        'AutopilotImport.Client.psd1'
+    $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
+    $moduleVersion = [string] $manifest.ModuleVersion
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
+        $programFilesPath = [Environment]::GetFolderPath('ProgramFiles')
+        if ([string]::IsNullOrWhiteSpace($programFilesPath)) {
+            throw 'The Program Files directory could not be resolved.'
+        }
+        $DestinationRoot = Join-Path $programFilesPath `
+            'WindowsPowerShell\Modules\AutopilotImport.Client'
+    }
+
+    $destinationModuleRoot = [IO.Path]::GetFullPath($DestinationRoot)
+    $destinationVersionDirectory = Join-Path `
+        $destinationModuleRoot `
+        $moduleVersion
+    $sameDirectory = [string]::Equals(
+        [IO.Path]::GetFullPath($sourceVersionDirectory).TrimEnd('\'),
+        [IO.Path]::GetFullPath($destinationVersionDirectory).TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase
+    )
+
+    try {
+        [void] (New-Item `
+            -Path $destinationVersionDirectory `
+            -ItemType Directory `
+            -Force)
+        if (-not $sameDirectory) {
+            foreach ($fileName in @(
+                    'AutopilotImport.Client.psm1'
+                    'AutopilotImport.Client.psd1'
+                    'AutopilotImport.psm1'
+                    'client.settings.json'
+                )) {
+                Copy-Item `
+                    -LiteralPath (Join-Path $sourceVersionDirectory $fileName) `
+                    -Destination (Join-Path $destinationVersionDirectory $fileName) `
+                    -Force `
+                    -ErrorAction Stop
+            }
+        }
+    }
+    catch [UnauthorizedAccessException] {
+        throw "The system-wide client module could not be updated in '$destinationModuleRoot'. Run the update from an elevated PowerShell session."
+    }
+
+    Get-ChildItem -LiteralPath $destinationModuleRoot -Directory |
+        Where-Object { $_.Name -ne $moduleVersion } |
+        ForEach-Object {
+            try {
+                Remove-Item `
+                    -LiteralPath $_.FullName `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Older system-wide client module '$($_.FullName)' could not be removed. Close PowerShell sessions using that version and remove it later."
+            }
+        }
+
+    return Join-Path $destinationVersionDirectory 'client.settings.json'
 }
 
 function ConvertTo-UpdateTagAuthorizationRules {
@@ -1087,7 +1192,11 @@ if (-not $Force -and
     return
 }
 
+Assert-SystemWideClientModuleAccess
 $deploymentResult = & $installerPath @installerParameters -Confirm:$false
+$systemWideClientSettingsPath = Install-SystemWideAutopilotClientModule `
+    -SourceSettingsPath ([string] $deploymentResult.InstalledClientSettingsPath)
+Write-Host "  System module : $systemWideClientSettingsPath"
 Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
     -PreviousWorkspaceResourceId `
         $previousApplicationInsightsWorkspaceResourceId `

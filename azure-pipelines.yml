@@ -21,6 +21,22 @@ stages:
         steps:
           - checkout: self
             fetchDepth: 0
+          - task: PowerShell@2
+            displayName: Require change history and version update
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                $headCommit = if ([string]::IsNullOrWhiteSpace(
+                    $env:SYSTEM_PULLREQUEST_SOURCECOMMITID)) {
+                  (git rev-parse HEAD).Trim()
+                }
+                else {
+                  $env:SYSTEM_PULLREQUEST_SOURCECOMMITID
+                }
+                ./src/Scripts/Test-ChangeHistory.ps1 `
+                  -BaseCommit "$headCommit^" `
+                  -HeadCommit $headCommit
           - pwsh: |
               $changedFiles = @(git diff `
                 --name-only `

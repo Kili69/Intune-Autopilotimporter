@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.1.20260913.6
+# Project-Version: 1.1.20260913.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#

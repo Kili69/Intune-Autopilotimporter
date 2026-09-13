@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.6
+# Project-Version: 1.1.20260913.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1847,6 +1847,8 @@ Describe 'Update script deployment discovery' {
             'Read-AutopilotUpdateValue',
             'Get-AutopilotUpdateConfigurationValue',
                 'Get-AutopilotClientToolsPath',
+                'Assert-SystemWideClientModuleAccess',
+                'Install-SystemWideAutopilotClientModule',
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Assert-AutopilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
@@ -1887,6 +1889,11 @@ Describe 'Update script deployment discovery' {
         }
         $updateAst.Extent.Text | Should -Match `
             '(?s)Resolve-AutopilotUpdateConfigPath\s+.*?-AllowMissing'
+    }
+
+    It 'requires elevation immediately before deployment changes are made' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$deploymentResult\s*='
     }
 
     It 'resolves deployment identity from a Function URL' {
@@ -2042,6 +2049,54 @@ Describe 'Update script deployment discovery' {
 
         Get-AutopilotClientToolsPath -SettingsPath $settingsPath |
             Should -Be (Join-Path $TestDrive 'AutopilotImport')
+    }
+
+    It 'updates the system-wide client module and removes older versions' {
+        $sourceVersion = '1.1.20260913.7'
+        $sourceDirectory = Join-Path $TestDrive `
+            "portable\Modules\AutopilotImport.Client\$sourceVersion"
+        $systemModuleRoot = Join-Path $TestDrive `
+            'Program Files\WindowsPowerShell\Modules\AutopilotImport.Client'
+        $oldVersionDirectory = Join-Path $systemModuleRoot '1.1.20260911.1'
+        [void] (New-Item -Path $sourceDirectory -ItemType Directory -Force)
+        [void] (New-Item -Path $oldVersionDirectory -ItemType Directory -Force)
+        Set-Content `
+            -LiteralPath (Join-Path $sourceDirectory `
+                'AutopilotImport.Client.psd1') `
+            -Value "@{ ModuleVersion = '$sourceVersion' }"
+        foreach ($fileName in @(
+                'AutopilotImport.Client.psm1'
+                'AutopilotImport.psm1'
+                'client.settings.json'
+            )) {
+            Set-Content `
+                -LiteralPath (Join-Path $sourceDirectory $fileName) `
+                -Value $fileName
+        }
+
+        $installedSettingsPath = Install-SystemWideAutopilotClientModule `
+            -SourceSettingsPath (Join-Path $sourceDirectory `
+                'client.settings.json') `
+            -DestinationRoot $systemModuleRoot
+
+        $installedSettingsPath | Should -Be (Join-Path `
+            $systemModuleRoot `
+            "$sourceVersion\client.settings.json")
+        foreach ($fileName in @(
+                'AutopilotImport.Client.psm1'
+                'AutopilotImport.Client.psd1'
+                'AutopilotImport.psm1'
+                'client.settings.json'
+            )) {
+            Join-Path $systemModuleRoot "$sourceVersion\$fileName" |
+                Should -Exist
+        }
+        $oldVersionDirectory | Should -Not -Exist
+    }
+
+    It 'synchronizes the system-wide module after the installer succeeds' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)\$deploymentResult\s*=\s*&\s*\$installerPath.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
     }
 
     It 'converts the current policy into installer rules with individual RMAUs' {
@@ -2413,19 +2468,6 @@ Describe 'Installer packaged web frontend fallback' {
             -Value '<script src="/api/ui/assets/missing.js"></script>'
 
         Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
-    }
-
-    It 'rebuilds the frontend in GitHub CI only when its source changes' {
-        $workflow = Get-Content `
-            -LiteralPath (Join-Path $PSScriptRoot '..\..\.github\workflows\deployment-package.yml') `
-            -Raw
-
-        $workflow | Should -Match `
-            '(?s)Detect web frontend changes.*?src/Web.*?Build web frontend'
-        $workflow | Should -Match `
-            "if: steps\.web_changes\.outputs\.changed == 'true'"
-        $workflow | Should -Match `
-            '(?s)Build web frontend.*?npm ci.*?npm run build.*?Build deployment package'
     }
 
     It 'rebuilds the frontend in Azure CI only when its source changes' {
@@ -3626,44 +3668,14 @@ Describe 'Project metadata entries' {
 }
 
 Describe 'Deployment package' {
-    It 'runs automatically for every pushed commit' {
-        $workflowPath = Join-Path `
-            $PSScriptRoot `
-            '..\..\.github\workflows\deployment-package.yml'
-        $workflow = Get-Content -LiteralPath $workflowPath -Raw
+    It 'does not define GitHub Actions workflows' {
+        $workflowRoot = Join-Path $PSScriptRoot '..\..\.github\workflows'
+        $workflowFiles = @(Get-ChildItem `
+            -LiteralPath $workflowRoot `
+            -File `
+            -ErrorAction SilentlyContinue)
 
-        $workflow | Should -Match `
-            "(?ms)^  push:\s+branches:\s+- '\*\*'\s*$"
-        $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
-        $workflow | Should -Match `
-            '(?m)^    runs-on: windows-latest\s*$'
-        $workflow | Should -Match '(?m)^          fetch-depth: 0\s*$'
-        $workflow | Should -Match `
-            '(?m)^      - name: Require change history and version update\s*$'
-        $workflow | Should -Match `
-            '(?m)^          BASE_COMMIT: \$\{\{ github\.event\.before \}\}\s*$'
-        $workflow | Should -Match `
-            '(?m)^          HEAD_COMMIT: \$\{\{ github\.sha \}\}\s*$'
-        $workflow | Should -Match `
-            '(?m)^          \./src/Scripts/Test-ChangeHistory\.ps1 `\s*$'
-        $workflow | Should -Match `
-            'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
-        $workflow | Should -Match `
-            '-BranchName \$env:PACKAGE_BRANCH'
-        $workflow | Should -Match 'actions/upload-artifact@v4'
-        $workflow | Should -Match '(?m)^  contents: write\s*$'
-        $workflow | Should -Match `
-            "(?m)^        if: github\.ref == 'refs/heads/main'\s*$"
-        $workflow | Should -Match `
-            '(?m)^          git rm -r --ignore-unmatch artifacts InstallationPackage\s*$'
-        $workflow | Should -Match `
-            '(?m)^          git add -f InstallationPackage\s*$'
-        $workflow | Should -Match `
-            '(?m)^          if \(\$LASTEXITCODE -eq 1\) \{\s*$'
-        $workflow | Should -Match `
-            'git commit -m "build: publish \$env:PACKAGE_NAME \[skip ci\]"'
-        $workflow | Should -Match `
-            '(?m)^            git push origin HEAD:main\s*$'
+        $workflowFiles.Count | Should -Be 0
     }
 
     It 'requires History.md and VERSION in every pushed first-parent commit' {
@@ -3691,6 +3703,10 @@ Describe 'Deployment package' {
         $pipeline | Should -Match `
             "(?ms)^trigger:\s+branches:\s+include:\s+- '\*'\s*$"
         $pipeline | Should -Match `
+            '(?m)^\s+displayName: Require change history and version update\s*$'
+        $pipeline | Should -Match `
+            '(?m)^\s+\./src/Scripts/Test-ChangeHistory\.ps1 `\s*$'
+        $pipeline | Should -Match `
             '(?m)^\s+displayName: Build deployment package\s*$'
         $pipeline | Should -Match `
             '(?m)^\s+displayName: Publish deployment package\s*$'
@@ -3698,24 +3714,6 @@ Describe 'Deployment package' {
             '(?m)^\s+SOURCE_BRANCH: \$\(Build\.SourceBranch\)\s*$'
         $pipeline | Should -Match `
             '(?m)^\s+condition: and\(succeeded\(\), eq\(variables\[''Build\.SourceBranch''\], ''refs/heads/main''\)\)\s*$'
-    }
-
-    It 'allows pull requests to main only from dev' {
-        $workflowPath = Join-Path `
-            $PSScriptRoot `
-            '..\..\.github\workflows\main-promotion-policy.yml'
-        $workflow = Get-Content -LiteralPath $workflowPath -Raw
-
-        $workflow | Should -Match `
-            '(?ms)^  pull_request:\s+branches:\s+- main\s*$'
-        $workflow | Should -Match `
-            '(?m)^    name: Validate dev promotion\s*$'
-        $workflow | Should -Match `
-            'if \(\$env:SOURCE_BRANCH -ne ''dev''\)'
-        $workflow | Should -Match `
-            '(?m)^    runs-on: \[self-hosted, Windows, X64\]\s*$'
-        $workflow | Should -Match `
-            'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
     }
 
     It 'contains installation and runtime files without local configuration' {

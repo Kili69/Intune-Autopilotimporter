@@ -857,6 +857,12 @@ By default, the script selects the newest installed `client.settings.json` from 
     -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\<version>\client.settings.json'
 ```
 
+After a successful update, the script also installs the current module and
+configuration under
+`C:\Program Files\WindowsPowerShell\Modules\AutopilotImport.Client\<version>`
+and removes older versions when they are not in use. Run the update from an
+elevated PowerShell 7 session so this system-wide location can be changed.
+
 When the client module and configuration are not installed on the update computer, the script prompts for the subscription ID, tenant ID, resource group, Function App name, and client tools destination. The current Az context and standard deployment names are offered as defaults. These values can also be supplied for an unattended discovery phase:
 
 ```powershell
@@ -882,21 +888,20 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 
 ##### Deployment Package
 
-GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
+Azure Pipelines builds a deployment package for every commit pushed to any
+branch. It runs the test suite and publishes
+`Intune-autopilotImporter-<branch><version>` as a pipeline artifact. Branch
+characters that are not portable in file names, such as `/`, are replaced with
+`-`. The Azure deployment stage remains restricted to `main`.
 
-The CI workflows rebuild and test the web frontend only when files under
-`src/Web` changed. Other changes reuse the committed frontend bundle.
-
-After a successful push to `main`, GitHub Actions also commits the current ZIP
-to the `InstallationPackage` directory on `main`. The publish commit uses
-`[skip ci]` to prevent a recursive workflow run. Each publication removes
-previous package ZIPs and the legacy `artifacts` directory, so the branch keeps
-only the package for the current project version. Packages for other branches
-remain available as workflow artifacts and are not committed to those branches.
+The pipeline rebuilds and tests the web frontend only when files under
+`src/Web` changed. Other changes reuse the committed frontend bundle. No
+GitHub Actions workflows are configured, so pushes and pull requests do not
+start GitHub-hosted or self-hosted workers.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
-The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:
+To build the package locally using the current Git branch, run:
 
 ```powershell
 .\src\Scripts\New-DeploymentPackage.ps1
@@ -1606,16 +1611,17 @@ Publish-Script `
 
 ### Branch Promotion Policy
 
-Changes to `main` must be promoted through a pull request whose source branch is `dev`. The `Main promotion policy` GitHub Actions workflow rejects pull requests to `main` from any other branch.
+Changes to `main` should be promoted through a pull request whose source branch
+is `dev`. No GitHub Actions workflow is used for this policy.
 
 To enforce this policy, configure a GitHub ruleset or branch protection rule for `main` with these settings:
 
 - Require a pull request before merging.
-- Require the status check `Validate dev promotion` to pass before merging.
 - Block force pushes and branch deletion.
 - Do not allow direct-push bypasses, or restrict bypass permission to designated repository administrators for emergencies.
 
-The workflow validates the pull request source, while the server-side rule prevents direct pushes from bypassing that validation.
+The repository rules prevent direct pushes. Reviewers must verify that the
+pull request source branch is `dev`.
 
 ### Tests
 
@@ -1631,8 +1637,8 @@ The project version is stored in `VERSION` and follows `1.1.<yyyyMMdd>.<counter>
 The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
 Every commit must include an updated `History.md` and a new project version.
-The GitHub workflow rejects pushed commits that omit either change. Before
-creating a commit, run:
+Azure Pipelines rejects source commits that omit either change. Before creating
+a commit, run:
 
 ```powershell
 .\src\Scripts\Update-ProjectVersion.ps1

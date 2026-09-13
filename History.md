@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.7` - 2026-09-13
+
+- Updated the system-wide `AutopilotImport.Client` PowerShell module and its
+  configuration during updates, including cleanup of older installed versions
+  and an early elevation check.
+- Removed all GitHub Actions workflows and moved the mandatory change-history
+  and version check to Azure Pipelines.
+
 ## `1.1.20260913.6` - 2026-09-13
 
 - Decoupled the prebuilt web frontend version from the central package version
