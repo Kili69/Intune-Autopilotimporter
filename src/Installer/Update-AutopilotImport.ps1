@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.9
+# Project-Version: 1.1.20260913.10
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -508,6 +508,25 @@ function Assert-SystemWideClientModuleAccess {
             [Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Run Update-AutopilotImport.ps1 from an elevated PowerShell 7 session so the system-wide client module can be updated.'
     }
+}
+
+function Resolve-AutopilotDeploymentResult {
+    param(
+        [AllowEmptyCollection()]
+        [object[]] $InstallerOutput
+    )
+
+    $results = @($InstallerOutput | Where-Object {
+        $null -ne $_ -and
+        $null -ne $_.PSObject.Properties['InstalledClientSettingsPath'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.InstalledClientSettingsPath)
+    })
+    if ($results.Count -ne 1) {
+        throw "The installer returned $($results.Count) structured deployment results; exactly one result with InstalledClientSettingsPath was expected."
+    }
+
+    return $results[0]
 }
 
 function Install-SystemWideAutopilotClientModule {
@@ -1193,7 +1212,9 @@ if (-not $Force -and
 }
 
 Assert-SystemWideClientModuleAccess
-$deploymentResult = & $installerPath @installerParameters -Confirm:$false
+$installerOutput = @(& $installerPath @installerParameters -Confirm:$false)
+$deploymentResult = Resolve-AutopilotDeploymentResult `
+    -InstallerOutput $installerOutput
 $systemWideClientSettingsPath = Install-SystemWideAutopilotClientModule `
     -SourceSettingsPath ([string] $deploymentResult.InstalledClientSettingsPath)
 Write-Host "  System module : $systemWideClientSettingsPath"

@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.9
+# Project-Version: 1.1.20260913.10
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1870,6 +1870,7 @@ Describe 'Update script deployment discovery' {
             'Get-AutopilotUpdateConfigurationValue',
                 'Get-AutopilotClientToolsPath',
                 'Assert-SystemWideClientModuleAccess',
+                'Resolve-AutopilotDeploymentResult',
                 'Install-SystemWideAutopilotClientModule',
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Assert-AutopilotAppSettingsResponse',
@@ -1915,7 +1916,32 @@ Describe 'Update script deployment discovery' {
 
     It 'requires elevation immediately before deployment changes are made' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$deploymentResult\s*='
+            '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$installerOutput\s*='
+    }
+
+    It 'selects the structured deployment result from mixed installer output' {
+        $expectedResult = [pscustomobject]@{
+            InstalledClientSettingsPath = `
+                'C:\Tools\AutopilotImport\client.settings.json'
+        }
+
+        $result = Resolve-AutopilotDeploymentResult -InstallerOutput @(
+            [pscustomobject]@{ Noise = 'Az command output' }
+            $expectedResult
+            'informational output'
+        )
+
+        $result.InstalledClientSettingsPath | Should -Be `
+            $expectedResult.InstalledClientSettingsPath
+    }
+
+    It 'rejects installer output without a structured deployment result' {
+        {
+            Resolve-AutopilotDeploymentResult -InstallerOutput @(
+                [pscustomobject]@{ Noise = 'Az command output' }
+            )
+        } | Should -Throw `
+            '*exactly one result with InstalledClientSettingsPath was expected*'
     }
 
     It 'resolves deployment identity from a Function URL' {
@@ -2118,7 +2144,7 @@ Describe 'Update script deployment discovery' {
 
     It 'synchronizes the system-wide module after the installer succeeds' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)\$deploymentResult\s*=\s*&\s*\$installerPath.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutopilotDeploymentResult.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
     }
 
     It 'converts the current policy into installer rules with individual RMAUs' {
@@ -2313,7 +2339,7 @@ Describe 'Update script deployment discovery' {
 
     It 'emits the migration notice only after the installer succeeds' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)\$deploymentResult = & \$installerPath.+?Write-UpdateLogAnalyticsWorkspaceMigrationNotice.+?\$deploymentResult'
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.+?\$deploymentResult\s*=\s*Resolve-AutopilotDeploymentResult.+?Write-UpdateLogAnalyticsWorkspaceMigrationNotice.+?\$deploymentResult'
     }
 
     It 'reports only missing Azure capabilities without Verbose' {

@@ -4,6 +4,12 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.10` - 2026-09-13
+
+- Fixed updates failing after installation when nested installer commands add
+  unrelated objects to PowerShell's success stream by selecting and validating
+  the structured deployment result explicitly.
+
 ## `1.1.20260913.9` - 2026-09-13
 
 - Changed `Remove-AutopilotTagPolicy` to return a concise human-readable
