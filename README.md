@@ -1588,16 +1588,20 @@ The tests cover Group Tag authorization, manager users and groups, the strict Ow
 
 ### Versioning
 
-The project version is stored in `VERSION` and follows `1.0.<yyyyMMdd>.<counter>`, for example `1.0.20260811.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
+The project version is stored in `VERSION` and follows `1.1.<yyyyMMdd>.<counter>`, for example `1.1.20260913.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
 The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
-After commits are pushed to `main`, the GitHub workflow increments the counter by the number of commits in that push and commits the synchronized version entries. On a new UTC date, the counter starts at `1`. The workflow-generated version commit does not trigger another increment.
-
-For a local manual increment, run:
+Every commit must include an updated `History.md` and a new project version.
+The GitHub workflow rejects pushed commits that omit either change. Before
+creating a commit, run:
 
 ```powershell
 .\src\Scripts\Update-ProjectVersion.ps1
 ```
+
+The counter increases for commits created on the same UTC date and starts at
+`1` on a new UTC date. Repository automation commits marked with `[skip ci]`
+are excluded from this rule.
 
 ### Operations and Security
 

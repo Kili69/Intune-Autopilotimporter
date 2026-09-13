@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Require change history update
+      - name: Require change history and version update
         shell: pwsh
         env:
           BASE_COMMIT: ${{ github.event.before }}

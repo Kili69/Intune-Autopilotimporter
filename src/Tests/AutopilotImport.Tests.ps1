@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -3422,7 +3422,7 @@ Describe 'Deployment package' {
             '(?m)^    runs-on: windows-latest\s*$'
         $workflow | Should -Match '(?m)^          fetch-depth: 0\s*$'
         $workflow | Should -Match `
-            '(?m)^      - name: Require change history update\s*$'
+            '(?m)^      - name: Require change history and version update\s*$'
         $workflow | Should -Match `
             '(?m)^          BASE_COMMIT: \$\{\{ github\.event\.before \}\}\s*$'
         $workflow | Should -Match `
@@ -3449,7 +3449,7 @@ Describe 'Deployment package' {
             '(?m)^            git push origin HEAD:main\s*$'
     }
 
-    It 'requires History.md in every pushed first-parent commit' {
+    It 'requires History.md and VERSION in every pushed first-parent commit' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $historyCheck = Get-Content `
             -LiteralPath (Join-Path $projectRoot `
@@ -3461,7 +3461,9 @@ Describe 'Deployment package' {
         $historyCheck | Should -Match `
             "'diff-tree', '--root', '--no-commit-id', '--name-only'"
         $historyCheck | Should -Match `
-            "\$changedPaths -notcontains 'History.md'"
+            "'History.md', 'VERSION'"
+        $historyCheck | Should -Match `
+            '\$changedPaths -notcontains \$_'
         $historyCheck | Should -Match '\\\[skip ci\\\]'
     }
 

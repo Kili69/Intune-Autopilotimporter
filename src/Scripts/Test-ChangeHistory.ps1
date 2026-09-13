@@ -1,15 +1,15 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Verifies that every commit in a range updates History.md.
+Verifies that every commit in a range updates History.md and VERSION.
 
 .DESCRIPTION
 Checks every first-parent commit after BaseCommit through HeadCommit and fails
-when History.md is not part of a commit. Automation commits whose message
-contains [skip ci] are ignored.
+when History.md or VERSION is not part of a commit. Automation commits whose
+message contains [skip ci] are ignored.
 
 .PARAMETER BaseCommit
 Commit before the range to validate. An all-zero Git SHA validates HeadCommit
@@ -66,7 +66,7 @@ $commits = @(
     }
 )
 
-$missingHistory = @(
+$invalidCommits = @(
     foreach ($commit in $commits) {
         $message = Invoke-GitCommand -ArgumentList @(
             'show', '--no-patch', '--format=%B', $commit
@@ -81,17 +81,22 @@ $missingHistory = @(
                 '-r', '-m', $commit
             )
         )
-        if ($changedPaths -notcontains 'History.md') {
+        $missingFiles = @(
+            'History.md', 'VERSION' | Where-Object {
+                $changedPaths -notcontains $_
+            }
+        )
+        if ($missingFiles.Count -gt 0) {
             $shortCommit = Invoke-GitCommand -ArgumentList @(
                 'show', '--no-patch', '--format=%h %s', $commit
             )
-            $shortCommit -join ' '
+            "$($shortCommit -join ' ') (missing: $($missingFiles -join ', '))"
         }
     }
 )
 
-if ($missingHistory.Count -gt 0) {
-    throw "Every commit must update History.md. Missing in:$([Environment]::NewLine)$($missingHistory -join [Environment]::NewLine)"
+if ($invalidCommits.Count -gt 0) {
+    throw "Every commit must update History.md and VERSION. Invalid commits:$([Environment]::NewLine)$($invalidCommits -join [Environment]::NewLine)"
 }
 
-Write-Output "History.md was updated by all $($commits.Count) checked commit(s)."
+Write-Output "History.md and VERSION were updated by all $($commits.Count) checked commit(s)."
