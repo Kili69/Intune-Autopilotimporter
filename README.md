@@ -298,9 +298,10 @@ Then retrieve the import history:
 Get-AutoPilotImportHistory
 ```
 
-The command displays a compact table with serial number, Group Tag, status,
-and Intune error name. Every row remains a PowerShell object that can be
-filtered, exported, or inspected with all available properties:
+The command displays a compact table with import GUID (`ImportId`), serial
+number, Group Tag, status, and Intune error name. Every row remains a
+PowerShell object that can be filtered, exported, or inspected with all
+available properties:
 
 ```powershell
 Get-AutoPilotImportHistory | Format-List *

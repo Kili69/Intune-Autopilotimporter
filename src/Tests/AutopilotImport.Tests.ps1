@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.15
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -840,11 +840,14 @@ Describe 'Client import history' {
 
         $result.Count | Should -Be 2
         $result[0].serialNumber | Should -Be 'SERIAL-001'
+        $result[0].ImportId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
         $result[1].status | Should -Be 'error'
         $result[0].PSTypeNames | Should -Contain `
             'AutopilotImport.ImportHistoryRecord'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
             Should -Be @(
+                'ImportId'
                 'SerialNumber'
                 'GroupTag'
                 'Status'

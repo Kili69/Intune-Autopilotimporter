@@ -4,6 +4,11 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.16` - 2026-09-13
+
+- Added the import GUID (`ImportId`) to the default table output of
+  `Get-AutoPilotImportHistory` while retaining the complete structured record.
+
 ## `1.1.20260913.15` - 2026-09-13
 
 - Added `Get-AutoPilotTagPolicyManager` to list the installing and additional

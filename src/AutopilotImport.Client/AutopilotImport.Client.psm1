@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.15
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1482,6 +1482,7 @@ function Get-AutoPilotImportHistory {
         $displayPropertySet = [Management.Automation.PSPropertySet]::new(
             'DefaultDisplayPropertySet',
             [string[]] @(
+                'ImportId'
                 'SerialNumber'
                 'GroupTag'
                 'Status'
