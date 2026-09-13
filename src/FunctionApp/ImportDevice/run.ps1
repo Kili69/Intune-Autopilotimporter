@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -186,7 +186,7 @@ if ([string] $Request.Method -eq 'GET') {
 
         if ($intuneStatus -eq 'complete') {
             try {
-                $registrationId = Get-AutopilotDeviceRegistrationId `
+                $registrationId = Get-AutoPilotDeviceRegistrationId `
                     -ImportedDevice $graphResponse
                 $registeredDevice = Invoke-RestMethod `
                     -Method Get `
@@ -300,7 +300,7 @@ catch {
 }
 
 try {
-    $graphPayload = ConvertTo-AutopilotImportPayload `
+    $graphPayload = ConvertTo-AutoPilotImportPayload `
         -RequestBody $requestBody `
         -GroupTag $groupTag
 }

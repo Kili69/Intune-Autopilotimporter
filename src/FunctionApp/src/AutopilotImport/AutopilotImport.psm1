@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -401,7 +401,7 @@ function ConvertTo-EntraDeviceExtensionAttributes {
     }
 }
 
-function Get-AutopilotDeviceRegistrationId {
+function Get-AutoPilotDeviceRegistrationId {
     <#
     .SYNOPSIS
     Returns the registered Autopilot identity ID from a completed import.
@@ -815,7 +815,7 @@ function Get-AuthorizedGroupTags {
     } | Sort-Object -Unique)
 }
 
-function ConvertTo-AutopilotImportPayload {
+function ConvertTo-AutoPilotImportPayload {
     <#
     .SYNOPSIS
     Creates a validated Microsoft Graph Autopilot import payload.
@@ -889,7 +889,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-EntraDeviceExtensionAttributes',
     'Resolve-RestrictedManagementAdministrativeUnitName',
     'Add-EntraDeviceToRestrictedManagementAdministrativeUnit',
-    'Get-AutopilotDeviceRegistrationId',
+    'Get-AutoPilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',
     'Test-IntuneRoleAdministrator',
@@ -899,5 +899,5 @@ Export-ModuleMember -Function @(
     'Test-ClientPrincipalRole',
     'Resolve-AuthorizedGroupTag',
     'Get-AuthorizedGroupTags',
-    'ConvertTo-AutopilotImportPayload'
+    'ConvertTo-AutoPilotImportPayload'
 )

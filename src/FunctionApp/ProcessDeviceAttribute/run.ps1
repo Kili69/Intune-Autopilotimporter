@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -101,7 +101,7 @@ $importedDevice = Invoke-RestMethod `
     -Authentication Bearer `
     -Token $secureToken `
     -ErrorAction Stop
-$registrationId = Get-AutopilotDeviceRegistrationId `
+$registrationId = Get-AutoPilotDeviceRegistrationId `
     -ImportedDevice $importedDevice
 $registeredDevice = Invoke-RestMethod `
     -Method Get `

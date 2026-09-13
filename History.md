@@ -4,6 +4,13 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.15` - 2026-09-13
+
+- Added `Get-AutoPilotTagPolicyManager` to list the installing and additional
+  Group Tag managers as structured PowerShell objects.
+- Standardized PowerShell command names and documentation on the `AutoPilot`
+  spelling while retaining existing script file names for compatibility.
+
 ## `1.1.20260913.14` - 2026-09-13
 
 - Clarified that adding or removing Group Tag managers requires an effective
@@ -29,7 +36,7 @@ are consolidated into a single section.
 ## `1.1.20260913.11` - 2026-09-13
 
 - Fixed Function publishing omitting the `GetImportHistory` endpoint, which
-  caused `Get-AutopilotImportHistory` to receive HTTP 404 after an update.
+  caused `Get-AutoPilotImportHistory` to receive HTTP 404 after an update.
 - Added actionable import-history API errors and a concise default table view
   while continuing to return complete PowerShell objects for automation.
 
@@ -41,7 +48,7 @@ are consolidated into a single section.
 
 ## `1.1.20260913.9` - 2026-09-13
 
-- Changed `Remove-AutopilotTagPolicy` to return a concise human-readable
+- Changed `Remove-AutoPilotTagPolicy` to return a concise human-readable
   success message with structured removal metadata instead of displaying the
   complete policy response.
 - Added the deployed Function version to Group Tag management responses and
@@ -78,7 +85,7 @@ are consolidated into a single section.
 
 ## `1.1.20260913.4` - 2026-09-13
 
-- Clarified that `Get-AutopilotImportHistory` is provided by the installed
+- Clarified that `Get-AutoPilotImportHistory` is provided by the installed
   client module and documented how to detect and replace an older loaded
   module version.
 - Added package coverage that verifies the import-history command is exported
@@ -94,7 +101,7 @@ are consolidated into a single section.
 
 - Added `WhatIf` support to device imports and retained it for all mutating
   client module commands while removing confirmation prompts from normal use.
-- Changed `Get-AutopilotTagPolicy` and `Add-AutopilotTagPolicy` to return
+- Changed `Get-AutoPilotTagPolicy` and `Add-AutoPilotTagPolicy` to return
   reusable policy-rule objects with group IDs, names, tags, restricted
   management administrative units, and correlation IDs.
 
@@ -127,7 +134,7 @@ are consolidated into a single section.
   Analytics workspace in the Function App resource group. After an actual
   migration, the updater identifies the previous managed workspace as
   potentially removable.
-- Added `Get-AutopilotImportHistory`, allowing managers to retrieve import
+- Added `Get-AutoPilotImportHistory`, allowing managers to retrieve import
   operations currently retained by Intune and their status. The new Function
   endpoint uses the existing manager authorization and does not return hardware
   hashes or product keys.

@@ -142,7 +142,7 @@ status-request errors are displayed and retried during the next polling cycle.
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The
 import itself continues in Azure and can be checked later with
-`Get-AutopilotImportStatus -ImportId '<import-id>'`.
+`Get-AutoPilotImportStatus -ImportId '<import-id>'`.
 
 The PowerShell module remains available and uses the same authorization policy.
 
@@ -152,7 +152,7 @@ configuration in the current user's profile and reuses it for later commands.
 
 ### Import a device hash
 
-Use the `Import-AutopilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
+Use the `Import-AutoPilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
 
 - `AutopilotImport.Client` has been installed and initialized once with the
     Function URL.
@@ -163,7 +163,7 @@ Use the `Import-AutopilotDevice` command to submit one or more device hashes fro
 The selected Group Tag is applied to every device in the CSV. First, validate the file locally without signing in or sending data to the Azure Function:
 
 ```powershell
-Import-AutopilotDevice `
+Import-AutoPilotDevice `
     -CsvPath '.\devices.csv' `
     -GroupTag 'PAW' `
     -ValidateOnly
@@ -172,7 +172,7 @@ Import-AutopilotDevice `
 If validation succeeds, run the same command without `-ValidateOnly`:
 
 ```powershell
-Import-AutopilotDevice `
+Import-AutoPilotDevice `
     -CsvPath '.\devices.csv' `
     -GroupTag 'PAW'
 ```
@@ -224,13 +224,13 @@ Get-AutoPilotImporterClientConfiguration `
 A successful request returns HTTP 202 and an `importId`. Intune processes the request asynchronously. Check the current state:
 
 ```powershell
-Get-AutopilotImportStatus -ImportId '<import-id>'
+Get-AutoPilotImportStatus -ImportId '<import-id>'
 ```
 
 Wait for a final end-to-end result:
 
 ```powershell
-Get-AutopilotImportStatus `
+Get-AutoPilotImportStatus `
     -ImportId '<import-id>' `
     -Wait
 ```
@@ -246,7 +246,7 @@ the management API:
 
 ```powershell
 $moduleVersion = (Get-Module AutopilotImport.Client).Version
-$functionVersion = (Get-AutopilotTagPolicy -Raw).functionVersion
+$functionVersion = (Get-AutoPilotTagPolicy -Raw).functionVersion
 
 [pscustomobject]@{
     PowerShellModule = $moduleVersion
@@ -272,7 +272,7 @@ then open a new PowerShell 7 session.
 Verify which installed module version provides the command:
 
 ```powershell
-Get-Command Get-AutopilotImportHistory -All |
+Get-Command Get-AutoPilotImportHistory -All |
     Select-Object Name, Version, Source
 ```
 
@@ -295,7 +295,7 @@ Import-Module $module.Path -Force
 Then retrieve the import history:
 
 ```powershell
-Get-AutopilotImportHistory
+Get-AutoPilotImportHistory
 ```
 
 The command displays a compact table with serial number, Group Tag, status,
@@ -303,14 +303,14 @@ and Intune error name. Every row remains a PowerShell object that can be
 filtered, exported, or inspected with all available properties:
 
 ```powershell
-Get-AutopilotImportHistory | Format-List *
+Get-AutoPilotImportHistory | Format-List *
 ```
 
 The command returns up to 100 operations by default. Request up to 1000 and
 filter the objects in the pipeline, for example to inspect failed imports:
 
 ```powershell
-Get-AutopilotImportHistory -Top 1000 |
+Get-AutoPilotImportHistory -Top 1000 |
     Where-Object Status -eq 'error'
 ```
 
@@ -333,12 +333,12 @@ The installing user, configured manager users or groups, and current members of 
 Read the current policy:
 
 ```powershell
-Get-AutopilotTagPolicy
+Get-AutoPilotTagPolicy
 ```
 
 #### Add a Group Tag Policy
 
-`Add-AutopilotTagPolicy` adds an Entra group to the policy without replacing
+`Add-AutoPilotTagPolicy` adds an Entra group to the policy without replacing
 the other group rules. If the group already has a rule, the command adds the
 specified tags to that rule. Existing and duplicate tags are retained only
 once.
@@ -358,7 +358,7 @@ Parameters:
 Add a group by its object ID and set the MAU:
 
 ```powershell
-Add-AutopilotTagPolicy `
+Add-AutoPilotTagPolicy `
     -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Privileged' `
     -Mau 'MAU-Autopilot-Devices' `
@@ -370,14 +370,14 @@ Run the command without `-WhatIf` to apply the change.
 Add another tag to an existing group rule without changing its other tags:
 
 ```powershell
-Add-AutopilotTagPolicy `
+Add-AutoPilotTagPolicy `
     -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Shared'
 ```
 
 #### Remove a Group Tag Policy
 
-`Remove-AutopilotTagPolicy` removes selected tags from one Entra group when
+`Remove-AutoPilotTagPolicy` removes selected tags from one Entra group when
 `-GroupTag` is supplied. Without `-GroupTag`, it removes the complete Group Tag
 rule for that group. Other group rules and their individual RMAUs remain
 unchanged. The command does not delete the group from Entra.
@@ -393,7 +393,7 @@ Parameters:
 Remove one tag while preserving the group's other tags:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Kiosk'
 ```
@@ -401,7 +401,7 @@ Remove-AutopilotTagPolicy `
 Remove a rule using its exact Entra group display name:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group 'Obsolete Autopilot Group' `
     -WhatIf
 ```
@@ -409,7 +409,7 @@ Remove-AutopilotTagPolicy `
 Alternatively, remove it by group object ID:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group '11111111-1111-1111-1111-111111111111'
 ```
 
@@ -432,7 +432,7 @@ Each rule can specify its own restricted management administrative unit.
 Preview the complete desired policy before applying it:
 
 ```powershell
-Set-AutopilotTagPolicy `
+Set-AutoPilotTagPolicy `
     -TagAuthorizationRule @(
         [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
@@ -461,15 +461,25 @@ automatic administrative-unit membership.
 
 ### Change Group Tag Managers
 
-`Add-AutopilotTagPolicyManager`, `Remove-AutopilotTagPolicyManager`, and
-`Update-AutopilotTagPolicyManager` can be run only by a principal with an
+List the installing manager and all additionally configured managers:
+
+```powershell
+Get-AutoPilotTagPolicyManager
+```
+
+The command returns structured objects containing `FunctionAppName`,
+`PrincipalId`, and `ManagerType` (`Installer` or `Additional`). It reads the
+manager policy through Azure and does not modify it.
+
+`Add-AutoPilotTagPolicyManager`, `Remove-AutoPilotTagPolicyManager`, and
+`Update-AutoPilotTagPolicyManager` can be run only by a principal with an
 effective Azure `Owner` or `Contributor` assignment on the Function App, its
 resource group, or its subscription. Being an explicitly configured Group Tag
 manager or an Intune Role Administrator does not grant permission to change the
 manager list.
 
 ```powershell
-Update-AutopilotTagPolicyManager `
+Update-AutoPilotTagPolicyManager `
     -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
     -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
     -WhatIf
@@ -478,10 +488,10 @@ Update-AutopilotTagPolicyManager `
 The convenience commands enforce the same Azure role check:
 
 ```powershell
-Add-AutopilotTagPolicyManager `
+Add-AutoPilotTagPolicyManager `
     -PrincipalId '44444444-4444-4444-4444-444444444444'
 
-Remove-AutopilotTagPolicyManager `
+Remove-AutoPilotTagPolicyManager `
     -PrincipalId '33333333-3333-3333-3333-333333333333'
 ```
 
@@ -697,7 +707,7 @@ Expand-Archive `
     -Force
 ```
 
-After extraction, commands such as `Import-AutopilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
+After extraction, commands such as `Import-AutoPilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
 
 Each installation writes an activity transcript to the current user's temporary directory. The file name uses the pattern `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log`. The console displays the full path when setup starts. If installation stops with an error, the transcript is closed before the log is extended with the complete PowerShell error record, exception properties, and script stack trace.
 
@@ -711,12 +721,15 @@ $module = Get-ChildItem `
 Import-Module $module.FullName
 ```
 
-The module exports `New-AutoPilotImporterClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
-`Get-AutopilotImportHistory`,
-`Get-AutopilotTagPolicy`,
-`Add-AutopilotTagPolicy`, `Remove-AutopilotTagPolicy`,
-`Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
-`Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
+The module exports `New-AutoPilotImporterClientConfiguration`,
+`Get-AutoPilotImporterClientConfiguration`, `Import-AutoPilotDevice`,
+`Get-AutoPilotImportStatus`,
+`Get-AutoPilotImportHistory`,
+`Get-AutoPilotTagPolicy`,
+`Add-AutoPilotTagPolicy`, `Remove-AutoPilotTagPolicy`,
+`Set-AutoPilotTagPolicy`, `Get-AutoPilotTagPolicyManager`,
+`Update-AutoPilotTagPolicyManager`,
+`Add-AutoPilotTagPolicyManager`, and `Remove-AutoPilotTagPolicyManager`.
 
 For normal import and policy API use, initialize the module from the deployed
 Function URL. This does not require Azure subscription access:
@@ -1506,7 +1519,7 @@ To test a configuration before copying it into the module directory, pass it
 explicitly to a read-only command:
 
 ```powershell
-Get-AutopilotTagPolicy -ConfigPath $createdSettings.FullName
+Get-AutoPilotTagPolicy -ConfigPath $createdSettings.FullName
 ```
 
 If multiple module versions are installed, each version has its own

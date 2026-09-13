@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -993,7 +993,7 @@ function New-AutoPilotImporterClientConfiguration {
     Get-Item -LiteralPath $settingsPath
 }
 
-function Import-AutopilotDevice {
+function Import-AutoPilotDevice {
     <#
     .SYNOPSIS
     Imports Windows Autopilot devices from a CSV through the secured Function.
@@ -1031,14 +1031,14 @@ function Import-AutopilotDevice {
     Validates the CSV without authentication or API calls.
 
     .EXAMPLE
-    Import-AutopilotDevice `
+    Import-AutoPilotDevice `
         -CsvPath '.\AutopilotHWID.csv' `
         -GroupTag 'Shared'
 
     Validates and imports every device using the installed client settings.
 
     .EXAMPLE
-    Import-AutopilotDevice `
+    Import-AutoPilotDevice `
         -CsvPath '.\AutopilotHWID.csv' `
         -GroupTag 'Shared' `
         -ValidateOnly
@@ -1046,7 +1046,7 @@ function Import-AutopilotDevice {
     Validates the CSV and returns a summary without authenticating or importing.
 
     .EXAMPLE
-    Import-AutopilotDevice `
+    Import-AutoPilotDevice `
         -CsvPath '.\AutopilotHWID.csv' `
         -GroupTag 'Shared' `
         -WhatIf
@@ -1174,7 +1174,7 @@ function Import-AutopilotDevice {
     }
 }
 
-function Get-AutopilotImportStatus {
+function Get-AutoPilotImportStatus {
     <#
     .SYNOPSIS
     Returns the current Intune processing status of an Autopilot import.
@@ -1186,7 +1186,7 @@ function Get-AutopilotImportStatus {
     the timeout expires.
 
     .PARAMETER ImportId
-    Import identifier returned by Import-AutopilotDevice.
+    Import identifier returned by Import-AutoPilotDevice.
 
     .PARAMETER FunctionUrl
     HTTPS URL of the Autopilot import Function endpoint. Overrides functionUrl
@@ -1212,13 +1212,13 @@ function Get-AutopilotImportStatus {
     Maximum wait time in seconds. The default is 1800 (30 minutes).
 
     .EXAMPLE
-    Get-AutopilotImportStatus `
+    Get-AutoPilotImportStatus `
         -ImportId '11111111-1111-1111-1111-111111111111'
 
     Returns the current status without waiting.
 
     .EXAMPLE
-    Get-AutopilotImportStatus `
+    Get-AutoPilotImportStatus `
         -ImportId '11111111-1111-1111-1111-111111111111' `
         -Wait `
         -PollIntervalSeconds 30 `
@@ -1297,7 +1297,7 @@ function Get-AutopilotImportStatus {
     } while ($true)
 }
 
-function Get-AutopilotImportHistory {
+function Get-AutoPilotImportHistory {
     <#
     .SYNOPSIS
     Returns Autopilot import operations for an application manager.
@@ -1332,12 +1332,12 @@ function Get-AutopilotImportHistory {
     Returns the unchanged response envelope, including count and correlationId.
 
     .EXAMPLE
-    Get-AutopilotImportHistory
+    Get-AutoPilotImportHistory
 
     Returns up to 100 import operations using client.settings.json.
 
     .EXAMPLE
-    Get-AutopilotImportHistory -Top 500 |
+    Get-AutoPilotImportHistory -Top 500 |
         Where-Object Status -eq 'error'
 
     Returns failed operations from the latest 500 records available in Intune.
@@ -1540,7 +1540,7 @@ function ConvertTo-ClientTagPolicyResult {
     return $result
 }
 
-function Get-AutopilotTagPolicy {
+function Get-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Returns the current group-to-tag policy with Entra group display names.
@@ -1570,12 +1570,12 @@ function Get-AutopilotTagPolicy {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Get-AutopilotTagPolicy
+    Get-AutoPilotTagPolicy
 
     Returns policy rules with Entra group display names.
 
     .EXAMPLE
-    $response = Get-AutopilotTagPolicy -Raw
+    $response = Get-AutoPilotTagPolicy -Raw
     $response.policy
 
     Returns the unchanged API response for automation.
@@ -1648,7 +1648,7 @@ function Get-AutopilotTagPolicy {
     }
 }
 
-function Add-AutopilotTagPolicy {
+function Add-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Adds an Entra group and its allowed Group Tags to the policy.
@@ -1684,21 +1684,21 @@ function Add-AutopilotTagPolicy {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Add-AutopilotTagPolicy `
+    Add-AutoPilotTagPolicy `
         -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared', 'Kiosk'
 
     Adds two allowed Group Tags to the Entra group.
 
     .EXAMPLE
-    Add-AutopilotTagPolicy `
+    Add-AutoPilotTagPolicy `
         -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'BG-Default, PAW, PAW-CSM'
 
     Adds three comma-separated Group Tags to the Entra group.
 
     .EXAMPLE
-    Add-AutopilotTagPolicy `
+    Add-AutoPilotTagPolicy `
         -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared' `
         -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
@@ -1837,7 +1837,7 @@ function Add-AutopilotTagPolicy {
         })
 }
 
-function Remove-AutopilotTagPolicy {
+function Remove-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Removes Group Tags or an Entra group from the Group Tag policy.
@@ -1871,14 +1871,14 @@ function Remove-AutopilotTagPolicy {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicy `
+    Remove-AutoPilotTagPolicy `
         -Group 'Autopilot Operators' `
         -GroupTag 'Kiosk'
 
     Removes one Group Tag while preserving the group's other tags.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicy `
+    Remove-AutoPilotTagPolicy `
         -Group '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2019,7 +2019,7 @@ function Remove-AutopilotTagPolicy {
             ([guid] $_.groupId).ToString() -ne $resolvedGroupId
         })
         if ($remainingPolicy.Count -eq 0) {
-            throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
+            throw 'The last Group Tag policy rule cannot be removed. Use Set-AutoPilotTagPolicy to replace the policy.'
         }
     }
     $body = @{
@@ -2089,7 +2089,7 @@ function Remove-AutopilotTagPolicy {
         -PassThru
 }
 
-function Set-AutopilotTagPolicy {
+function Set-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Replaces the complete group-to-tag policy.
@@ -2125,7 +2125,7 @@ function Set-AutopilotTagPolicy {
     read from this file.
 
     .EXAMPLE
-    Set-AutopilotTagPolicy `
+    Set-AutoPilotTagPolicy `
         -TagAuthorizationRule @(
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
@@ -2183,7 +2183,146 @@ function Set-AutopilotTagPolicy {
         -Token $token -ContentType 'application/json' -Body $body
 }
 
-function Update-AutopilotTagPolicyManager {
+function Get-AutoPilotTagPolicyManager {
+    <#
+    .SYNOPSIS
+    Gets the explicitly configured Group Tag managers.
+
+    .DESCRIPTION
+    Reads MANAGER_AUTHORIZATION_POLICY from the configured Azure Function App
+    and returns the installing manager and every additional manager as
+    structured PowerShell objects. Values not supplied explicitly are resolved
+    from client.settings.json.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the Function App.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for Azure authentication.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the Function App.
+
+    .PARAMETER FunctionAppName
+    Name of the Autopilot Import Function App.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Get-AutoPilotTagPolicyManager
+
+    Lists the configured managers using the installed client settings.
+
+    .OUTPUTS
+    PSCustomObject records containing FunctionAppName, PrincipalId, and
+    ManagerType.
+    #>
+    [CmdletBinding()]
+    param(
+        [guid] $SubscriptionId,
+        [guid] $TenantId,
+        [string] $ResourceGroupName,
+        [string] $FunctionAppName,
+        [string] $ConfigPath
+    )
+
+    Assert-ClientCommand -Name 'Get-AzWebApp', 'Set-AzContext'
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        subscriptionId = $SubscriptionId; tenantId = $TenantId
+        resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
+    }
+    $missingDeploymentValues = @(
+        foreach ($entry in @(
+                @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
+                @{ Name = 'ResourceGroupName'; Key = 'resourceGroupName' }
+                @{ Name = 'FunctionAppName'; Key = 'functionAppName' }
+            )) {
+            if ([string]::IsNullOrWhiteSpace(
+                    [string] $configuration[$entry.Key])) {
+                $entry.Name
+            }
+        }
+    )
+    if ($missingDeploymentValues.Count -gt 0) {
+        $configuredFunctionUrl = [string] $configuration['functionUrl']
+        $configuredTenantId = Get-ConfigurationValue `
+            $configuration tenantId 'TenantId'
+        if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
+            throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+        }
+        $deployment = Resolve-ClientFunctionAppFromUrl `
+            -FunctionUrl $configuredFunctionUrl `
+            -TenantId $configuredTenantId `
+            -SubscriptionId ([string] $configuration['subscriptionId'])
+        $configuration['subscriptionId'] = $deployment.SubscriptionId
+        $configuration['resourceGroupName'] = $deployment.ResourceGroupName
+        $configuration['functionAppName'] = $deployment.FunctionAppName
+        Save-ClientDeploymentConfiguration `
+            -Configuration $configuration `
+            -Deployment $deployment
+    }
+
+    $resolvedSubscriptionId = Get-ConfigurationValue `
+        $configuration subscriptionId 'SubscriptionId'
+    $resolvedTenantId = Get-ConfigurationValue `
+        $configuration tenantId 'TenantId'
+    $resolvedResourceGroup = Get-ConfigurationValue `
+        $configuration resourceGroupName 'ResourceGroupName'
+    $resolvedFunctionName = Get-ConfigurationValue `
+        $configuration functionAppName 'FunctionAppName'
+
+    [void](Get-ClientAccessToken `
+        $resolvedTenantId `
+        'https://management.azure.com/' `
+        $resolvedSubscriptionId)
+    Set-AzContext `
+        -Tenant $resolvedTenantId `
+        -Subscription $resolvedSubscriptionId `
+        -WhatIf:$false | Out-Null
+    $functionApp = Get-AzWebApp `
+        -ResourceGroupName $resolvedResourceGroup `
+        -Name $resolvedFunctionName
+    if (-not $functionApp) {
+        throw "Function App '$resolvedFunctionName' was not found."
+    }
+
+    $managerPolicySetting = @($functionApp.SiteConfig.AppSettings |
+        Where-Object Name -eq 'MANAGER_AUTHORIZATION_POLICY' |
+        Select-Object -First 1)
+    if ($managerPolicySetting.Count -eq 0) {
+        throw "Function App '$resolvedFunctionName' does not contain MANAGER_AUTHORIZATION_POLICY."
+    }
+    try {
+        $managerPolicy = $managerPolicySetting[0].Value | ConvertFrom-Json
+        $installerId = ([guid] $managerPolicy.installerPrincipalId).ToString()
+        $additionalIds = @($managerPolicy.additionalPrincipalIds |
+            Where-Object { $null -ne $_ } |
+            ForEach-Object { ([guid] $_).ToString() })
+    }
+    catch {
+        throw "The existing MANAGER_AUTHORIZATION_POLICY is invalid: $($_.Exception.Message)"
+    }
+
+    @(
+        [pscustomobject]@{
+            PSTypeName = 'AutopilotImport.TagPolicyManager'
+            FunctionAppName = $resolvedFunctionName
+            PrincipalId = $installerId
+            ManagerType = 'Installer'
+        }
+        foreach ($principalId in $additionalIds) {
+            [pscustomobject]@{
+                PSTypeName = 'AutopilotImport.TagPolicyManager'
+                FunctionAppName = $resolvedFunctionName
+                PrincipalId = $principalId
+                ManagerType = 'Additional'
+            }
+        }
+    )
+}
+
+function Update-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Adds and removes explicit Group Tag managers atomically.
@@ -2221,14 +2360,14 @@ function Update-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Update-AutopilotTagPolicyManager `
+    Update-AutoPilotTagPolicyManager `
         -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
         -RemovePrincipalId '22222222-2222-2222-2222-222222222222'
 
     Adds one manager and removes another using the installed client settings.
 
     .EXAMPLE
-    Update-AutopilotTagPolicyManager `
+    Update-AutoPilotTagPolicyManager `
         -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2360,7 +2499,7 @@ function Update-AutopilotTagPolicyManager {
     [pscustomobject]@{ FunctionAppName = $resolvedFunctionName; ManagerPolicy = $updatedPolicy }
 }
 
-function Add-AutopilotTagPolicyManager {
+function Add-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Adds explicit users or groups to the Group Tag manager policy.
@@ -2368,7 +2507,7 @@ function Add-AutopilotTagPolicyManager {
     .DESCRIPTION
     Adds Microsoft Entra principal object IDs to the Function App's explicit
     Group Tag manager list. This command delegates authentication, authorization
-    checks, deduplication, and the update to Update-AutopilotTagPolicyManager.
+    checks, deduplication, and the update to Update-AutoPilotTagPolicyManager.
 
     .PARAMETER PrincipalId
     Microsoft Entra object IDs of users or groups to add as managers.
@@ -2393,13 +2532,13 @@ function Add-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Add-AutopilotTagPolicyManager `
+    Add-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111'
 
     Adds one explicit manager using the installed client settings.
 
     .EXAMPLE
-    Add-AutopilotTagPolicyManager `
+    Add-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2429,10 +2568,10 @@ function Add-AutopilotTagPolicyManager {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    Update-AutopilotTagPolicyManager @parameters
+    Update-AutoPilotTagPolicyManager @parameters
 }
 
-function Remove-AutopilotTagPolicyManager {
+function Remove-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Removes explicit users or groups from the Group Tag manager policy.
@@ -2441,7 +2580,7 @@ function Remove-AutopilotTagPolicyManager {
     Removes Microsoft Entra principal object IDs from the Function App's
     explicit Group Tag manager list. The identity that installed the solution
     remains protected. This command delegates validation and the update to
-    Update-AutopilotTagPolicyManager.
+    Update-AutoPilotTagPolicyManager.
 
     .PARAMETER PrincipalId
     Microsoft Entra object IDs of users or groups to remove. The installing
@@ -2467,13 +2606,13 @@ function Remove-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicyManager `
+    Remove-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111'
 
     Removes one explicit manager using the installed client settings.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicyManager `
+    Remove-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2503,20 +2642,21 @@ function Remove-AutopilotTagPolicyManager {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    Update-AutopilotTagPolicyManager @parameters
+    Update-AutoPilotTagPolicyManager @parameters
 }
 
 Export-ModuleMember -Function @(
     'New-AutoPilotImporterClientConfiguration',
     'Get-AutoPilotImporterClientConfiguration',
-    'Import-AutopilotDevice',
-    'Get-AutopilotImportStatus',
-    'Get-AutopilotImportHistory',
-    'Get-AutopilotTagPolicy',
-    'Add-AutopilotTagPolicy',
-    'Remove-AutopilotTagPolicy',
-    'Set-AutopilotTagPolicy',
-    'Update-AutopilotTagPolicyManager',
-    'Add-AutopilotTagPolicyManager',
-    'Remove-AutopilotTagPolicyManager'
+    'Import-AutoPilotDevice',
+    'Get-AutoPilotImportStatus',
+    'Get-AutoPilotImportHistory',
+    'Get-AutoPilotTagPolicy',
+    'Add-AutoPilotTagPolicy',
+    'Remove-AutoPilotTagPolicy',
+    'Set-AutoPilotTagPolicy',
+    'Get-AutoPilotTagPolicyManager',
+    'Update-AutoPilotTagPolicyManager',
+    'Add-AutoPilotTagPolicyManager',
+    'Remove-AutoPilotTagPolicyManager'
 )

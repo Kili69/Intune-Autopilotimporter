@@ -1,16 +1,16 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Compatibility wrapper for Update-AutopilotTagPolicyManager.
+Compatibility wrapper for Update-AutoPilotTagPolicyManager.
 
 .DESCRIPTION
 Adds and removes explicit users or groups from the Group Tag manager policy of
 an Autopilot Import Function App. The script loads AutopilotImport.Client from
 the installation or source tree and forwards the supplied parameters to
-Update-AutopilotTagPolicyManager.
+Update-AutoPilotTagPolicyManager.
 
 The command verifies that the caller is an Owner or Contributor of the Function
 App before updating its MANAGER_AUTHORIZATION_POLICY application setting. The
@@ -99,4 +99,4 @@ foreach ($name in $PSBoundParameters.Keys) {
 if ($WhatIfPreference) {
     $parameters.WhatIf = $true
 }
-AutopilotImport.Client\Update-AutopilotTagPolicyManager @parameters
+AutopilotImport.Client\Update-AutoPilotTagPolicyManager @parameters

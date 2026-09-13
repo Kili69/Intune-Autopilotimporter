@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -9,8 +9,8 @@ Compatibility wrapper for AutopilotImport.Client tag policy commands.
 .DESCRIPTION
 Lists or replaces the Group Tag authorization policy used by the Autopilot
 Import API. The script loads AutopilotImport.Client from the installation or
-source tree and invokes Get-AutopilotTagPolicy when List is specified;
-otherwise, it invokes Set-AutopilotTagPolicy.
+source tree and invokes Get-AutoPilotTagPolicy when List is specified;
+otherwise, it invokes Set-AutoPilotTagPolicy.
 
 Each policy rule maps a Microsoft Entra group object ID to one or more allowed
 Autopilot Group Tags. Values omitted on the command line are resolved from the
@@ -124,7 +124,7 @@ foreach ($name in @('ManagementUrl', 'ApiApplicationIdUri', 'TenantId', 'ConfigP
     }
 }
 if ($List) {
-    AutopilotImport.Client\Get-AutopilotTagPolicy @parameters
+    AutopilotImport.Client\Get-AutoPilotTagPolicy @parameters
 }
 else {
     $parameters.TagAuthorizationRule = $TagAuthorizationRule
@@ -136,5 +136,5 @@ else {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    AutopilotImport.Client\Set-AutopilotTagPolicy @parameters
+    AutopilotImport.Client\Set-AutoPilotTagPolicy @parameters
 }

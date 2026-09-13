@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -194,7 +194,7 @@ Write-Host "Setup log: $setupLogPath"
 try {
 #region Update discovery helpers
 
-function Resolve-AutopilotUpdateConfigPath {
+function Resolve-AutoPilotUpdateConfigPath {
     <#
     .SYNOPSIS
     Resolves the client configuration used to identify a deployment.
@@ -296,7 +296,7 @@ function Resolve-AutopilotUpdateConfigPath {
     } -Descending | Select-Object -First 1).FullName
 }
 
-function Read-AutopilotUpdateValue {
+function Read-AutoPilotUpdateValue {
     <#
     .SYNOPSIS
     Resolves an update value from a parameter, configuration, or prompt.
@@ -333,7 +333,7 @@ function Read-AutopilotUpdateValue {
     return $enteredValue.Trim()
 }
 
-function Get-AutopilotUpdateConfigurationValue {
+function Get-AutoPilotUpdateConfigurationValue {
     <#
     .SYNOPSIS
     Reads an optional value from an installed client configuration.
@@ -352,7 +352,7 @@ function Get-AutopilotUpdateConfigurationValue {
     return $null
 }
 
-function Resolve-AutopilotFunctionAppFromUrl {
+function Resolve-AutoPilotFunctionAppFromUrl {
     <#
     .SYNOPSIS
     Resolves an Azure Function App resource from its public URL.
@@ -459,7 +459,7 @@ function Resolve-AutopilotFunctionAppFromUrl {
     return $matches[0]
 }
 
-function Get-AutopilotClientToolsPath {
+function Get-AutoPilotClientToolsPath {
     <#
     .SYNOPSIS
     Resolves the destination of the updated portable client package.
@@ -510,7 +510,7 @@ function Assert-SystemWideClientModuleAccess {
     }
 }
 
-function Resolve-AutopilotDeploymentResult {
+function Resolve-AutoPilotDeploymentResult {
     param(
         [AllowEmptyCollection()]
         [object[]] $InstallerOutput
@@ -630,7 +630,7 @@ function ConvertTo-UpdateTagAuthorizationRules {
     update before deployment changes are made.
 
     .PARAMETER Policy
-    Group Tag policy objects returned by Get-AutopilotTagPolicy.
+    Group Tag policy objects returned by Get-AutoPilotTagPolicy.
 
     .OUTPUTS
     System.Object[]. Installer-compatible Group Tag authorization rules.
@@ -664,7 +664,7 @@ function ConvertTo-UpdateTagAuthorizationRules {
     return $rules
 }
 
-function Assert-AutopilotAppSettingsResponse {
+function Assert-AutoPilotAppSettingsResponse {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -916,7 +916,7 @@ if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
     throw 'Az.Accounts did not provide the required Azure commands.'
 }
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
-$resolvedConfigPath = Resolve-AutopilotUpdateConfigPath `
+$resolvedConfigPath = Resolve-AutoPilotUpdateConfigPath `
     -Path $ConfigPath `
     -AllowMissing
 $settings = if ($resolvedConfigPath) {
@@ -926,16 +926,16 @@ else {
     $null
 }
 
-$configuredSubscriptionId = Get-AutopilotUpdateConfigurationValue `
+$configuredSubscriptionId = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'subscriptionId'
-$configuredTenantId = Get-AutopilotUpdateConfigurationValue `
+$configuredTenantId = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'tenantId'
-$configuredResourceGroupName = Get-AutopilotUpdateConfigurationValue `
+$configuredResourceGroupName = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'resourceGroupName'
-$configuredFunctionAppName = Get-AutopilotUpdateConfigurationValue `
+$configuredFunctionAppName = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'functionAppName'
 
@@ -950,7 +950,7 @@ if ($hasFunctionUrl) {
     if ($PSBoundParameters.ContainsKey('SubscriptionId')) {
         $discoveryParameters.SubscriptionId = $SubscriptionId
     }
-    $discoveredFunctionApp = Resolve-AutopilotFunctionAppFromUrl `
+    $discoveredFunctionApp = Resolve-AutoPilotFunctionAppFromUrl `
         @discoveryParameters
 
     foreach ($identityParameter in @{
@@ -967,7 +967,7 @@ if ($hasFunctionUrl) {
     Write-Host "Function URL resolved to '$($discoveredFunctionApp.FunctionAppName)' in resource group '$($discoveredFunctionApp.ResourceGroupName)' and subscription '$($discoveredFunctionApp.SubscriptionId)'."
 }
 
-$SubscriptionId = Read-AutopilotUpdateValue `
+$SubscriptionId = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.SubscriptionId
     } elseif ($PSBoundParameters.ContainsKey('SubscriptionId')) {
@@ -977,7 +977,7 @@ $SubscriptionId = Read-AutopilotUpdateValue `
     -DefaultValue $(if ($currentContext) {
         [string] $currentContext.Subscription.Id
     })
-$TenantId = Read-AutopilotUpdateValue `
+$TenantId = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.TenantId
     } elseif ($PSBoundParameters.ContainsKey('TenantId')) {
@@ -995,7 +995,7 @@ $parsedGuid = [guid]::Empty
 if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
     throw 'Entra Tenant ID must be a GUID.'
 }
-$ResourceGroupName = Read-AutopilotUpdateValue `
+$ResourceGroupName = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.ResourceGroupName
     } elseif ($PSBoundParameters.ContainsKey('ResourceGroupName')) {
@@ -1004,7 +1004,7 @@ $ResourceGroupName = Read-AutopilotUpdateValue `
     -Prompt 'Azure Resource Group' `
     -DefaultValue 'rg-autopilot-import'
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
-$FunctionAppName = Read-AutopilotUpdateValue `
+$FunctionAppName = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.FunctionAppName
     } elseif ($PSBoundParameters.ContainsKey('FunctionAppName')) {
@@ -1014,7 +1014,7 @@ $FunctionAppName = Read-AutopilotUpdateValue `
     -DefaultValue $defaultFunctionName
 
 if ($resolvedConfigPath) {
-    $resolvedClientToolsPath = Get-AutopilotClientToolsPath `
+    $resolvedClientToolsPath = Get-AutoPilotClientToolsPath `
         -SettingsPath $resolvedConfigPath `
         -OverridePath $ClientToolsPath
 }
@@ -1023,7 +1023,7 @@ else {
     if ([string]::IsNullOrWhiteSpace($documentsPath)) {
         $documentsPath = $HOME
     }
-    $resolvedClientToolsPath = Read-AutopilotUpdateValue `
+    $resolvedClientToolsPath = Read-AutoPilotUpdateValue `
         -CurrentValue $ClientToolsPath `
         -Prompt 'Operational PowerShell scripts directory' `
         -DefaultValue (Join-Path $documentsPath 'AutopilotImport')
@@ -1073,9 +1073,9 @@ $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
     -WhatIf:$false
-Assert-AutopilotAppSettingsResponse -Response $appSettingsResponse
+Assert-AutoPilotAppSettingsResponse -Response $appSettingsResponse
 $appSettings = $appSettingsResponse.Content | ConvertFrom-Json
-$configuredApiAudience = Get-AutopilotUpdateConfigurationValue `
+$configuredApiAudience = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'apiApplicationIdUri'
 $resolvedApiAudience = if ($PSBoundParameters.ContainsKey('ApiAudience')) {
@@ -1098,7 +1098,7 @@ if ($resolvedApiAudience -notmatch '^api://' -or
     throw "API audience '$resolvedApiAudience' does not contain a valid Entra Client ID."
 }
 
-$configuredManagementUrl = Get-AutopilotUpdateConfigurationValue `
+$configuredManagementUrl = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'managementUrl'
 $defaultHostName = [string] $site.properties.defaultHostName
@@ -1117,7 +1117,7 @@ else {
 }
 
 Import-Module $clientModulePath -Force
-$policyResponse = Get-AutopilotTagPolicy `
+$policyResponse = Get-AutoPilotTagPolicy `
     -ManagementUrl $resolvedManagementUrl `
     -ApiApplicationIdUri $resolvedApiAudience `
     -TenantId $TenantId `
@@ -1213,7 +1213,7 @@ if (-not $Force -and
 
 Assert-SystemWideClientModuleAccess
 $installerOutput = @(& $installerPath @installerParameters -Confirm:$false)
-$deploymentResult = Resolve-AutopilotDeploymentResult `
+$deploymentResult = Resolve-AutoPilotDeploymentResult `
     -InstallerOutput $installerOutput
 $systemWideClientSettingsPath = Install-SystemWideAutopilotClientModule `
     -SourceSettingsPath ([string] $deploymentResult.InstalledClientSettingsPath)

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.14
+# Project-Version: 1.1.20260913.15
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -590,7 +590,7 @@ function ConvertTo-AdditionalManagerPrincipalIds {
         Select-Object -Unique)
 }
 
-function Install-AutopilotClientTools {
+function Install-AutoPilotClientTools {
     <#
     .SYNOPSIS
     Installs the client module, compatibility scripts, and local dependencies.
@@ -1515,7 +1515,7 @@ Set-Content `
     -LiteralPath $clientSettingsPath `
     -Value $clientSettings `
     -Encoding utf8NoBOM
-$installedClientSettingsPath = Install-AutopilotClientTools `
+$installedClientSettingsPath = Install-AutoPilotClientTools `
     -DestinationPath $ClientToolsPath `
     -ProjectRoot $projectRoot `
     -ClientSettingsJson $clientSettings `
