@@ -20,8 +20,35 @@ stages:
       - job: Pester
         steps:
           - checkout: self
+            fetchDepth: 0
+          - task: PowerShell@2
+            displayName: Require change history and version update
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                $headCommit = if ([string]::IsNullOrWhiteSpace(
+                    $env:SYSTEM_PULLREQUEST_SOURCECOMMITID)) {
+                  (git rev-parse HEAD).Trim()
+                }
+                else {
+                  $env:SYSTEM_PULLREQUEST_SOURCECOMMITID
+                }
+                ./src/Scripts/Test-ChangeHistory.ps1 `
+                  -BaseCommit "$headCommit^" `
+                  -HeadCommit $headCommit
+          - pwsh: |
+              $changedFiles = @(git diff `
+                --name-only `
+                HEAD^ `
+                HEAD `
+                -- src/Web)
+              $changed = ($changedFiles.Count -gt 0).ToString().ToLowerInvariant()
+              Write-Host "##vso[task.setvariable variable=webFrontendChanged]$changed"
+            displayName: Detect web frontend changes
           - task: NodeTool@0
             displayName: Use Node.js 22
+            condition: eq(variables['webFrontendChanged'], 'true')
             inputs:
               versionSpec: '22.x'
           - script: |
@@ -29,6 +56,7 @@ stages:
               npm run check
             workingDirectory: src/Web
             displayName: Test and build web frontend
+            condition: eq(variables['webFrontendChanged'], 'true')
           - task: PowerShell@2
             displayName: Run Pester tests
             inputs:

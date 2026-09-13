@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -121,7 +121,7 @@ Describe 'Client CSV input validation' {
         $missingPath = Join-Path $TestDrive 'missing.csv'
 
         {
-            Import-AutopilotDevice `
+            Import-AutoPilotDevice `
                 -CsvPath $missingPath `
                 -GroupTag 'EUD' `
                 -ValidateOnly
@@ -134,12 +134,37 @@ Describe 'Client CSV input validation' {
         [IO.File]::WriteAllBytes($emptyPath, [byte[]]::new(0))
 
         {
-            Import-AutopilotDevice `
+            Import-AutoPilotDevice `
                 -CsvPath $emptyPath `
                 -GroupTag 'EUD' `
                 -ValidateOnly
         } | Should -Throw `
             "The Autopilot CSV file '$emptyPath' is empty. Export the device data again and try again."
+    }
+
+    It 'validates but does not authenticate or submit devices with WhatIf' {
+        $csvPath = Join-Path $TestDrive 'devices.csv'
+        @'
+"Device Serial Number","Hardware Hash"
+"SERIAL-001","AQ=="
+'@ | Set-Content -LiteralPath $csvPath
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client
+
+        Import-AutoPilotDevice `
+            -CsvPath $csvPath `
+            -GroupTag 'EUD' `
+            -FunctionUrl 'https://func.example/api/devices/import' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Get-ClientAccessToken `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
     }
 }
 
@@ -279,6 +304,29 @@ Describe 'Client configuration display' {
             Should -Not -BeNullOrEmpty
     }
 
+    It 'exports all client commands with consistent AutoPilot casing' {
+        $expectedCommands = @(
+            'Add-AutoPilotTagPolicy'
+            'Add-AutoPilotTagPolicyManager'
+            'Get-AutoPilotImporterClientConfiguration'
+            'Get-AutoPilotImportHistory'
+            'Get-AutoPilotImportStatus'
+            'Get-AutoPilotTagPolicy'
+            'Get-AutoPilotTagPolicyManager'
+            'Import-AutoPilotDevice'
+            'New-AutoPilotImporterClientConfiguration'
+            'Remove-AutoPilotTagPolicy'
+            'Remove-AutoPilotTagPolicyManager'
+            'Set-AutoPilotTagPolicy'
+            'Update-AutoPilotTagPolicyManager'
+        )
+
+        $actualCommands = @(Get-Command `
+                -Module AutopilotImport.Client).Name | Sort-Object
+
+        $actualCommands | Should -Be $expectedCommands
+    }
+
     It 'bootstraps and persists configuration from the Function URL' {
         $settingsPath = Join-Path $TestDrive 'profile\client.settings.json'
         Mock Get-DefaultClientConfigurationPath `
@@ -322,6 +370,64 @@ Describe 'Client configuration display' {
                 $Uri -eq 'https://func-example.azurewebsites.net/api/ui/config'
             } `
             -Times 1
+    }
+
+    It 'persists Azure deployment details for a custom Function domain' {
+        $settingsPath = Join-Path $TestDrive `
+            'custom-domain\client.settings.json'
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://autopilot.example/api/devices/import'
+            }
+        }
+
+        $configuration = Get-AutoPilotImporterClientConfiguration `
+            -FunctionUrl 'https://autopilot.example' `
+            -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+            -ResourceGroupName 'rg-autopilot-import' `
+            -FunctionAppName 'func-autopilot-import' `
+            -ConfigPath $settingsPath
+
+        $configuration.SubscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $configuration.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $configuration.FunctionAppName | Should -Be `
+            'func-autopilot-import'
+    }
+
+    It 'preserves existing Azure deployment details during URL bootstrap' {
+        $settingsPath = Join-Path $TestDrive `
+            'existing-profile\client.settings.json'
+        New-Item -Path (Split-Path $settingsPath -Parent) `
+            -ItemType Directory -Force | Out-Null
+        @{
+            subscriptionId = '11111111-1111-1111-1111-111111111111'
+            resourceGroupName = 'rg-autopilot-import'
+            functionAppName = 'func-autopilot-import'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://autopilot.example/api/devices/import'
+            }
+        }
+
+        $configuration = Get-AutoPilotImporterClientConfiguration `
+            -FunctionUrl 'https://autopilot.example' `
+            -ConfigPath $settingsPath
+
+        $configuration.SubscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $configuration.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $configuration.FunctionAppName | Should -Be `
+            'func-autopilot-import'
     }
 
     It 'rejects a runtime import URL from a different origin' {
@@ -402,6 +508,7 @@ Describe 'Client manager policy App Settings' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
             '..\AutopilotImport.Client\AutopilotImport.Client.psm1'
+        Import-Module $clientModulePath -Force
         $tokens = $null
         $parseErrors = $null
         $clientModuleAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -412,8 +519,12 @@ Describe 'Client manager policy App Settings' {
         $managerFunctionAst = $clientModuleAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Update-AutopilotTagPolicyManager'
+            $node.Name -eq 'Update-AutoPilotTagPolicyManager'
         }, $true) | Select-Object -First 1
+        $resolvedClientModulePath = (Resolve-Path $clientModulePath).Path
+        $clientModule = Get-Module AutopilotImport.Client |
+            Where-Object Path -eq $resolvedClientModulePath |
+            Select-Object -First 1
     }
 
     It 'passes manager policy JSON to Az.Websites as a string value' {
@@ -421,6 +532,213 @@ Describe 'Client manager policy App Settings' {
             '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
         $managerFunctionAst.Extent.Text | Should -Not -Match `
             '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
+    }
+
+    It 'discovers Azure details missing after URL bootstrap' {
+        $settingsPath = Join-Path $TestDrive 'client.settings.json'
+        @{
+            functionUrl = 'https://autopilot.example/api/devices/import'
+            tenantId = '22222222-2222-2222-2222-222222222222'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+        Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+        Mock Resolve-ClientFunctionAppFromUrl `
+            -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                SubscriptionId = '33333333-3333-3333-3333-333333333333'
+                ResourceGroupName = 'rg-autopilot-import'
+                FunctionAppName = 'func-autopilot-import'
+            }
+        }
+        Mock Save-ClientDeploymentConfiguration `
+            -ModuleName AutopilotImport.Client
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Set-AzContext -ModuleName AutopilotImport.Client
+        Mock Get-AzWebApp -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Id = '/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg-autopilot-import/providers/Microsoft.Web/sites/func-autopilot-import'
+                SiteConfig = [pscustomobject]@{
+                    AppSettings = @(
+                        [pscustomobject]@{
+                            Name = 'MANAGER_AUTHORIZATION_POLICY'
+                            Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":[],"allowIntuneRoleAdministrators":true}'
+                        }
+                    )
+                }
+            }
+        }
+        Mock Get-AzAccessToken -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Token = ConvertTo-SecureString `
+                    'eyJhbGciOiJub25lIn0.eyJvaWQiOiI1NTU1NTU1NS01NTU1LTU1NTUtNTU1NS01NTU1NTU1NTU1NTUifQ.' `
+                    -AsPlainText -Force
+            }
+        }
+        Mock Get-AzRoleAssignment -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                RoleDefinitionName = 'Owner'
+                Scope = '/subscriptions/33333333-3333-3333-3333-333333333333'
+            }
+        }
+        Mock Import-Module -ModuleName AutopilotImport.Client
+        Mock Get-CoreModulePath -ModuleName AutopilotImport.Client {
+            'AutopilotImport.psm1'
+        }
+        Mock Test-TagManagerPolicyAdministratorRole `
+            -ModuleName AutopilotImport.Client { $true }
+        Mock Set-AzWebApp -ModuleName AutopilotImport.Client
+
+        $result = Update-AutoPilotTagPolicyManager `
+            -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
+            -ConfigPath $settingsPath `
+            -Confirm:$false
+
+        $result.FunctionAppName | Should -Be 'func-autopilot-import'
+        Should -Invoke Resolve-ClientFunctionAppFromUrl `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $FunctionUrl -eq `
+                    'https://autopilot.example/api/devices/import' -and
+                $TenantId -eq `
+                    '22222222-2222-2222-2222-222222222222'
+            }
+        Should -Invoke Save-ClientDeploymentConfiguration `
+            -ModuleName AutopilotImport.Client `
+            -Times 1
+    }
+
+    It 'resolves a Function App by its custom hostname' {
+        $azureContext = `
+            [Microsoft.Azure.Commands.Profile.Models.Core.PSAzureContext]::new()
+        Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Get-AzContext -ModuleName AutopilotImport.Client {
+            $azureContext
+        }
+        Mock Get-AzSubscription -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                Id = '33333333-3333-3333-3333-333333333333'
+                TenantId = '22222222-2222-2222-2222-222222222222'
+            }
+        }
+        Mock Set-AzContext -ModuleName AutopilotImport.Client {
+            $azureContext
+        }
+        Mock Get-AzWebApp -ModuleName AutopilotImport.Client {
+            @(
+                [pscustomobject]@{
+                    Kind = 'app'
+                    Name = 'unrelated-web-app'
+                    ResourceGroup = 'rg-web'
+                    HostNames = @('autopilot.example')
+                    DefaultHostName = 'unrelated.azurewebsites.net'
+                }
+                [pscustomobject]@{
+                    Kind = 'functionapp'
+                    Name = 'func-autopilot-import'
+                    ResourceGroup = 'rg-autopilot-import'
+                    HostNames = @(
+                        'func-autopilot-import.azurewebsites.net'
+                        'autopilot.example'
+                    )
+                    DefaultHostName = `
+                        'func-autopilot-import.azurewebsites.net'
+                }
+            )
+        }
+
+        $deployment = & $clientModule {
+            Resolve-ClientFunctionAppFromUrl `
+                -FunctionUrl `
+                    'https://autopilot.example/api/devices/import' `
+                -TenantId '22222222-2222-2222-2222-222222222222'
+        }
+
+        $deployment.SubscriptionId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+        $deployment.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $deployment.FunctionAppName | Should -Be `
+            'func-autopilot-import'
+        Should -Invoke Set-AzContext `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter { $Context -eq $azureContext }
+    }
+
+    It 'persists discovered Azure deployment details in the client profile' {
+        $settingsPath = Join-Path $TestDrive 'persisted.settings.json'
+        @{
+            functionUrl = 'https://autopilot.example/api/devices/import'
+            tenantId = '22222222-2222-2222-2222-222222222222'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+
+        & $clientModule {
+            param($Path)
+            Save-ClientDeploymentConfiguration `
+                -Configuration @{
+                    ConfigPath = $Path
+                } `
+                -Deployment ([pscustomobject]@{
+                    SubscriptionId = `
+                        '33333333-3333-3333-3333-333333333333'
+                    ResourceGroupName = 'rg-autopilot-import'
+                    FunctionAppName = 'func-autopilot-import'
+                })
+        } $settingsPath
+
+        $settings = Get-Content -LiteralPath $settingsPath -Raw |
+            ConvertFrom-Json
+        $settings.subscriptionId | Should -Be `
+            '33333333-3333-3333-3333-333333333333'
+        $settings.resourceGroupName | Should -Be 'rg-autopilot-import'
+        $settings.functionAppName | Should -Be 'func-autopilot-import'
+        $settings.functionUrl | Should -Be `
+            'https://autopilot.example/api/devices/import'
+    }
+
+    It 'returns the installer and additional tag policy managers' {
+        $settingsPath = Join-Path $TestDrive 'manager.settings.json'
+        @{
+            subscriptionId = '33333333-3333-3333-3333-333333333333'
+            tenantId = '22222222-2222-2222-2222-222222222222'
+            resourceGroupName = 'rg-autopilot-import'
+            functionAppName = 'func-autopilot-import'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+        Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Set-AzContext -ModuleName AutopilotImport.Client
+        Mock Get-AzWebApp -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                SiteConfig = [pscustomobject]@{
+                    AppSettings = @(
+                        [pscustomobject]@{
+                            Name = 'MANAGER_AUTHORIZATION_POLICY'
+                            Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":["55555555-5555-5555-5555-555555555555"],"allowIntuneRoleAdministrators":true}'
+                        }
+                    )
+                }
+            }
+        }
+
+        $result = @(Get-AutoPilotTagPolicyManager `
+            -ConfigPath $settingsPath)
+
+        $result.Count | Should -Be 2
+        $result[0].PrincipalId | Should -Be `
+            '44444444-4444-4444-4444-444444444444'
+        $result[0].ManagerType | Should -Be 'Installer'
+        $result[1].PrincipalId | Should -Be `
+            '55555555-5555-5555-5555-555555555555'
+        $result[1].ManagerType | Should -Be 'Additional'
+        $result[0].PSObject.TypeNames[0] | Should -Be `
+            'AutopilotImport.TagPolicyManager'
     }
 }
 
@@ -513,7 +831,7 @@ Describe 'Client import history' {
     }
 
     It 'returns manager-visible import operations as pipeline objects' {
-        $result = @(Get-AutopilotImportHistory `
+        $result = @(Get-AutoPilotImportHistory `
             -Top 250 `
             -ImportHistoryUrl 'https://func.example/api/management/imports' `
             -ApiApplicationIdUri `
@@ -522,7 +840,19 @@ Describe 'Client import history' {
 
         $result.Count | Should -Be 2
         $result[0].serialNumber | Should -Be 'SERIAL-001'
+        $result[0].ImportId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
         $result[1].status | Should -Be 'error'
+        $result[0].PSTypeNames | Should -Contain `
+            'AutopilotImport.ImportHistoryRecord'
+        $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
+            Should -Be @(
+                'ImportId'
+                'SerialNumber'
+                'GroupTag'
+                'Status'
+                'DeviceErrorName'
+            )
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -Times 1 `
@@ -543,7 +873,7 @@ Describe 'Client import history' {
             tenantId = '55555555-5555-5555-5555-555555555555'
         } | ConvertTo-Json | Set-Content -LiteralPath $configPath
 
-        Get-AutopilotImportHistory -ConfigPath $configPath | Out-Null
+        Get-AutoPilotImportHistory -ConfigPath $configPath | Out-Null
 
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
@@ -554,7 +884,7 @@ Describe 'Client import history' {
     }
 
     It 'returns the response envelope when Raw is specified' {
-        $result = Get-AutopilotImportHistory `
+        $result = Get-AutoPilotImportHistory `
             -ImportHistoryUrl 'https://func.example/api/management/imports' `
             -ApiApplicationIdUri `
                 'api://44444444-4444-4444-4444-444444444444' `
@@ -564,6 +894,25 @@ Describe 'Client import history' {
         $result.count | Should -Be 2
         $result.correlationId | Should -Be `
             '33333333-3333-3333-3333-333333333333'
+    }
+
+    It 'explains that a missing history endpoint requires a Function update' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            $exception = [InvalidOperationException]::new(
+                'Response status code does not indicate success: 404 (Not Found).')
+            $exception.Data['StatusCode'] = 404
+            throw $exception
+        }
+
+        {
+            Get-AutoPilotImportHistory `
+                -ImportHistoryUrl `
+                    'https://func.example/api/management/imports' `
+                -ApiApplicationIdUri `
+                    'api://44444444-4444-4444-4444-444444444444' `
+                -TenantId '55555555-5555-5555-5555-555555555555'
+        } | Should -Throw `
+            "*endpoint was not found at 'https://func.example/api/management/imports?top=100'*Run Update-AutopilotImport.ps1 without -SkipPublish*"
     }
 }
 
@@ -575,6 +924,17 @@ Describe 'Manager import history endpoint' {
                 $projectRoot `
                 'src\FunctionApp\GetImportHistory\run.ps1') `
             -Raw
+        $installer = Get-Content `
+            -LiteralPath (Join-Path `
+                $projectRoot `
+                'src\Installer\Install-AutopilotImport.ps1') `
+            -Raw
+    }
+
+    It 'includes the import history Function in the Azure publish archive' {
+        $installer.Contains(
+            "Join-Path `$functionAppRoot 'GetImportHistory'") |
+            Should -BeTrue
     }
 
     It 'uses the same explicit and Intune manager authorization as tag policy management' {
@@ -625,13 +985,14 @@ Describe 'Client Group Tag policy display' {
                     groupId = '11111111-1111-1111-1111-111111111111'
                     tags    = @('Standard', 'Kiosk')
                 })
+                functionVersion = '1.1.20260913.9'
                 correlationId = '22222222-2222-2222-2222-222222222222'
             }
         }
     }
 
     It 'shows the Entra group name while preserving its object ID' {
-        $result = @(Get-AutopilotTagPolicy `
+        $result = @(Get-AutoPilotTagPolicy `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444')
@@ -641,12 +1002,23 @@ Describe 'Client Group Tag policy display' {
         $result[0].GroupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $result[0].Tags | Should -Be @('Standard', 'Kiosk')
+        $result[0].RestrictedManagementAdministrativeUnitName |
+            Should -BeNullOrEmpty
+        $result[0].CorrelationId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result[0].PSObject.TypeNames[0] | Should -Be `
+            'AutopilotImport.TagPolicyRule'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
-            Should -Be @('GroupName', 'Tags')
+            Should -Be @(
+                'GroupId'
+                'GroupName'
+                'Tags'
+                'RestrictedManagementAdministrativeUnitName'
+            )
     }
 
     It 'returns the unchanged API response when Raw is specified' {
-        $result = Get-AutopilotTagPolicy `
+        $result = Get-AutoPilotTagPolicy `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444' `
@@ -654,6 +1026,7 @@ Describe 'Client Group Tag policy display' {
 
         $result.policy[0].groupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
+        $result.functionVersion | Should -Be '1.1.20260913.9'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter { $Uri -like 'https://graph.microsoft.com/*' } `
@@ -673,14 +1046,6 @@ Describe 'Adding a Client Group Tag policy rule' {
             ConvertTo-SecureString 'token' -AsPlainText -Force
         }
         Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
-            if ($Uri -like 'https://graph.microsoft.com/*') {
-                return [pscustomobject]@{
-                    value = @([pscustomobject]@{
-                        id          = '22222222-2222-2222-2222-222222222222'
-                        displayName = 'Autopilot Import Operators'
-                    })
-                }
-            }
             if ($Method -eq 'Get') {
                 return [pscustomobject]@{
                     policy = @([pscustomobject]@{
@@ -691,34 +1056,100 @@ Describe 'Adding a Client Group Tag policy rule' {
                     })
                 }
             }
-            return [pscustomobject]@{ updated = $true }
+            return [pscustomobject]@{
+                correlationId = '55555555-5555-5555-5555-555555555555'
+            }
         }
     }
 
-    It 'resolves a group name and preserves the existing MAU' {
-        $result = Add-AutopilotTagPolicy `
-            -Group 'Autopilot Import Operators' `
+    It 'returns the added rule without requiring confirmation' {
+        $result = Add-AutoPilotTagPolicy `
+            -GroupId '22222222-2222-2222-2222-222222222222' `
             -GroupTag 'Kiosk' `
+            -Mau 'Kiosk Devices' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
-            -TenantId '44444444-4444-4444-4444-444444444444' `
-            -Confirm:$false
+            -TenantId '44444444-4444-4444-4444-444444444444'
 
-        $result.updated | Should -BeTrue
+        $result.GroupId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.GroupName | Should -BeNullOrEmpty
+        $result.Tags | Should -Be @('Kiosk')
+        $result.RestrictedManagementAdministrativeUnitName |
+            Should -Be 'Kiosk Devices'
+        $result.CorrelationId | Should -Be `
+            '55555555-5555-5555-5555-555555555555'
+        $result.PSObject.TypeNames[0] | Should -Be `
+            'AutopilotImport.TagPolicyRule'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard' -and
-                $Body -match '22222222-2222-2222-2222-222222222222=Kiosk' -and
-                $Body -match 'Autopilot Devices'
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match '22222222-2222-2222-2222-222222222222' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Kiosk' -and
+                $Body -match 'Autopilot Devices' -and
+                $Body -match 'Kiosk Devices'
+            } `
+            -Times 1
+            Should -Invoke Get-ClientAccessToken `
+                -ModuleName AutopilotImport.Client `
+                -Times 1
+    }
+
+    It 'supports WhatIf without requesting confirmation by default' {
+        foreach ($commandName in @(
+                'New-AutoPilotImporterClientConfiguration'
+                'Import-AutoPilotDevice'
+                'Add-AutoPilotTagPolicy'
+                'Remove-AutoPilotTagPolicy'
+                'Set-AutoPilotTagPolicy'
+                'Update-AutoPilotTagPolicyManager'
+                'Add-AutoPilotTagPolicyManager'
+                'Remove-AutoPilotTagPolicyManager'
+            )) {
+            $command = Get-Command $commandName
+            $binding = @($command.ScriptBlock.Attributes | Where-Object {
+                $_ -is [Management.Automation.CmdletBindingAttribute]
+            })[0]
+
+            $command.Parameters.ContainsKey('WhatIf') |
+                Should -BeTrue -Because "$commandName changes state"
+            $binding.ConfirmImpact |
+                Should -Be 'None' -Because "$commandName should not prompt automatically"
+        }
+    }
+
+    It 'accepts comma-separated tags as separate values' {
+        Add-AutoPilotTagPolicy `
+            '22222222-2222-2222-2222-222222222222' `
+            -Tag 'BG-Default, PAW, PAW-CSM' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $newRule = @(($Body | ConvertFrom-Json).policy |
+                    Where-Object groupId -eq `
+                        '22222222-2222-2222-2222-222222222222')[0]
+                @($newRule.tags).Count -eq 3 -and
+                    'BG-Default' -in $newRule.tags -and
+                    'PAW' -in $newRule.tags -and
+                    'PAW-CSM' -in $newRule.tags
             } `
             -Times 1
     }
 
     It 'accepts an object ID, merges tags, and sets the specified MAU' {
-        Add-AutopilotTagPolicy `
-            -Group '11111111-1111-1111-1111-111111111111' `
+        Add-AutoPilotTagPolicy `
+            -GroupId '11111111-1111-1111-1111-111111111111' `
             -GroupTag @('Standard', 'Shared') `
             -Mau 'Privileged Autopilot Devices' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -730,18 +1161,64 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard,Shared' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Shared' -and
                 $Body -match 'Privileged Autopilot Devices'
             } `
             -Times 1
-        Should -Invoke Invoke-RestMethod `
-            -ModuleName AutopilotImport.Client `
-            -ParameterFilter { $Uri -like 'https://graph.microsoft.com/*' } `
-            -Times 0
     }
 
-    It 'does not update the policy with WhatIf' {
-        Add-AutopilotTagPolicy `
+    It 'assigns an RMAU only to the selected rule' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @(
+                        [pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('BG-Default', 'PAW')
+                        }
+                        [pscustomobject]@{
+                            groupId = '22222222-2222-2222-2222-222222222222'
+                            tags = @('BG-Default')
+                        }
+                    )
+                }
+            }
+            return [pscustomobject]@{ correlationId = 'correlation-id' }
+        }
+
+        Add-AutoPilotTagPolicy `
+            '33333333-3333-3333-3333-333333333333' `
+            'BG-Default' `
+            'BG-Devices' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $submittedPolicy = @(($Body | ConvertFrom-Json).policy)
+                $rulesWithMau = @($submittedPolicy | Where-Object {
+                    $_.PSObject.Properties[
+                        'restrictedManagementAdministrativeUnitName']
+                })
+                $rulesWithMau.Count -eq 1 -and
+                    $rulesWithMau[0].groupId -eq `
+                        '33333333-3333-3333-3333-333333333333' -and
+                    $rulesWithMau[0].restrictedManagementAdministrativeUnitName -eq `
+                        'BG-Devices'
+            } `
+            -Times 1
+    }
+
+    It 'retains Group as an alias and does not update with WhatIf' {
+        Add-AutoPilotTagPolicy `
             -Group '11111111-1111-1111-1111-111111111111' `
             -GroupTag 'Shared' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -769,8 +1246,8 @@ Describe 'Adding a Client Group Tag policy rule' {
         }
 
         {
-            Add-AutopilotTagPolicy `
-                -Group '11111111-1111-1111-1111-111111111111' `
+            Add-AutoPilotTagPolicy `
+                -GroupId '11111111-1111-1111-1111-111111111111' `
                 -GroupTag 'Shared' `
                 -ManagementUrl 'https://func.example/api/management/tag-policy' `
                 -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -782,7 +1259,26 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '"restrictedManagementAdministrativeUnitName":""'
+                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
+            } `
+            -Times 1
+    }
+
+    It 'removes the RMAU only from the selected rule when Mau is empty' {
+        Add-AutoPilotTagPolicy `
+            -GroupId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Shared' `
+            -Mau '' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'Put' -and
+                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
             } `
             -Times 1
     }
@@ -831,7 +1327,7 @@ Describe 'Removing a Client Group Tag policy rule' {
     }
 
     It 'resolves a group name and removes only its policy rule' {
-        $result = Remove-AutopilotTagPolicy `
+        $result = Remove-AutoPilotTagPolicy `
             -Group 'Obsolete Autopilot Group' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -839,11 +1335,21 @@ Describe 'Removing a Client Group Tag policy rule' {
             -Confirm:$false
 
         $result.updated | Should -BeTrue
+        [string] $result | Should -Be `
+            "The tag policy for group 'Obsolete Autopilot Group' was removed."
+        ($result | Out-String).Trim() | Should -Be `
+            "The tag policy for group 'Obsolete Autopilot Group' was removed."
+        $result.GroupId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.GroupName | Should -Be 'Obsolete Autopilot Group'
+        $result.RuleRemoved | Should -BeTrue
+        $result.RemovedTags | Should -BeNullOrEmpty
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match '11111111-1111-1111-1111-111111111111=Standard' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
                 $Body -notmatch '22222222-2222-2222-2222-222222222222' -and
                 $Body -match 'Autopilot Devices'
             } `
@@ -851,7 +1357,7 @@ Describe 'Removing a Client Group Tag policy rule' {
     }
 
     It 'accepts a group object ID without a Graph lookup' {
-        Remove-AutopilotTagPolicy `
+        Remove-AutoPilotTagPolicy `
             -Group '22222222-2222-2222-2222-222222222222' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -887,7 +1393,7 @@ Describe 'Removing a Client Group Tag policy rule' {
             return [pscustomobject]@{ updated = $true }
         }
 
-        $result = Remove-AutopilotTagPolicy `
+        $result = Remove-AutoPilotTagPolicy `
             -Group '11111111-1111-1111-1111-111111111111' `
             -GroupTag 'Kiosk' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -896,17 +1402,65 @@ Describe 'Removing a Client Group Tag policy rule' {
             -Confirm:$false
 
         $result.updated | Should -BeTrue
+        [string] $result | Should -Be `
+            "Group Tag 'Kiosk' was removed from the tag policy for group '11111111-1111-1111-1111-111111111111'."
+        $result.GroupId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $result.RuleRemoved | Should -BeFalse
+        $result.RemovedTags | Should -Be 'Kiosk'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -match `
-                    '11111111-1111-1111-1111-111111111111=Standard,Shared' -and
-                $Body -notmatch `
-                    '11111111-1111-1111-1111-111111111111=[^"\r\n]*Kiosk' -and
-                $Body -match `
-                    '22222222-2222-2222-2222-222222222222=Legacy' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Standard' -and
+                $Body -match 'Shared' -and
+                $Body -notmatch 'Kiosk' -and
+                $Body -match '22222222-2222-2222-2222-222222222222' -and
+                $Body -match 'Legacy' -and
                 $Body -match 'Autopilot Devices'
+            } `
+            -Times 1
+    }
+
+    It 'accepts comma-separated tags when removing selected values' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @(
+                        [pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('BG-Default', 'PAW', 'PAW-CSM', 'Shared')
+                        }
+                        [pscustomobject]@{
+                            groupId = '22222222-2222-2222-2222-222222222222'
+                            tags = @('Legacy')
+                        }
+                    )
+                }
+            }
+            return [pscustomobject]@{ updated = $true }
+        }
+
+        Remove-AutoPilotTagPolicy `
+            -Group '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'BG-Default, PAW, PAW-CSM' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $updatedRule = @(($Body | ConvertFrom-Json).policy |
+                    Where-Object groupId -eq `
+                        '11111111-1111-1111-1111-111111111111')[0]
+                @($updatedRule.tags).Count -eq 1 -and
+                    $updatedRule.tags[0] -eq 'Shared'
             } `
             -Times 1
     }
@@ -924,7 +1478,7 @@ Describe 'Removing a Client Group Tag policy rule' {
             return [pscustomobject]@{ updated = $true }
         }
 
-        Remove-AutopilotTagPolicy `
+        Remove-AutoPilotTagPolicy `
             -Group '22222222-2222-2222-2222-222222222222' `
             -GroupTag 'Legacy' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -940,7 +1494,7 @@ Describe 'Removing a Client Group Tag policy rule' {
 
     It 'rejects removing a tag that is not assigned to the group' {
         {
-            Remove-AutopilotTagPolicy `
+            Remove-AutoPilotTagPolicy `
                 -Group '22222222-2222-2222-2222-222222222222' `
                 -GroupTag 'Unknown' `
                 -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -952,7 +1506,7 @@ Describe 'Removing a Client Group Tag policy rule' {
 
     It 'refuses to remove the last tag from a group rule' {
         {
-            Remove-AutopilotTagPolicy `
+            Remove-AutoPilotTagPolicy `
                 -Group '22222222-2222-2222-2222-222222222222' `
                 -GroupTag 'Legacy' `
                 -ManagementUrl 'https://func.example/api/management/tag-policy' `
@@ -963,7 +1517,7 @@ Describe 'Removing a Client Group Tag policy rule' {
     }
 
     It 'does not remove the rule with WhatIf' {
-        Remove-AutopilotTagPolicy `
+        Remove-AutoPilotTagPolicy `
             -Group '22222222-2222-2222-2222-222222222222' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -989,7 +1543,7 @@ Describe 'Removing a Client Group Tag policy rule' {
         }
 
         {
-            Remove-AutopilotTagPolicy `
+            Remove-AutoPilotTagPolicy `
                 -Group '22222222-2222-2222-2222-222222222222' `
                 -ManagementUrl 'https://func.example/api/management/tag-policy' `
                 -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
@@ -1052,7 +1606,7 @@ Describe 'Autopilot import request validation' {
             groupTag           = 'Untrusted-Client-Tag'
         }
 
-        $payload = ConvertTo-AutopilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate'
+        $payload = ConvertTo-AutoPilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate'
 
         $payload.serialNumber | Should -Be 'PC-001'
         $payload.groupTag | Should -Be 'Corporate'
@@ -1064,7 +1618,7 @@ Describe 'Autopilot import request validation' {
             hardwareIdentifier = 'not-base64'
         }
 
-        { ConvertTo-AutopilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate' } |
+        { ConvertTo-AutoPilotImportPayload -RequestBody $requestBody -GroupTag 'Corporate' } |
             Should -Throw
     }
 }
@@ -1088,7 +1642,7 @@ Describe 'Entra device extension attribute updates' {
     }
 
     It 'resolves the registered Autopilot identity from a completed import' {
-        $registrationId = Get-AutopilotDeviceRegistrationId -ImportedDevice `
+        $registrationId = Get-AutoPilotDeviceRegistrationId -ImportedDevice `
             ([pscustomobject]@{
                 state = [pscustomobject]@{
                     deviceRegistrationId = '11111111-1111-1111-1111-111111111111'
@@ -1100,7 +1654,7 @@ Describe 'Entra device extension attribute updates' {
 
     It 'rejects an import without a device registration ID' {
         {
-            Get-AutopilotDeviceRegistrationId -ImportedDevice `
+            Get-AutoPilotDeviceRegistrationId -ImportedDevice `
                 ([pscustomobject]@{ state = [pscustomobject]@{} })
         } | Should -Throw '*registration is not available yet*'
     }
@@ -1233,6 +1787,14 @@ Describe 'Installer tag authorization rules' {
         Invoke-Expression $functionAst.Extent.Text
     }
 
+    It 'accepts structured policy rule objects at the installer entry point' {
+        $parameter = $installerAst.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -eq 'TagAuthorizationRule'
+        }
+
+        $parameter.StaticType | Should -Be ([object[]])
+    }
+
     It 'consolidates tags for the same group' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
             '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
@@ -1258,6 +1820,55 @@ Describe 'Installer tag authorization rules' {
         AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Standard' | Should -Be 'RMAU-Autopilot'
+    }
+
+    It 'preserves a different restricted administrative unit for each rule' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Standard')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Kiosk')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Kiosk'
+            }
+        )
+
+        $policy[0].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-Standard'
+        $policy[1].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-Kiosk'
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Kiosk' | Should -Be 'RMAU-Kiosk'
+    }
+
+    It 'resolves the RMAU from the caller group when rules share a tag' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Shared')
+                restrictedManagementAdministrativeUnitName = 'RMAU-One'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Shared')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Two'
+            }
+        )
+        $principal = [pscustomobject]@{
+            claims = @([pscustomobject]@{
+                typ = 'groups'
+                val = '22222222-2222-2222-2222-222222222222'
+            })
+        }
+
+        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Shared' `
+            -Principal $principal | Should -Be 'RMAU-Two'
     }
 
     It 'keeps the current policy shape when no administrative unit is configured' {
@@ -1449,7 +2060,7 @@ Describe 'Installer client tools package' {
         $functionAst = $installerAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Install-AutopilotClientTools'
+            $node.Name -eq 'Install-AutoPilotClientTools'
         }, $true) | Select-Object -First 1
         Invoke-Expression $functionAst.Extent.Text
     }
@@ -1459,6 +2070,11 @@ Describe 'Installer client tools package' {
             'Join-Path\s+\$documentsPath\s+''AutopilotImport'''
         $installerAst.Extent.Text | Should -Not -Match `
             'defaultClientToolsPath\s*=.*PowerShell\\Scripts\\AutopilotImport'
+    }
+
+    It 'keeps formatted status output out of the installer result stream' {
+        $installerAst.Extent.Text | Should -Match `
+            '(?s)Write-Host "`nInstallation completed\.".*?\$result\s*\|\s*Format-List\s*\|\s*Out-Host\s+\$result'
     }
 
     It 'installs compatibility scripts and a versioned client module with defaults' {
@@ -1486,7 +2102,7 @@ Describe 'Installer client tools package' {
             functionAppName     = 'func-test'
         } | ConvertTo-Json
 
-        $settingsPath = Install-AutopilotClientTools `
+        $settingsPath = Install-AutoPilotClientTools `
             -DestinationPath $destinationPath `
             -ProjectRoot $projectRoot `
             -ClientSettingsJson $settings `
@@ -1549,11 +2165,17 @@ Describe 'Installer client tools package' {
             $env:PSModulePath = $autoloadModuleRoot + `
                 [IO.Path]::PathSeparator + $originalModulePath
             Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
-            $autoloadedCommand = Get-Command Import-AutopilotDevice `
+            $autoloadedCommand = Get-Command Import-AutoPilotDevice `
                 -ErrorAction Stop
             $autoloadedCommand.Module.Path | Should -Be `
                 (Join-Path $autoloadModuleRoot `
                     "AutopilotImport.Client\$moduleVersion\AutopilotImport.Client.psm1")
+            Get-Command Get-AutoPilotImportHistory `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
+            Get-Command Get-AutoPilotTagPolicyManager `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
         }
         finally {
             Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
@@ -1563,7 +2185,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 12
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 13
         Remove-Module AutopilotImport.Client
     }
 }
@@ -1580,14 +2202,16 @@ Describe 'Update script deployment discovery' {
             [ref] $parseErrors
         )
         foreach ($functionName in @(
-                'Resolve-AutopilotUpdateConfigPath',
-                'Resolve-AutopilotFunctionAppFromUrl',
-            'Read-AutopilotUpdateValue',
-            'Get-AutopilotUpdateConfigurationValue',
-                'Get-AutopilotClientToolsPath',
+                'Resolve-AutoPilotUpdateConfigPath',
+                'Resolve-AutoPilotFunctionAppFromUrl',
+            'Read-AutoPilotUpdateValue',
+            'Get-AutoPilotUpdateConfigurationValue',
+                'Get-AutoPilotClientToolsPath',
+                'Assert-SystemWideClientModuleAccess',
+                'Resolve-AutoPilotDeploymentResult',
+                'Install-SystemWideAutopilotClientModule',
                 'ConvertTo-UpdateTagAuthorizationRules',
-                'Get-UpdateRestrictedManagementAdministrativeUnitName',
-                'Assert-AutopilotAppSettingsResponse',
+                'Assert-AutoPilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
                 'Get-UpdateApplicationInsightsWorkspaceResourceId',
                 'Write-UpdateLogAnalyticsWorkspaceMigrationNotice',
@@ -1607,7 +2231,7 @@ Describe 'Update script deployment discovery' {
         $configPath = Join-Path $TestDrive 'client.settings.json'
         '{}' | Set-Content -LiteralPath $configPath
 
-        Resolve-AutopilotUpdateConfigPath -Path $configPath |
+        Resolve-AutoPilotUpdateConfigPath -Path $configPath |
             Should -Be (Resolve-Path $configPath).Path
     }
 
@@ -1625,7 +2249,37 @@ Describe 'Update script deployment discovery' {
                 Should -Contain $parameterName
         }
         $updateAst.Extent.Text | Should -Match `
-            '(?s)Resolve-AutopilotUpdateConfigPath\s+.*?-AllowMissing'
+            '(?s)Resolve-AutoPilotUpdateConfigPath\s+.*?-AllowMissing'
+    }
+
+    It 'requires elevation immediately before deployment changes are made' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$installerOutput\s*='
+    }
+
+    It 'selects the structured deployment result from mixed installer output' {
+        $expectedResult = [pscustomobject]@{
+            InstalledClientSettingsPath = `
+                'C:\Tools\AutopilotImport\client.settings.json'
+        }
+
+        $result = Resolve-AutoPilotDeploymentResult -InstallerOutput @(
+            [pscustomobject]@{ Noise = 'Az command output' }
+            $expectedResult
+            'informational output'
+        )
+
+        $result.InstalledClientSettingsPath | Should -Be `
+            $expectedResult.InstalledClientSettingsPath
+    }
+
+    It 'rejects installer output without a structured deployment result' {
+        {
+            Resolve-AutoPilotDeploymentResult -InstallerOutput @(
+                [pscustomobject]@{ Noise = 'Az command output' }
+            )
+        } | Should -Throw `
+            '*exactly one result with InstalledClientSettingsPath was expected*'
     }
 
     It 'resolves deployment identity from a Function URL' {
@@ -1649,7 +2303,7 @@ Describe 'Update script deployment discovery' {
             }
         }
 
-        $deployment = Resolve-AutopilotFunctionAppFromUrl `
+        $deployment = Resolve-AutoPilotFunctionAppFromUrl `
             -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
 
         $deployment.SubscriptionId | Should -Be `
@@ -1664,7 +2318,7 @@ Describe 'Update script deployment discovery' {
 
     It 'rejects a Function URL outside azurewebsites.net' {
         {
-            Resolve-AutopilotFunctionAppFromUrl `
+            Resolve-AutoPilotFunctionAppFromUrl `
                 -Url 'https://example.test/api/devices/import'
         } | Should -Throw '*azurewebsites.net*'
     }
@@ -1673,7 +2327,7 @@ Describe 'Update script deployment discovery' {
         $updateAst.Extent.Text | Should -Match `
             '\$discoveryParameters\s*=\s*@\{\s*Url\s*=\s*\$FunctionUrl\s*\}'
         $updateAst.Extent.Text | Should -Match `
-            '(?s)Resolve-AutopilotFunctionAppFromUrl\s+.*?@discoveryParameters'
+            '(?s)Resolve-AutoPilotFunctionAppFromUrl\s+.*?@discoveryParameters'
     }
 
     It 'requires an unambiguous Function URL discovery result' {
@@ -1701,7 +2355,7 @@ Describe 'Update script deployment discovery' {
         }
 
         {
-            Resolve-AutopilotFunctionAppFromUrl `
+            Resolve-AutoPilotFunctionAppFromUrl `
                 -Url 'https://func-shared.azurewebsites.net'
         } | Should -Throw '*Use -SubscriptionId*'
     }
@@ -1718,7 +2372,7 @@ Describe 'Update script deployment discovery' {
     It 'uses a supplied update value without prompting' {
         Mock Read-Host { throw 'Read-Host should not be called.' }
 
-        Read-AutopilotUpdateValue `
+        Read-AutoPilotUpdateValue `
             -CurrentValue ' supplied-value ' `
             -Prompt 'Required value' | Should -Be 'supplied-value'
 
@@ -1728,7 +2382,7 @@ Describe 'Update script deployment discovery' {
     It 'accepts the interactive default for a missing update value' {
         Mock Read-Host { '' }
 
-        Read-AutopilotUpdateValue `
+        Read-AutoPilotUpdateValue `
             -Prompt 'Required value' `
             -DefaultValue 'default-value' | Should -Be 'default-value'
 
@@ -1743,7 +2397,7 @@ Describe 'Update script deployment discovery' {
         $updateAst.Extent.Text | Should -Match `
             'https://\$defaultHostName/api/management/tag-policy'
         $updateAst.Extent.Text | Should -Match `
-            '(?s)Get-AutopilotTagPolicy\s+.*?-ManagementUrl\s+\$resolvedManagementUrl\s+.*?-ApiApplicationIdUri\s+\$resolvedApiAudience\s+.*?-TenantId\s+\$TenantId'
+            '(?s)Get-AutoPilotTagPolicy\s+.*?-ManagementUrl\s+\$resolvedManagementUrl\s+.*?-ApiApplicationIdUri\s+\$resolvedApiAudience\s+.*?-TenantId\s+\$TenantId'
     }
 
     It 'discovers a versioned configuration installed through PSModulePath' {
@@ -1767,7 +2421,7 @@ Describe 'Update script deployment discovery' {
         try {
             $env:PSModulePath = $modulePathRoot
 
-            Resolve-AutopilotUpdateConfigPath |
+            Resolve-AutoPilotUpdateConfigPath |
                 Should -Be (Resolve-Path $newerConfigPath).Path
         }
         finally {
@@ -1779,20 +2433,72 @@ Describe 'Update script deployment discovery' {
         $settingsPath = Join-Path $TestDrive `
             'AutopilotImport\Modules\AutopilotImport.Client\1.0.20260813.1\client.settings.json'
 
-        Get-AutopilotClientToolsPath -SettingsPath $settingsPath |
+        Get-AutoPilotClientToolsPath -SettingsPath $settingsPath |
             Should -Be (Join-Path $TestDrive 'AutopilotImport')
     }
 
-    It 'converts the current policy into installer rules' {
+    It 'updates the system-wide client module and removes older versions' {
+        $sourceVersion = '1.1.20260913.7'
+        $sourceDirectory = Join-Path $TestDrive `
+            "portable\Modules\AutopilotImport.Client\$sourceVersion"
+        $systemModuleRoot = Join-Path $TestDrive `
+            'Program Files\WindowsPowerShell\Modules\AutopilotImport.Client'
+        $oldVersionDirectory = Join-Path $systemModuleRoot '1.1.20260911.1'
+        [void] (New-Item -Path $sourceDirectory -ItemType Directory -Force)
+        [void] (New-Item -Path $oldVersionDirectory -ItemType Directory -Force)
+        Set-Content `
+            -LiteralPath (Join-Path $sourceDirectory `
+                'AutopilotImport.Client.psd1') `
+            -Value "@{ ModuleVersion = '$sourceVersion' }"
+        foreach ($fileName in @(
+                'AutopilotImport.Client.psm1'
+                'AutopilotImport.psm1'
+                'client.settings.json'
+            )) {
+            Set-Content `
+                -LiteralPath (Join-Path $sourceDirectory $fileName) `
+                -Value $fileName
+        }
+
+        $installedSettingsPath = Install-SystemWideAutopilotClientModule `
+            -SourceSettingsPath (Join-Path $sourceDirectory `
+                'client.settings.json') `
+            -DestinationRoot $systemModuleRoot
+
+        $installedSettingsPath | Should -Be (Join-Path `
+            $systemModuleRoot `
+            "$sourceVersion\client.settings.json")
+        foreach ($fileName in @(
+                'AutopilotImport.Client.psm1'
+                'AutopilotImport.Client.psd1'
+                'AutopilotImport.psm1'
+                'client.settings.json'
+            )) {
+            Join-Path $systemModuleRoot "$sourceVersion\$fileName" |
+                Should -Exist
+        }
+        $oldVersionDirectory | Should -Not -Exist
+    }
+
+    It 'synchronizes the system-wide module after the installer succeeds' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
+    }
+
+    It 'converts the current policy into installer rules with individual RMAUs' {
         $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags    = @('PAW-CSM', 'BG-Default')
+                restrictedManagementAdministrativeUnitName = 'RMAU-PAW'
             }
         ))
 
-        $rules | Should -Be `
-            '11111111-1111-1111-1111-111111111111=PAW-CSM,BG-Default'
+        $rules[0].groupId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $rules[0].tags | Should -Be @('PAW-CSM', 'BG-Default')
+        $rules[0].restrictedManagementAdministrativeUnitName |
+            Should -Be 'RMAU-PAW'
     }
 
     It 'keeps a single preserved installer rule as an array' {
@@ -1808,7 +2514,7 @@ Describe 'Update script deployment discovery' {
 
     It 'requests the raw policy response for deployment preservation' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)Get-AutopilotTagPolicy\s+.*?-Raw'
+            '(?s)Get-AutoPilotTagPolicy\s+.*?-Raw'
         $updateAst.Extent.Text | Should -Match `
             "did not return a Group Tag policy"
     }
@@ -1844,28 +2550,6 @@ Describe 'Update script deployment discovery' {
             'InstallerPrincipalId\s*=\s*\$installerPrincipalId'
     }
 
-    It 'supports an existing policy without RMAU metadata' {
-        $policy = [pscustomobject]@{
-            groupId = '11111111-1111-1111-1111-111111111111'
-            tags    = @('Standard')
-        }
-
-        Get-UpdateRestrictedManagementAdministrativeUnitName `
-            -Policy $policy | Should -BeNullOrEmpty
-    }
-
-    It 'preserves the configured RMAU name' {
-        $policy = [pscustomobject]@{
-            groupId = '11111111-1111-1111-1111-111111111111'
-            tags    = @('Standard')
-            restrictedManagementAdministrativeUnitName = `
-                'RMAU-Autopilot'
-        }
-
-        Get-UpdateRestrictedManagementAdministrativeUnitName `
-            -Policy $policy | Should -Be 'RMAU-Autopilot'
-    }
-
     It 'reports a concise Function App settings permission error' {
         $response = [pscustomobject]@{
             StatusCode = 403
@@ -1877,7 +2561,7 @@ Describe 'Update script deployment discovery' {
         }
 
         $errorRecord = {
-            Assert-AutopilotAppSettingsResponse -Response $response
+            Assert-AutoPilotAppSettingsResponse -Response $response
         } | Should -Throw -PassThru
 
         $errorRecord.Exception.Message | Should -Match `
@@ -1896,7 +2580,7 @@ Describe 'Update script deployment discovery' {
         }
 
         $verboseOutput = try {
-            Assert-AutopilotAppSettingsResponse -Response $response -Verbose 4>&1
+            Assert-AutoPilotAppSettingsResponse -Response $response -Verbose 4>&1
         }
         catch {
         }
@@ -1993,7 +2677,7 @@ Describe 'Update script deployment discovery' {
 
     It 'emits the migration notice only after the installer succeeds' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)\$deploymentResult = & \$installerPath.+?Write-UpdateLogAnalyticsWorkspaceMigrationNotice.+?\$deploymentResult'
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.+?\$deploymentResult\s*=\s*Resolve-AutoPilotDeploymentResult.+?Write-UpdateLogAnalyticsWorkspaceMigrationNotice.+?\$deploymentResult'
     }
 
     It 'reports only missing Azure capabilities without Verbose' {
@@ -2172,13 +2856,20 @@ Describe 'Installer packaged web frontend fallback' {
         Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
     }
 
-    It 'rebuilds the frontend in CI before creating the deployment package' {
-        $workflow = Get-Content `
-            -LiteralPath (Join-Path $PSScriptRoot '..\..\.github\workflows\deployment-package.yml') `
+    It 'rebuilds the frontend in Azure CI only when its source changes' {
+        $pipeline = Get-Content `
+            -LiteralPath (Join-Path $PSScriptRoot '..\..\azure-pipelines.yml') `
             -Raw
 
-        $workflow | Should -Match `
-            '(?s)Build web frontend.*?npm ci.*?npm run build.*?Build deployment package'
+        $pipeline | Should -Match `
+            '(?s)git diff.*?HEAD\^.*?HEAD.*?src/Web.*?Detect web frontend changes'
+        $pipeline | Should -Match `
+            '(?s)Detect web frontend changes.*?Use Node\.js 22'
+        $conditionMatches = [regex]::Matches(
+            $pipeline,
+            "condition: eq\(variables\['webFrontendChanged'\], 'true'\)"
+        )
+        $conditionMatches.Count | Should -Be 2
     }
 }
 
@@ -2770,6 +3461,23 @@ Describe 'Tag policy manager authorization' {
     }
 }
 
+Describe 'Function version reporting' {
+    It 'returns the deployed project version in management responses' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $managementFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ManageTagPolicy\run.ps1') `
+            -Raw
+
+        $managementFunction | Should -Match `
+            '''X-AutopilotImport-Version''\s*=\s*\$functionVersion'
+        ([regex]::Matches(
+                $managementFunction,
+                'functionVersion\s*=\s*\$functionVersion')).Count |
+            Should -Be 2
+    }
+}
+
 Describe 'Tag manager policy Azure administration' {
     BeforeAll {
         $functionResourceId = '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
@@ -2976,6 +3684,33 @@ Describe 'Setup activity logging' {
 }
 
 Describe 'Web frontend response types' {
+    BeforeAll {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $managementFunctionPath = Join-Path $projectRoot `
+            'src\FunctionApp\ManageTagPolicy\run.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $managementFunctionAst = `
+            [Management.Automation.Language.Parser]::ParseFile(
+                $managementFunctionPath,
+                [ref] $tokens,
+                [ref] $parseErrors
+            )
+        $parseErrors.Count | Should -Be 0
+        foreach ($functionName in @(
+                'Get-SubmittedTagPolicyRules'
+                'ConvertTo-SubmittedTagPolicy'
+            )) {
+            $functionAst = $managementFunctionAst.FindAll({
+                param($node)
+                $node -is `
+                    [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
+    }
+
     It 'keeps the device hash card level at every viewport width' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $style = Get-Content `
@@ -3068,6 +3803,65 @@ Describe 'Web frontend response types' {
         $rootProxy.responseOverrides.'response.headers.Location' |
             Should -Be '/api/ui/index.html'
     }
+
+    It 'extracts policy rules from Functions dictionary request bodies' {
+        $groupId = '11111111-1111-1111-1111-111111111111'
+        $requestBody = [ordered]@{
+            policy = @([ordered]@{
+                groupId = $groupId
+                tags = @('BG-Default')
+            })
+        }
+        $submittedRules = @(
+            Get-SubmittedTagPolicyRules -Body $requestBody
+        )
+
+        $submittedRules.Count | Should -Be 1
+        $submittedRules[0].groupId | Should -Be $groupId
+        $submittedRules[0].tags | Should -Be 'BG-Default'
+        {
+            ConvertTo-TagAuthorizationPolicy -Rules $submittedRules
+        } | Should -Not -Throw
+    }
+
+    It 'applies an RMAU only to the rule that declares it' {
+        $policy = @(ConvertTo-SubmittedTagPolicy -Rules @(
+            [ordered]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('BG-Default', 'PAW')
+            }
+            [ordered]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('BG-Default')
+            }
+            [ordered]@{
+                groupId = '33333333-3333-3333-3333-333333333333'
+                tags = @('BG-Default')
+                restrictedManagementAdministrativeUnitName = 'BG-Devices'
+            }
+        ))
+
+        $policy.Count | Should -Be 3
+        @($policy | Where-Object {
+            $_.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']
+        }).Count | Should -Be 1
+        $policy[2].restrictedManagementAdministrativeUnitName |
+            Should -Be 'BG-Devices'
+    }
+
+    It 'retains the legacy rules property for object request bodies' {
+        $requestBody = [pscustomobject]@{
+            rules = @('11111111-1111-1111-1111-111111111111=Standard')
+        }
+
+        $submittedRules = @(
+            Get-SubmittedTagPolicyRules -Body $requestBody
+        )
+
+        $submittedRules | Should -Be `
+            '11111111-1111-1111-1111-111111111111=Standard'
+    }
 }
 
 Describe 'OOBE web importer helper script' {
@@ -3084,8 +3878,8 @@ Describe 'OOBE web importer helper script' {
         )
         $parseErrors.Count | Should -Be 0
         foreach ($functionName in @(
-                'Resolve-AutopilotImporterWebUrl'
-                'Get-AutopilotImporterConfigUrl'
+                'Resolve-AutoPilotImporterWebUrl'
+                'Get-AutoPilotImporterConfigUrl'
             )) {
             $functionAst = $helperAst.FindAll({
                 param($node)
@@ -3109,19 +3903,19 @@ Describe 'OOBE web importer helper script' {
     }
 
     It 'normalizes a Function App root URL to the frontend page' {
-        $webUrl = Resolve-AutopilotImporterWebUrl `
+        $webUrl = Resolve-AutoPilotImporterWebUrl `
             -Url 'https://func-example.azurewebsites.net'
 
         $webUrl.AbsoluteUri | Should -Be `
             'https://func-example.azurewebsites.net/api/ui/index.html'
-        (Get-AutopilotImporterConfigUrl -WebUri $webUrl).AbsoluteUri |
+        (Get-AutoPilotImporterConfigUrl -WebUri $webUrl).AbsoluteUri |
             Should -Be `
                 'https://func-example.azurewebsites.net/api/ui/config'
     }
 
     It 'rejects an insecure frontend URL' {
         {
-            Resolve-AutopilotImporterWebUrl `
+            Resolve-AutoPilotImporterWebUrl `
                 -Url 'http://func-example.azurewebsites.net'
         } | Should -Throw '*absolute HTTPS URL*'
     }
@@ -3153,7 +3947,7 @@ Describe 'Project metadata entries' {
         }
     }
 
-    It 'rejects a prebuilt web frontend with a stale project version' {
+    It 'accepts a prebuilt web frontend with an independent version' {
         $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
         $assetRoot = Join-Path $webRoot 'assets'
         New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
@@ -3164,29 +3958,7 @@ Describe 'Project metadata entries' {
             -LiteralPath (Join-Path $assetRoot 'index-test.js') `
             -Value 'const version = "1.0.20260902.1";'
 
-        {
-            Assert-BuiltWebFrontend `
-                -Root $TestDrive `
-                -ProjectVersion '1.1.20260911.1'
-        } | Should -Throw '*does not contain project version 1.1.20260911.1*'
-    }
-
-    It 'accepts a prebuilt web frontend with the central project version' {
-        $webRoot = Join-Path $TestDrive 'WebFrontend\wwwroot'
-        $assetRoot = Join-Path $webRoot 'assets'
-        New-Item -Path $assetRoot -ItemType Directory -Force | Out-Null
-        Set-Content `
-            -LiteralPath (Join-Path $webRoot 'index.html') `
-            -Value '<script type="module" src="/api/ui/assets/index-test.js"></script>'
-        Set-Content `
-            -LiteralPath (Join-Path $assetRoot 'index-test.js') `
-            -Value 'const version = "1.1.20260911.1";'
-
-        {
-            Assert-BuiltWebFrontend `
-                -Root $TestDrive `
-                -ProjectVersion '1.1.20260911.1'
-        } | Should -Not -Throw
+        { Assert-BuiltWebFrontend -Root $TestDrive } | Should -Not -Throw
     }
 
     It 'rejects a PowerShell marker that differs from the central version' {
@@ -3299,35 +4071,32 @@ Describe 'Project metadata entries' {
 }
 
 Describe 'Deployment package' {
-    It 'runs automatically for every pushed commit' {
-        $workflowPath = Join-Path `
-            $PSScriptRoot `
-            '..\..\.github\workflows\deployment-package.yml'
-        $workflow = Get-Content -LiteralPath $workflowPath -Raw
+    It 'does not define GitHub Actions workflows' {
+        $workflowRoot = Join-Path $PSScriptRoot '..\..\.github\workflows'
+        $workflowFiles = @(Get-ChildItem `
+            -LiteralPath $workflowRoot `
+            -File `
+            -ErrorAction SilentlyContinue)
 
-        $workflow | Should -Match `
-            "(?ms)^  push:\s+branches:\s+- '\*\*'\s*$"
-        $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
-        $workflow | Should -Match `
-            '(?m)^    runs-on: windows-latest\s*$'
-        $workflow | Should -Match `
-            'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
-        $workflow | Should -Match `
-            '-BranchName \$env:PACKAGE_BRANCH'
-        $workflow | Should -Match 'actions/upload-artifact@v4'
-        $workflow | Should -Match '(?m)^  contents: write\s*$'
-        $workflow | Should -Match `
-            "(?m)^        if: github\.ref == 'refs/heads/main'\s*$"
-        $workflow | Should -Match `
-            '(?m)^          git rm -r --ignore-unmatch artifacts InstallationPackage\s*$'
-        $workflow | Should -Match `
-            '(?m)^          git add -f InstallationPackage\s*$'
-        $workflow | Should -Match `
-            '(?m)^          if \(\$LASTEXITCODE -eq 1\) \{\s*$'
-        $workflow | Should -Match `
-            'git commit -m "build: publish \$env:PACKAGE_NAME \[skip ci\]"'
-        $workflow | Should -Match `
-            '(?m)^            git push origin HEAD:main\s*$'
+        $workflowFiles.Count | Should -Be 0
+    }
+
+    It 'requires History.md and VERSION in every pushed first-parent commit' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $historyCheck = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\Scripts\Test-ChangeHistory.ps1') `
+            -Raw
+
+        $historyCheck | Should -Match `
+            "'rev-list', '--reverse', '--first-parent'"
+        $historyCheck | Should -Match `
+            "'diff-tree', '--root', '--no-commit-id', '--name-only'"
+        $historyCheck | Should -Match `
+            "'History.md', 'VERSION'"
+        $historyCheck | Should -Match `
+            '\$changedPaths -notcontains \$_'
+        $historyCheck | Should -Match '\\\[skip ci\\\]'
     }
 
     It 'publishes a package for every branch in Azure Pipelines' {
@@ -3337,6 +4106,10 @@ Describe 'Deployment package' {
         $pipeline | Should -Match `
             "(?ms)^trigger:\s+branches:\s+include:\s+- '\*'\s*$"
         $pipeline | Should -Match `
+            '(?m)^\s+displayName: Require change history and version update\s*$'
+        $pipeline | Should -Match `
+            '(?m)^\s+\./src/Scripts/Test-ChangeHistory\.ps1 `\s*$'
+        $pipeline | Should -Match `
             '(?m)^\s+displayName: Build deployment package\s*$'
         $pipeline | Should -Match `
             '(?m)^\s+displayName: Publish deployment package\s*$'
@@ -3344,24 +4117,6 @@ Describe 'Deployment package' {
             '(?m)^\s+SOURCE_BRANCH: \$\(Build\.SourceBranch\)\s*$'
         $pipeline | Should -Match `
             '(?m)^\s+condition: and\(succeeded\(\), eq\(variables\[''Build\.SourceBranch''\], ''refs/heads/main''\)\)\s*$'
-    }
-
-    It 'allows pull requests to main only from dev' {
-        $workflowPath = Join-Path `
-            $PSScriptRoot `
-            '..\..\.github\workflows\main-promotion-policy.yml'
-        $workflow = Get-Content -LiteralPath $workflowPath -Raw
-
-        $workflow | Should -Match `
-            '(?ms)^  pull_request:\s+branches:\s+- main\s*$'
-        $workflow | Should -Match `
-            '(?m)^    name: Validate dev promotion\s*$'
-        $workflow | Should -Match `
-            'if \(\$env:SOURCE_BRANCH -ne ''dev''\)'
-        $workflow | Should -Match `
-            '(?m)^    runs-on: \[self-hosted, Windows, X64\]\s*$'
-        $workflow | Should -Match `
-            'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
     }
 
     It 'contains installation and runtime files without local configuration' {

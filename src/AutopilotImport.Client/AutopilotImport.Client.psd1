@@ -1,9 +1,9 @@
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.1.20260912.2'
+    ModuleVersion     = '1.1.20260913.16'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@microsoft.com (aka Kili)'
     Description       = 'Client commands for the secured Windows Autopilot import Function.'
@@ -11,16 +11,17 @@
     FunctionsToExport = @(
         'New-AutoPilotImporterClientConfiguration'
         'Get-AutoPilotImporterClientConfiguration'
-        'Import-AutopilotDevice'
-        'Get-AutopilotImportStatus'
-        'Get-AutopilotImportHistory'
-        'Get-AutopilotTagPolicy'
-        'Add-AutopilotTagPolicy'
-        'Remove-AutopilotTagPolicy'
-        'Set-AutopilotTagPolicy'
-        'Update-AutopilotTagPolicyManager'
-        'Add-AutopilotTagPolicyManager'
-        'Remove-AutopilotTagPolicyManager'
+        'Import-AutoPilotDevice'
+        'Get-AutoPilotImportStatus'
+        'Get-AutoPilotImportHistory'
+        'Get-AutoPilotTagPolicy'
+        'Add-AutoPilotTagPolicy'
+        'Remove-AutoPilotTagPolicy'
+        'Set-AutoPilotTagPolicy'
+        'Get-AutoPilotTagPolicyManager'
+        'Update-AutoPilotTagPolicyManager'
+        'Add-AutoPilotTagPolicyManager'
+        'Remove-AutoPilotTagPolicyManager'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

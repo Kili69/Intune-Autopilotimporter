@@ -4,8 +4,125 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.16` - 2026-09-13
+
+- Added the import GUID (`ImportId`) to the default table output of
+  `Get-AutoPilotImportHistory` while retaining the complete structured record.
+
+## `1.1.20260913.15` - 2026-09-13
+
+- Added `Get-AutoPilotTagPolicyManager` to list the installing and additional
+  Group Tag managers as structured PowerShell objects.
+- Standardized PowerShell command names and documentation on the `AutoPilot`
+  spelling while retaining existing script file names for compatibility.
+
+## `1.1.20260913.14` - 2026-09-13
+
+- Clarified that adding or removing Group Tag managers requires an effective
+  Azure Owner or Contributor assignment; Group Tag manager or Intune Role
+  Administrator authorization alone does not permit manager-list changes.
+
+## `1.1.20260913.13` - 2026-09-13
+
+- Added automatic Azure Function App discovery for manager-policy commands by
+  matching the configured hostname, including custom domains, across accessible
+  subscriptions in the configured tenant.
+- Persisted uniquely discovered subscription, resource group, and Function App
+  values in the existing client profile while retaining explicit-value support.
+
+## `1.1.20260913.12` - 2026-09-13
+
+- Added Azure subscription, resource group, and Function App parameters to the
+  URL-based client bootstrap so custom-domain configurations can be used by
+  manager-policy commands.
+- Preserved existing Azure deployment details during configuration refreshes
+  and added actionable diagnostics when manager-policy values are missing.
+
+## `1.1.20260913.11` - 2026-09-13
+
+- Fixed Function publishing omitting the `GetImportHistory` endpoint, which
+  caused `Get-AutoPilotImportHistory` to receive HTTP 404 after an update.
+- Added actionable import-history API errors and a concise default table view
+  while continuing to return complete PowerShell objects for automation.
+
+## `1.1.20260913.10` - 2026-09-13
+
+- Fixed updates failing after installation when nested installer commands add
+  unrelated objects to PowerShell's success stream by selecting and validating
+  the structured deployment result explicitly.
+
+## `1.1.20260913.9` - 2026-09-13
+
+- Changed `Remove-AutoPilotTagPolicy` to return a concise human-readable
+  success message with structured removal metadata instead of displaying the
+  complete policy response.
+- Added the deployed Function version to Group Tag management responses and
+  documented how to compare it with the active PowerShell module version.
+
+## `1.1.20260913.8` - 2026-09-13
+
+- Fixed updates failing after a successful installation because formatted
+  installer status output was mixed with the structured deployment result.
+
+## `1.1.20260913.7` - 2026-09-13
+
+- Updated the system-wide `AutopilotImport.Client` PowerShell module and its
+  configuration during updates, including cleanup of older installed versions
+  and an early elevation check.
+- Removed all GitHub Actions workflows and moved the mandatory change-history
+  and version check to Azure Pipelines.
+
+## `1.1.20260913.6` - 2026-09-13
+
+- Decoupled the prebuilt web frontend version from the central package version
+  so documentation, PowerShell module, installer, and backend Function changes
+  can reuse the existing frontend bundle.
+- Changed GitHub Actions and Azure Pipelines to test and rebuild the frontend
+  only when files under `src/Web` change.
+
+## `1.1.20260913.5` - 2026-09-13
+
+- Prevented mutating client module commands from prompting automatically,
+  regardless of the caller's confirmation preference, while retaining
+  explicit `Confirm` and `WhatIf` support.
+- Added support for comma-separated Group Tag values when adding or removing
+  tags, in addition to existing PowerShell array input.
+
+## `1.1.20260913.4` - 2026-09-13
+
+- Clarified that `Get-AutoPilotImportHistory` is provided by the installed
+  client module and documented how to detect and replace an older loaded
+  module version.
+- Added package coverage that verifies the import-history command is exported
+  through PowerShell module autoloading.
+
+## `1.1.20260913.3` - 2026-09-13
+
+- Fixed Group Tag policy updates so a restricted management administrative
+  unit applies only to the rule that explicitly declares it, rather than being
+  used as a global fallback for other rules.
+
+## `1.1.20260913.2` - 2026-09-13
+
+- Added `WhatIf` support to device imports and retained it for all mutating
+  client module commands while removing confirmation prompts from normal use.
+- Changed `Get-AutoPilotTagPolicy` and `Add-AutoPilotTagPolicy` to return
+  reusable policy-rule objects with group IDs, names, tags, restricted
+  management administrative units, and correlation IDs.
+
+## `1.1.20260913.1` - 2026-09-13
+
+- Fixed creation of the first Group Tag policy when Azure Functions supplies
+  the JSON request body and nested policy rules as dictionaries.
+- Added a CI policy that requires every pushed commit to update both
+  `History.md` and `VERSION`.
+
 ## `1.1.20260912.2` - 2026-09-12
 
+- Simplified the installation prerequisites and moved frontend build
+  requirements to the developer guide.
+- Added an Advanced Setup section with least-privilege role guidance and
+  interactive and parameterized installer examples.
 - Changed the GitHub package workflow so every successful push still publishes
   a workflow artifact and successful `main` pushes additionally commit the
   current ZIP under `InstallationPackage`.
@@ -22,7 +139,7 @@ are consolidated into a single section.
   Analytics workspace in the Function App resource group. After an actual
   migration, the updater identifies the previous managed workspace as
   potentially removable.
-- Added `Get-AutopilotImportHistory`, allowing managers to retrieve import
+- Added `Get-AutoPilotImportHistory`, allowing managers to retrieve import
   operations currently retained by Intune and their status. The new Function
   endpoint uses the existing manager authorization and does not return hardware
   hashes or product keys.

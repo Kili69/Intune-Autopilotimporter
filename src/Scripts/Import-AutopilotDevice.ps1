@@ -1,16 +1,16 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Compatibility wrapper for Import-AutopilotDevice in AutopilotImport.Client.
+Compatibility wrapper for Import-AutoPilotDevice in AutopilotImport.Client.
 
 .DESCRIPTION
 Validates and imports Windows Autopilot devices from a CSV file through the
 secured Autopilot Import Function. The script loads AutopilotImport.Client from
 the installation or source tree and forwards the supplied parameters to its
-Import-AutopilotDevice command.
+Import-AutoPilotDevice command.
 
 The CSV must contain the columns Device Serial Number and Hardware Hash. Each
 hardware hash is checked for valid Base64 encoding before any device is sent.
@@ -114,4 +114,4 @@ $parameters = @{}
 foreach ($name in $PSBoundParameters.Keys) {
     $parameters[$name] = $PSBoundParameters[$name]
 }
-AutopilotImport.Client\Import-AutopilotDevice @parameters
+AutopilotImport.Client\Import-AutoPilotDevice @parameters

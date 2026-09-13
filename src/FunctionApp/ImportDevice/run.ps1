@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -186,7 +186,7 @@ if ([string] $Request.Method -eq 'GET') {
 
         if ($intuneStatus -eq 'complete') {
             try {
-                $registrationId = Get-AutopilotDeviceRegistrationId `
+                $registrationId = Get-AutoPilotDeviceRegistrationId `
                     -ImportedDevice $graphResponse
                 $registeredDevice = Invoke-RestMethod `
                     -Method Get `
@@ -280,7 +280,8 @@ try {
     $restrictedManagementAdministrativeUnitName = `
         Resolve-RestrictedManagementAdministrativeUnitName `
             -Policy $tagAuthorizationPolicy `
-            -GroupTag $groupTag
+            -GroupTag $groupTag `
+            -Principal $principal
 }
 catch [System.UnauthorizedAccessException] {
     Send-JsonResponse -StatusCode Forbidden -Body @{
@@ -299,7 +300,7 @@ catch {
 }
 
 try {
-    $graphPayload = ConvertTo-AutopilotImportPayload `
+    $graphPayload = ConvertTo-AutoPilotImportPayload `
         -RequestBody $requestBody `
         -GroupTag $groupTag
 }

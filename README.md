@@ -142,7 +142,7 @@ status-request errors are displayed and retried during the next polling cycle.
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The
 import itself continues in Azure and can be checked later with
-`Get-AutopilotImportStatus -ImportId '<import-id>'`.
+`Get-AutoPilotImportStatus -ImportId '<import-id>'`.
 
 The PowerShell module remains available and uses the same authorization policy.
 
@@ -152,7 +152,7 @@ configuration in the current user's profile and reuses it for later commands.
 
 ### Import a device hash
 
-Use the `Import-AutopilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
+Use the `Import-AutoPilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
 
 - `AutopilotImport.Client` has been installed and initialized once with the
     Function URL.
@@ -163,7 +163,7 @@ Use the `Import-AutopilotDevice` command to submit one or more device hashes fro
 The selected Group Tag is applied to every device in the CSV. First, validate the file locally without signing in or sending data to the Azure Function:
 
 ```powershell
-Import-AutopilotDevice `
+Import-AutoPilotDevice `
     -CsvPath '.\devices.csv' `
     -GroupTag 'PAW' `
     -ValidateOnly
@@ -172,7 +172,7 @@ Import-AutopilotDevice `
 If validation succeeds, run the same command without `-ValidateOnly`:
 
 ```powershell
-Import-AutopilotDevice `
+Import-AutoPilotDevice `
     -CsvPath '.\devices.csv' `
     -GroupTag 'PAW'
 ```
@@ -224,13 +224,13 @@ Get-AutoPilotImporterClientConfiguration `
 A successful request returns HTTP 202 and an `importId`. Intune processes the request asynchronously. Check the current state:
 
 ```powershell
-Get-AutopilotImportStatus -ImportId '<import-id>'
+Get-AutoPilotImportStatus -ImportId '<import-id>'
 ```
 
 Wait for a final end-to-end result:
 
 ```powershell
-Get-AutopilotImportStatus `
+Get-AutoPilotImportStatus `
     -ImportId '<import-id>' `
     -Wait
 ```
@@ -239,21 +239,79 @@ The default timeout is 30 minutes with a 15-second polling interval. Override th
 
 ## Autopilot-importer management
 
+### Check Installed and Deployed Versions
+
+Compare the active PowerShell module with the Function code currently serving
+the management API:
+
+```powershell
+$moduleVersion = (Get-Module AutopilotImport.Client).Version
+$functionVersion = (Get-AutoPilotTagPolicy -Raw).functionVersion
+
+[pscustomobject]@{
+    PowerShellModule = $moduleVersion
+    AzureFunction    = $functionVersion
+}
+```
+
+Import `AutopilotImport.Client` first if `Get-Module` returns no result. The
+Function version is also returned in the `X-AutopilotImport-Version` response
+header. Updating the Function deployment and updating client modules are
+separate operations, so their versions can temporarily differ.
+
 ### Read Import History
 
 The installing user, configured manager users or groups, and current members
 of the Intune RBAC role `Intune Role Administrator` can read recent import
-operations and their current Intune status:
+operations and their current Intune status. The command is exported by the
+`AutopilotImport.Client` module. It is not a standalone script in the extracted
+deployment package. Install the generated client module package as described
+under [Distribute the Import Client to Additional PCs](#5-distribute-the-import-client-to-additional-pcs),
+then open a new PowerShell 7 session.
+
+Verify which installed module version provides the command:
 
 ```powershell
-Get-AutopilotImportHistory
+Get-Command Get-AutoPilotImportHistory -All |
+    Select-Object Name, Version, Source
+```
+
+If an older module is already loaded in the current session, load the newest
+installed version:
+
+```powershell
+$module = Get-Module -ListAvailable AutopilotImport.Client |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+if (-not $module) {
+    throw 'AutopilotImport.Client is not installed. Extract the generated client module package into a directory listed in $env:PSModulePath.'
+}
+
+Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
+Import-Module $module.Path -Force
+```
+
+Then retrieve the import history:
+
+```powershell
+Get-AutoPilotImportHistory
+```
+
+The command displays a compact table with import GUID (`ImportId`), serial
+number, Group Tag, status, and Intune error name. Every row remains a
+PowerShell object that can be filtered, exported, or inspected with all
+available properties:
+
+```powershell
+Get-AutoPilotImportHistory | Format-List *
 ```
 
 The command returns up to 100 operations by default. Request up to 1000 and
-filter the pipeline, for example to inspect failed imports:
+filter the objects in the pipeline, for example to inspect failed imports:
 
 ```powershell
-Get-AutopilotImportHistory -Top 1000 |
+Get-AutoPilotImportHistory -Top 1000 |
     Where-Object Status -eq 'error'
 ```
 
@@ -264,6 +322,11 @@ currently retained by Microsoft Intune. It is operational history, not a
 permanent audit archive; use an external store when long-term retention is
 required.
 
+If the command reports that the history endpoint was not found, update the
+Function App with `Update-AutopilotImport.ps1` without `-SkipPublish`. A 404
+response means the deployed Function package does not contain the
+`GetImportHistory` endpoint; it does not mean that the history is empty.
+
 ### Change Group-to-Tag Assignments
 
 The installing user, configured manager users or groups, and current members of the Intune RBAC role `Intune Role Administrator` may update the policy. They do not need Azure resource permissions.
@@ -271,62 +334,54 @@ The installing user, configured manager users or groups, and current members of 
 Read the current policy:
 
 ```powershell
-Get-AutopilotTagPolicy
+Get-AutoPilotTagPolicy
 ```
 
 #### Add a Group Tag Policy
 
-`Add-AutopilotTagPolicy` adds an Entra group to the policy without replacing
+`Add-AutoPilotTagPolicy` adds an Entra group to the policy without replacing
 the other group rules. If the group already has a rule, the command adds the
 specified tags to that rule. Existing and duplicate tags are retained only
 once.
 
 Parameters:
 
-- `-Group` accepts either the Entra group object ID or its exact display name.
-    `-GroupId` and `-GroupName` are aliases for this parameter.
+- `-GroupId` accepts the Entra group object ID. `-Group` remains available as
+    an alias for compatibility.
 - `-GroupTag` accepts one or more Autopilot Group Tags. `-Tag` is an alias.
 - `-Mau` optionally sets the restricted management administrative unit for the
-    complete policy. The full parameter name is
-    `-RestrictedManagementAdministrativeUnitName`. If omitted, the currently
-    configured MAU is preserved.
+    added or updated rule. The full parameter name is
+    `-RestrictedManagementAdministrativeUnitName`. If omitted, an existing
+    RMAU for that rule is preserved; a new rule has no RMAU. Supply an empty
+    string to remove the RMAU from that rule.
 - `-WhatIf` previews the update without writing it to the Azure Function.
-
-Add a group by its exact Entra display name:
-
-```powershell
-Add-AutopilotTagPolicy `
-    -Group 'Autopilot Import Operators' `
-    -GroupTag 'Autopilot-Standard', 'Autopilot-Kiosk'
-```
 
 Add a group by its object ID and set the MAU:
 
 ```powershell
-Add-AutopilotTagPolicy `
-    -Group '11111111-1111-1111-1111-111111111111' `
+Add-AutoPilotTagPolicy `
+    -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Privileged' `
     -Mau 'MAU-Autopilot-Devices' `
     -WhatIf
 ```
 
-If more than one Entra group has the same display name, the object ID is
-required. Run the command without `-WhatIf` to apply the change.
+Run the command without `-WhatIf` to apply the change.
 
 Add another tag to an existing group rule without changing its other tags:
 
 ```powershell
-Add-AutopilotTagPolicy `
-    -Group '11111111-1111-1111-1111-111111111111' `
+Add-AutoPilotTagPolicy `
+    -GroupId '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Shared'
 ```
 
 #### Remove a Group Tag Policy
 
-`Remove-AutopilotTagPolicy` removes selected tags from one Entra group when
+`Remove-AutoPilotTagPolicy` removes selected tags from one Entra group when
 `-GroupTag` is supplied. Without `-GroupTag`, it removes the complete Group Tag
-rule for that group. Other group rules and the configured MAU remain unchanged.
-The command does not delete the group from Entra.
+rule for that group. Other group rules and their individual RMAUs remain
+unchanged. The command does not delete the group from Entra.
 
 Parameters:
 
@@ -339,7 +394,7 @@ Parameters:
 Remove one tag while preserving the group's other tags:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group '11111111-1111-1111-1111-111111111111' `
     -GroupTag 'Autopilot-Kiosk'
 ```
@@ -347,7 +402,7 @@ Remove-AutopilotTagPolicy `
 Remove a rule using its exact Entra group display name:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group 'Obsolete Autopilot Group' `
     -WhatIf
 ```
@@ -355,7 +410,7 @@ Remove-AutopilotTagPolicy `
 Alternatively, remove it by group object ID:
 
 ```powershell
-Remove-AutopilotTagPolicy `
+Remove-AutoPilotTagPolicy `
     -Group '11111111-1111-1111-1111-111111111111'
 ```
 
@@ -365,32 +420,80 @@ complete rule instead. The last policy rule cannot be removed because the
 Function requires at least one group-to-tag rule. Run the command without
 `-WhatIf` to apply the removal.
 
+After a successful complete-rule removal, the command prints a concise message
+such as `The tag policy for group 'Obsolete Autopilot Group' was removed.`
+Removing selected tags produces the corresponding tag-specific message. The
+returned string also exposes `GroupId`, `GroupName`, `RemovedTags`,
+`RuleRemoved`, `CorrelationId`, `Updated`, and `ApiResponse` properties for
+automation.
+
 #### Replace the Complete Group Tag Policy
 
+Each rule can specify its own restricted management administrative unit.
 Preview the complete desired policy before applying it:
 
 ```powershell
-Set-AutopilotTagPolicy `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
-        '33333333-3333-3333-3333-333333333333=Autopilot-Privileged' `
-    -RestrictedManagementAdministrativeUnitName 'MAU-Autopilot-Devices' `
+Set-AutoPilotTagPolicy `
+    -TagAuthorizationRule @(
+        [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('Autopilot-Standard', 'Autopilot-Kiosk')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+        }
+        [pscustomobject]@{
+            groupId = '33333333-3333-3333-3333-333333333333'
+            tags = @('Autopilot-Privileged')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Privileged'
+        }
+    ) `
     -WhatIf
 ```
 
-Run the same command without `-WhatIf` to apply it. Omit a previous rule to remove that group. Set `-RestrictedManagementAdministrativeUnitName` to an empty string to disable automatic MAU membership.
+Run the same command without `-WhatIf` to apply it. Omit a previous rule to
+remove that group. Omit `restrictedManagementAdministrativeUnitName` from a
+rule to disable automatic RMAU membership for that rule. Legacy string rules
+remain supported; `-RestrictedManagementAdministrativeUnitName` acts as their
+shared fallback.
 
-The MAU must already exist, have `isMemberManagementRestricted` enabled, and have a unique display name. Without a configured MAU, imports continue without automatic administrative-unit membership.
+Every configured RMAU must already exist, have
+`isMemberManagementRestricted` enabled, and have a unique display name.
+Without a configured RMAU on the matching rule, imports continue without
+automatic administrative-unit membership.
 
 ### Change Group Tag Managers
 
-Only a principal with an effective Azure `Owner` or `Contributor` assignment on the Function App, its resource group, or its subscription may change the explicit manager list:
+List the installing manager and all additionally configured managers:
 
 ```powershell
-Update-AutopilotTagPolicyManager `
+Get-AutoPilotTagPolicyManager
+```
+
+The command returns structured objects containing `FunctionAppName`,
+`PrincipalId`, and `ManagerType` (`Installer` or `Additional`). It reads the
+manager policy through Azure and does not modify it.
+
+`Add-AutoPilotTagPolicyManager`, `Remove-AutoPilotTagPolicyManager`, and
+`Update-AutoPilotTagPolicyManager` can be run only by a principal with an
+effective Azure `Owner` or `Contributor` assignment on the Function App, its
+resource group, or its subscription. Being an explicitly configured Group Tag
+manager or an Intune Role Administrator does not grant permission to change the
+manager list.
+
+```powershell
+Update-AutoPilotTagPolicyManager `
     -AddPrincipalId '44444444-4444-4444-4444-444444444444' `
     -RemovePrincipalId '33333333-3333-3333-3333-333333333333' `
     -WhatIf
+```
+
+The convenience commands enforce the same Azure role check:
+
+```powershell
+Add-AutoPilotTagPolicyManager `
+    -PrincipalId '44444444-4444-4444-4444-444444444444'
+
+Remove-AutoPilotTagPolicyManager `
+    -PrincipalId '33333333-3333-3333-3333-333333333333'
 ```
 
 The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
@@ -400,12 +503,11 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 ### Prerequisites
 
 - An Azure subscription and an active Intune tenant
+- For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
-- Node.js 22 and npm are required only to rebuild modified frontend sources. Release packages and repository source archives contain a prebuilt frontend, so installation and update do not require Node.js on the target computer.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
-- The appropriate Entra ID licensing for dynamic device groups
 
 ### Quick Installation Guide
 
@@ -432,6 +534,8 @@ Expand-Archive `
 ```
 
 The archive already contains the required versioned module layout and the generated `client.settings.json`.
+
+## Advanced Setup
 
 ### Required Roles and Permissions
 
@@ -470,7 +574,44 @@ identity holds the Intune-related Graph permissions independently of the user.
 Do not grant other principals Azure roles that can modify the Function App's application settings or deployed code. Such permissions can change the manager policy outside the provided script and therefore bypass its strict
 `Owner`/`Contributor` check.
 
-### 1. Entra Application for the Function API
+### Installation with `Install-AutopilotImport.ps1`
+
+`Install-AutopilotImport.ps1` supports both an interactive installation and a
+parameterized deployment. Run it from the root of the extracted installation
+package in PowerShell 7.2 or later. Values that are not supplied as parameters
+are requested interactively. The installer configures the Entra applications,
+deploys the Azure resources, grants the managed identity its Microsoft Graph
+permissions, publishes the Function code, verifies authentication, and creates
+the client tools package.
+
+For an interactive installation, including installation of missing local
+prerequisites, run:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
+```
+
+For a repeatable parameterized deployment, supply the deployment values
+directly:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 `
+    -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+    -TenantId '11111111-1111-1111-1111-111111111111' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -Location 'westus2' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -TagAuthorizationRule `
+        '22222222-2222-2222-2222-222222222222=Standard,Kiosk' `
+    -InstallMissingModules `
+    -Confirm:$false
+```
+
+Use `Get-Help .\Install-AutopilotImport.ps1 -Full` for all parameters and
+examples. The following sections describe each installation stage and its
+manual or separated-administration alternatives.
+
+#### 1. Entra Application for the Function API
 
 By default, the installer searches the selected tenant for an app registration named `Autopilot Import API`. If it does not exist, the installer creates and configures it automatically. During application setup, Microsoft Graph requests `Application.ReadWrite.All` and `User.Read`. The separate managed-identity permission step requests `Application.Read.All` and `AppRoleAssignment.ReadWrite.All`.
 
@@ -493,7 +634,7 @@ The installer configures:
 
 Use `-EntraClientId '<Client-ID>'` to select a specific existing application. Without this parameter, the installer searches by `-EntraApplicationName`, which defaults to `Autopilot Import API`.
 
-#### Manual Alternative
+##### Manual Alternative
 
 Create a single-tenant app registration in the Entra admin center, for example `Autopilot Import API`.
 
@@ -512,7 +653,7 @@ Then configure the enterprise application:
 
 The delegated scope allows Azure PowerShell to request a token for the API. It does not grant the user Microsoft Graph or Intune permissions.
 
-### 2. Deploy Azure Resources
+#### 2. Deploy Azure Resources
 
 The installer prompts for all values that were not supplied as parameters, validates the Bicep template, deploys the resources, assigns the Graph permission, publishes the Function code, and verifies that Easy Auth rejects anonymous requests with HTTP 401:
 
@@ -567,7 +708,7 @@ Expand-Archive `
     -Force
 ```
 
-After extraction, commands such as `Import-AutopilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
+After extraction, commands such as `Import-AutoPilotDevice` are available through PowerShell module autoloading. The user does not need to run `Import-Module` first. PowerShell 7.2 or later and the required Az modules must still be installed on the destination computer.
 
 Each installation writes an activity transcript to the current user's temporary directory. The file name uses the pattern `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log`. The console displays the full path when setup starts. If installation stops with an error, the transcript is closed before the log is extended with the complete PowerShell error record, exception properties, and script stack trace.
 
@@ -581,12 +722,15 @@ $module = Get-ChildItem `
 Import-Module $module.FullName
 ```
 
-The module exports `New-AutoPilotImporterClientConfiguration`, `Import-AutopilotDevice`, `Get-AutopilotImportStatus`,
-`Get-AutopilotImportHistory`,
-`Get-AutopilotTagPolicy`,
-`Add-AutopilotTagPolicy`, `Remove-AutopilotTagPolicy`,
-`Set-AutopilotTagPolicy`, `Update-AutopilotTagPolicyManager`,
-`Add-AutopilotTagPolicyManager`, and `Remove-AutopilotTagPolicyManager`.
+The module exports `New-AutoPilotImporterClientConfiguration`,
+`Get-AutoPilotImporterClientConfiguration`, `Import-AutoPilotDevice`,
+`Get-AutoPilotImportStatus`,
+`Get-AutoPilotImportHistory`,
+`Get-AutoPilotTagPolicy`,
+`Add-AutoPilotTagPolicy`, `Remove-AutoPilotTagPolicy`,
+`Set-AutoPilotTagPolicy`, `Get-AutoPilotTagPolicyManager`,
+`Update-AutoPilotTagPolicyManager`,
+`Add-AutoPilotTagPolicyManager`, and `Remove-AutoPilotTagPolicyManager`.
 
 For normal import and policy API use, initialize the module from the deployed
 Function URL. This does not require Azure subscription access:
@@ -599,23 +743,32 @@ Get-AutoPilotImporterClientConfiguration `
 The configuration remains in
 `$HOME\.autopilotimporter\client.settings.json` across module updates.
 
-Administrators who also need Azure control-plane values for manager-policy
-commands can create a complete deployment configuration with:
+Manager-policy commands automatically search accessible subscriptions in the
+configured tenant when Azure deployment values are missing. They match the
+configured Function hostname, including a custom DNS name, against the Function
+App hostname bindings and persist a unique match in the client profile.
+
+When discovery cannot find a unique Function App, administrators can add the
+Azure control-plane values explicitly. `FunctionAppName` is the Azure resource
+name, not a custom DNS name:
 
 ```powershell
-New-AutoPilotImporterClientConfiguration `
+Get-AutoPilotImporterClientConfiguration `
+    -FunctionUrl 'https://autopilot.example.com' `
     -SubscriptionId '<Subscription-ID>' `
     -ResourceGroupName 'rg-autopilot-import' `
-    -TenantId '<Tenant-ID>' `
     -FunctionAppName '<Function-App-Name>'
 ```
 
-By default, this administrative file is created as `client.settings.json` in the current
-directory. Use `-OutputPath 'C:\Configuration'` to select another directory,
-and `-Force` to replace an existing file. The command reads the API Application
-ID URI from the deployed Function App's Easy Auth configuration and prints the
-module directory into which the file must be copied. The final file must be
-named `client.settings.json` next to `AutopilotImport.Client.psm1`, normally at:
+Running the URL bootstrap again preserves discovered or explicitly configured
+Azure deployment details unless explicit replacement values are supplied.
+
+To create a separate administrative configuration file instead, use
+`New-AutoPilotImporterClientConfiguration`. By default, it creates
+`client.settings.json` in the current directory. Use
+`-OutputPath 'C:\Configuration'` to select another directory and `-Force` to
+replace an existing file. Supply that file with `-ConfigPath` when running a
+manager-policy command.
 
 ```text
 Documents\PowerShell\Modules\AutopilotImport.Client\<version>\client.settings.json
@@ -678,7 +831,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -WhatIf
 ```
 
-#### Azure DevOps Pipeline
+##### Azure DevOps Pipeline
 
 The repository contains `azure-pipelines.yml`. Pull requests run the Pester tests. A successful run on `main` additionally deploys the Bicep template and Function ZIP through an Azure Resource Manager service connection. The generated `client.settings.json` is published as the pipeline artifact `autopilot-import-client-settings`.
 
@@ -736,7 +889,7 @@ $function = Get-AzWebApp `
 
 Subsequent pipeline deployments update infrastructure, policies, and Function code without repeating either privileged Entra operation. Configure approvals and checks on the Azure DevOps environment `autopilot-import` when production deployments require manual authorization.
 
-#### Update an Existing Deployment
+##### Update an Existing Deployment
 
 Download or clone the desired release, then run the update script from its project directory. Preview the resolved deployment and planned installer action first:
 
@@ -782,6 +935,12 @@ By default, the script selects the newest installed `client.settings.json` from 
     -ConfigPath 'C:\Tools\AutopilotImport\Modules\AutopilotImport.Client\<version>\client.settings.json'
 ```
 
+After a successful update, the script also installs the current module and
+configuration under
+`C:\Program Files\WindowsPowerShell\Modules\AutopilotImport.Client\<version>`
+and removes older versions when they are not in use. Run the update from an
+elevated PowerShell 7 session so this system-wide location can be changed.
+
 When the client module and configuration are not installed on the update computer, the script prompts for the subscription ID, tenant ID, resource group, Function App name, and client tools destination. The current Az context and standard deployment names are offered as defaults. These values can also be supplied for an unattended discovery phase:
 
 ```powershell
@@ -805,20 +964,22 @@ The updating administrator needs the same Azure and Entra permissions as an inst
 
 Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
-#### Deployment Package
+##### Deployment Package
 
-GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
+Azure Pipelines builds a deployment package for every commit pushed to any
+branch. It runs the test suite and publishes
+`Intune-autopilotImporter-<branch><version>` as a pipeline artifact. Branch
+characters that are not portable in file names, such as `/`, are replaced with
+`-`. The Azure deployment stage remains restricted to `main`.
 
-After a successful push to `main`, GitHub Actions also commits the current ZIP
-to the `InstallationPackage` directory on `main`. The publish commit uses
-`[skip ci]` to prevent a recursive workflow run. Each publication removes
-previous package ZIPs and the legacy `artifacts` directory, so the branch keeps
-only the package for the current project version. Packages for other branches
-remain available as workflow artifacts and are not committed to those branches.
+The pipeline rebuilds and tests the web frontend only when files under
+`src/Web` changed. Other changes reuse the committed frontend bundle. No
+GitHub Actions workflows are configured, so pushes and pull requests do not
+start GitHub-hosted or self-hosted workers.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
-The workflow can also be started manually with the GitHub Actions `workflow_dispatch` trigger. To build the package locally using the current Git branch, run:
+To build the package locally using the current Git branch, run:
 
 ```powershell
 .\src\Scripts\New-DeploymentPackage.ps1
@@ -826,7 +987,7 @@ The workflow can also be started manually with the GitHub Actions `workflow_disp
 
 The local package is written to `InstallationPackage\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
 
-#### Manual Bicep Deployment
+##### Manual Bicep Deployment
 
 The individual commands remain available for troubleshooting or manual installation:
 
@@ -879,7 +1040,7 @@ redirect to the frontend, while the static sign-in page and its public runtime
 configuration can load without authentication. No import or policy data is
 exposed through these paths.
 
-### 3. Assign the Graph Permission
+#### 3. Assign the Graph Permission
 
 This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
@@ -890,9 +1051,13 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
     -ManagedIdentityObjectId $deployment.Outputs.managedIdentityObjectId.Value
 ```
 
-### 4. Publish the Function Code
+#### 4. Publish the Function Code
 
 The ZIP archive must contain `host.json` at its root:
+
+Rebuild the web frontend first only when files under `src/Web` changed. For
+documentation, PowerShell module, installer, or backend Function changes, use
+the existing bundle under `src/FunctionApp/WebFrontend/wwwroot`.
 
 ```powershell
 Push-Location .\src\Web
@@ -917,7 +1082,7 @@ Publish-AzWebApp `
 
 Managed Dependencies can take several minutes to make `Az.Accounts` available after the first start.
 
-### 5. Distribute the Import Client to Additional PCs
+#### 5. Distribute the Import Client to Additional PCs
 
 The Azure Function itself remains in Azure. An importing PC needs only:
 
@@ -1004,6 +1169,255 @@ The configuration must contain these values:
 Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in a centrally managed location and pass its path with `-ConfigPath`. When the script remains in the repository layout under `scripts`, its default is the repository-root `client.settings.json`. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which is useful when one PC targets multiple environments.
 
 The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
+
+## REST API Reference
+
+The Azure Function exposes REST endpoints for importing devices, reading
+authorized Group Tags, inspecting import history, and managing the Group Tag
+policy. Replace `<function-app>` in the paths below with the deployed Function
+App hostname:
+
+```text
+https://<function-app>.azurewebsites.net
+```
+
+### Authentication and Authorization
+
+Protected endpoints require an OAuth 2.0 bearer token for the configured
+`API_AUDIENCE` and its `DeviceHash.Import` scope:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+Azure App Service Authentication validates the token before forwarding the
+request. The Function uses the resulting Easy Auth principal to authorize the
+operation. Clients must not create or trust an `x-ms-client-principal` header
+themselves.
+
+Device endpoints authorize callers through their Entra group claims and the
+Group Tag policy. Management endpoints additionally require the caller to be
+the installing principal, a configured manager user or group, or, when
+enabled, a current Intune Role Administrator.
+
+Successful and error responses include an `X-Correlation-Id` header and a
+matching `correlationId` JSON property. Use this value when correlating client
+errors with Application Insights logs.
+
+| Method | Route | Authorization | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/devices/tags` | Authorized importer | List Group Tags available to the caller |
+| `POST` | `/api/devices/import` | Authorized importer | Submit an Autopilot device identity |
+| `GET` | `/api/devices/import?importId=<guid>` | Authorized importer | Read import and post-processing status |
+| `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
+| `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
+| `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
+
+### Get Authorized Group Tags
+
+```http
+GET /api/devices/tags
+```
+
+The response contains only tags assigned to at least one Entra group in the
+caller's token:
+
+```json
+{
+    "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Submit an Autopilot Device
+
+```http
+POST /api/devices/import
+Content-Type: application/json
+```
+
+```json
+{
+    "serialNumber": "PC-0001",
+    "hardwareIdentifier": "<base64-encoded-hardware-hash>",
+    "groupTag": "Autopilot-Standard"
+}
+```
+
+`serialNumber`, `hardwareIdentifier`, and `groupTag` are required. The server
+validates the requested tag against the caller's groups and resolves the RMAU
+from the matching policy rule. A successful submission returns HTTP `202`:
+
+```json
+{
+    "importId": "00000000-0000-0000-0000-000000000000",
+    "serialNumber": "PC-0001",
+    "groupTag": "Autopilot-Standard",
+    "status": "notReceived",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Get Import Status
+
+```http
+GET /api/devices/import?importId=<import-id>
+```
+
+The caller must still be authorized for the Group Tag attached to the import.
+The response combines the Intune import state with the asynchronous Entra
+device attribute and RMAU processing state:
+
+```json
+{
+    "importId": "00000000-0000-0000-0000-000000000000",
+    "serialNumber": "PC-0001",
+    "groupTag": "Autopilot-Standard",
+    "status": "complete",
+    "workflowStatus": "complete",
+    "deviceErrorCode": 0,
+    "deviceErrorName": null,
+    "extensionAttributeName": "extensionAttribute1",
+    "extensionAttributeStatus": "complete",
+    "extensionAttributeValue": "Autopilot-Standard",
+    "entraDeviceId": "00000000-0000-0000-0000-000000000000",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Only `workflowStatus: complete` confirms completion of both the Intune import
+and the configured Entra post-processing.
+
+### Get Import History
+
+```http
+GET /api/management/imports?top=100
+```
+
+`top` is optional, defaults to `100`, and must be between `1` and `1000`. The
+response intentionally excludes hardware hashes and product keys:
+
+```json
+{
+    "imports": [
+        {
+            "importId": "00000000-0000-0000-0000-000000000000",
+            "batchImportId": "00000000-0000-0000-0000-000000000000",
+            "serialNumber": "PC-0001",
+            "groupTag": "Autopilot-Standard",
+            "status": "complete",
+            "deviceErrorCode": 0,
+            "deviceErrorName": null
+        }
+    ],
+    "count": 1,
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Read the Group Tag Policy
+
+```http
+GET /api/management/tag-policy
+```
+
+The response uses the normalized policy format. Every rule can have its own
+optional RMAU:
+
+```json
+{
+    "policy": [
+        {
+            "groupId": "11111111-1111-1111-1111-111111111111",
+            "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+        },
+        {
+            "groupId": "22222222-2222-2222-2222-222222222222",
+            "tags": ["Autopilot-Privileged"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+        }
+    ],
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+### Replace the Group Tag Policy
+
+```http
+PUT /api/management/tag-policy
+Content-Type: application/json
+```
+
+The operation replaces the complete policy. Omitted rules are removed. Use the
+structured `policy` format to configure an individual RMAU for each rule:
+
+```json
+{
+    "policy": [
+        {
+            "groupId": "11111111-1111-1111-1111-111111111111",
+            "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+        },
+        {
+            "groupId": "22222222-2222-2222-2222-222222222222",
+            "tags": ["Autopilot-Privileged"],
+            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+        }
+    ]
+}
+```
+
+Omit `restrictedManagementAdministrativeUnitName` from a rule when imports
+matching that rule must not add the device to an RMAU. Each `groupId` must be a
+GUID, each rule must contain at least one tag, tags must not exceed 128
+characters or contain commas, and an RMAU name must not exceed 256 characters.
+
+The legacy request format remains accepted for compatibility. Its single RMAU
+is applied to every supplied string rule:
+
+```json
+{
+    "rules": [
+        "11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk"
+    ],
+    "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+}
+```
+
+Both formats return HTTP `200` with the normalized `policy` array and a
+`correlationId`.
+
+### Public UI Endpoints
+
+`GET /` redirects to `/api/ui/index.html`. `GET /api/ui/config` returns the
+public MSAL and API configuration required by the browser client, while
+`GET /api/ui/{*path}` serves the static frontend. These routes do not expose
+policy or import data and are the only routes that do not require an access
+token.
+
+### Error Responses
+
+Errors use a stable JSON envelope:
+
+```json
+{
+    "error": "invalidRequest",
+    "message": "Human-readable details when safe to return",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Common status codes are:
+
+- `400 Bad Request`: malformed input, invalid IDs, or an invalid policy
+- `401 Unauthorized`: authentication is missing or invalid
+- `403 Forbidden`: the caller is not authorized for the tag or management API
+- `404 Not Found`: a requested static frontend resource does not exist
+- `500 Internal Server Error`: required service configuration is missing or invalid
+- `502 Bad Gateway`: a Microsoft Graph operation failed
+- `503 Service Unavailable`: manager authorization could not be verified
 
 ## Troubleshooting
 
@@ -1106,7 +1520,7 @@ To test a configuration before copying it into the module directory, pass it
 explicitly to a read-only command:
 
 ```powershell
-Get-AutopilotTagPolicy -ConfigPath $createdSettings.FullName
+Get-AutoPilotTagPolicy -ConfigPath $createdSettings.FullName
 ```
 
 If multiple module versions are installed, each version has its own
@@ -1233,7 +1647,8 @@ process, installation package mapping, CI sequence, and build troubleshooting.
 ### Build the Frontend Locally
 
 The frontend source is located under `src/Web`, while the Azure Function that
-serves it is located under `src/FunctionApp/WebFrontend`. Build and test it with:
+serves it is located under `src/FunctionApp/WebFrontend`. Build and test it only
+after changing files under `src/Web`:
 
 ```powershell
 Set-Location .\src\Web
@@ -1245,7 +1660,9 @@ npm run check
 bundle under `src\FunctionApp\WebFrontend\wwwroot`. The generated
 `src\Web\node_modules`, `src\Web\tsconfig.tsbuildinfo`, and
 `src\FunctionApp\WebFrontend\wwwroot` paths are intentionally ignored by Git
-and are recreated during a local build or deployment.
+and are recreated during a frontend build. The version displayed by the web
+frontend remains unchanged for documentation, PowerShell module, installer,
+and backend Function-only releases.
 
 ### Publish the OOBE Helper to PowerShell Gallery
 
@@ -1272,16 +1689,17 @@ Publish-Script `
 
 ### Branch Promotion Policy
 
-Changes to `main` must be promoted through a pull request whose source branch is `dev`. The `Main promotion policy` GitHub Actions workflow rejects pull requests to `main` from any other branch.
+Changes to `main` should be promoted through a pull request whose source branch
+is `dev`. No GitHub Actions workflow is used for this policy.
 
 To enforce this policy, configure a GitHub ruleset or branch protection rule for `main` with these settings:
 
 - Require a pull request before merging.
-- Require the status check `Validate dev promotion` to pass before merging.
 - Block force pushes and branch deletion.
 - Do not allow direct-push bypasses, or restrict bypass permission to designated repository administrators for emergencies.
 
-The workflow validates the pull request source, while the server-side rule prevents direct pushes from bypassing that validation.
+The repository rules prevent direct pushes. Reviewers must verify that the
+pull request source branch is `dev`.
 
 ### Tests
 
@@ -1293,16 +1711,20 @@ The tests cover Group Tag authorization, manager users and groups, the strict Ow
 
 ### Versioning
 
-The project version is stored in `VERSION` and follows `1.0.<yyyyMMdd>.<counter>`, for example `1.0.20260811.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
+The project version is stored in `VERSION` and follows `1.1.<yyyyMMdd>.<counter>`, for example `1.1.20260913.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
 The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
-After commits are pushed to `main`, the GitHub workflow increments the counter by the number of commits in that push and commits the synchronized version entries. On a new UTC date, the counter starts at `1`. The workflow-generated version commit does not trigger another increment.
-
-For a local manual increment, run:
+Every commit must include an updated `History.md` and a new project version.
+Azure Pipelines rejects source commits that omit either change. Before creating
+a commit, run:
 
 ```powershell
 .\src\Scripts\Update-ProjectVersion.ps1
 ```
+
+The counter increases for commits created on the same UTC date and starts at
+`1` on a new UTC date. Repository automation commits marked with `[skip ci]`
+are excluded from this rule.
 
 ### Operations and Security
 

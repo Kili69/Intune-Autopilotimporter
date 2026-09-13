@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -9,8 +9,8 @@ Compatibility wrapper for AutopilotImport.Client tag policy commands.
 .DESCRIPTION
 Lists or replaces the Group Tag authorization policy used by the Autopilot
 Import API. The script loads AutopilotImport.Client from the installation or
-source tree and invokes Get-AutopilotTagPolicy when List is specified;
-otherwise, it invokes Set-AutopilotTagPolicy.
+source tree and invokes Get-AutoPilotTagPolicy when List is specified;
+otherwise, it invokes Set-AutoPilotTagPolicy.
 
 Each policy rule maps a Microsoft Entra group object ID to one or more allowed
 Autopilot Group Tags. Values omitted on the command line are resolved from the
@@ -22,14 +22,15 @@ Returns the currently configured Group Tag authorization policy with Entra
 group display names without changing it.
 
 .PARAMETER TagAuthorizationRule
-Complete set of authorization rules in the form
-<group-object-id>=<tag1>,<tag2>. This parameter replaces the existing policy
-and is required unless List is specified.
+Complete set of authorization rules as <group-object-id>=<tag1>,<tag2> strings
+or objects with groupId, tags, and an optional
+restrictedManagementAdministrativeUnitName. This parameter replaces the
+existing policy and is required unless List is specified.
 
 .PARAMETER RestrictedManagementAdministrativeUnitName
-Optional display name of the restricted management administrative unit to
-associate with every policy rule. Imported devices using a matching Group Tag
-are added to this unit after their Entra device becomes available.
+Optional fallback RMAU to associate with legacy string rules. Rule objects can
+specify an individual RMAU. Imported devices using a matching Group Tag are
+added to the rule's unit after their Entra device becomes available.
 
 .PARAMETER ManagementUrl
 HTTPS URL of the Function App tag-policy management endpoint. When omitted,
@@ -62,14 +63,21 @@ Returns the current Group Tag authorization policy with Entra group names.
 .EXAMPLE
 .\Set-TagAuthorizationPolicy.ps1 `
     -TagAuthorizationRule @(
-        '11111111-1111-1111-1111-111111111111=Sales,Shared'
-        '22222222-2222-2222-2222-222222222222=Engineering'
+        [pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('Sales', 'Shared')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Sales'
+        }
+        [pscustomobject]@{
+            groupId = '22222222-2222-2222-2222-222222222222'
+            tags = @('Engineering')
+            restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+        }
     ) `
-    -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
     -ConfigPath '.\client.settings.json'
 
-Replaces the complete policy and associates its Group Tags with the named
-restricted management administrative unit.
+Replaces the complete policy and associates each rule with its own restricted
+management administrative unit.
 #>
 
 [CmdletBinding(DefaultParameterSetName = 'Set', SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -78,7 +86,7 @@ param(
     [switch] $List,
 
     [Parameter(Mandatory, ParameterSetName = 'Set')]
-    [string[]] $TagAuthorizationRule,
+    [object[]] $TagAuthorizationRule,
 
     [Parameter(ParameterSetName = 'Set')]
     [string] $RestrictedManagementAdministrativeUnitName,
@@ -116,7 +124,7 @@ foreach ($name in @('ManagementUrl', 'ApiApplicationIdUri', 'TenantId', 'ConfigP
     }
 }
 if ($List) {
-    AutopilotImport.Client\Get-AutopilotTagPolicy @parameters
+    AutopilotImport.Client\Get-AutoPilotTagPolicy @parameters
 }
 else {
     $parameters.TagAuthorizationRule = $TagAuthorizationRule
@@ -128,5 +136,5 @@ else {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    AutopilotImport.Client\Set-AutopilotTagPolicy @parameters
+    AutopilotImport.Client\Set-AutoPilotTagPolicy @parameters
 }

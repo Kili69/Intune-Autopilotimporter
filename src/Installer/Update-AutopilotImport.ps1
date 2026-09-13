@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -11,7 +11,8 @@ Discovers the installed client configuration, reads the current Group Tag
 policy through the Function management API, preserves configured policy
 managers and optional RMAU, and reads the deployed extension attribute and
 region from Azure. It then invokes Install-AutopilotImport.ps1 with the
-existing resource names. When this changes Application Insights from a
+existing resource names and synchronizes the updated client module to the
+system-wide Windows PowerShell module directory. When this changes Application Insights from a
 previously linked Log Analytics workspace to the integrated workspace in the
 Function resource group, the script identifies the old workspace that can be
 deleted after its remaining use and historical telemetry have been reviewed.
@@ -133,7 +134,8 @@ Install-AutopilotImport.ps1.
 .NOTES
 The updating account needs permission to read the Function App configuration,
 update its Azure resources, and read the current Group Tag policy through the
-Function management API.
+Function management API. Run the script from an elevated PowerShell 7 session
+so it can update the system-wide client module under Program Files.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -192,7 +194,7 @@ Write-Host "Setup log: $setupLogPath"
 try {
 #region Update discovery helpers
 
-function Resolve-AutopilotUpdateConfigPath {
+function Resolve-AutoPilotUpdateConfigPath {
     <#
     .SYNOPSIS
     Resolves the client configuration used to identify a deployment.
@@ -294,7 +296,7 @@ function Resolve-AutopilotUpdateConfigPath {
     } -Descending | Select-Object -First 1).FullName
 }
 
-function Read-AutopilotUpdateValue {
+function Read-AutoPilotUpdateValue {
     <#
     .SYNOPSIS
     Resolves an update value from a parameter, configuration, or prompt.
@@ -331,7 +333,7 @@ function Read-AutopilotUpdateValue {
     return $enteredValue.Trim()
 }
 
-function Get-AutopilotUpdateConfigurationValue {
+function Get-AutoPilotUpdateConfigurationValue {
     <#
     .SYNOPSIS
     Reads an optional value from an installed client configuration.
@@ -350,7 +352,7 @@ function Get-AutopilotUpdateConfigurationValue {
     return $null
 }
 
-function Resolve-AutopilotFunctionAppFromUrl {
+function Resolve-AutoPilotFunctionAppFromUrl {
     <#
     .SYNOPSIS
     Resolves an Azure Function App resource from its public URL.
@@ -457,7 +459,7 @@ function Resolve-AutopilotFunctionAppFromUrl {
     return $matches[0]
 }
 
-function Get-AutopilotClientToolsPath {
+function Get-AutoPilotClientToolsPath {
     <#
     .SYNOPSIS
     Resolves the destination of the updated portable client package.
@@ -495,22 +497,143 @@ function Get-AutopilotClientToolsPath {
     return Split-Path $modulesDirectory -Parent
 }
 
+function Assert-SystemWideClientModuleAccess {
+    if (-not $IsWindows) {
+        throw 'Updating the system-wide client module requires Windows.'
+    }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Run Update-AutopilotImport.ps1 from an elevated PowerShell 7 session so the system-wide client module can be updated.'
+    }
+}
+
+function Resolve-AutoPilotDeploymentResult {
+    param(
+        [AllowEmptyCollection()]
+        [object[]] $InstallerOutput
+    )
+
+    $results = @($InstallerOutput | Where-Object {
+        $null -ne $_ -and
+        $null -ne $_.PSObject.Properties['InstalledClientSettingsPath'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.InstalledClientSettingsPath)
+    })
+    if ($results.Count -ne 1) {
+        throw "The installer returned $($results.Count) structured deployment results; exactly one result with InstalledClientSettingsPath was expected."
+    }
+
+    return $results[0]
+}
+
+function Install-SystemWideAutopilotClientModule {
+    <#
+    .SYNOPSIS
+    Synchronizes the updated client module to the system-wide module path.
+
+    .PARAMETER SourceSettingsPath
+    Path to client.settings.json in the newly installed version directory.
+
+    .PARAMETER DestinationRoot
+    AutopilotImport.Client module root. Defaults to the system-wide Windows
+    PowerShell module directory below Program Files.
+
+    .OUTPUTS
+    System.String. Full path to the system-wide client.settings.json file.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $SourceSettingsPath,
+
+        [string] $DestinationRoot
+    )
+
+    $sourceSettings = Get-Item -LiteralPath $SourceSettingsPath -ErrorAction Stop
+    $sourceVersionDirectory = $sourceSettings.Directory.FullName
+    $manifestPath = Join-Path $sourceVersionDirectory `
+        'AutopilotImport.Client.psd1'
+    $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
+    $moduleVersion = [string] $manifest.ModuleVersion
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
+        $programFilesPath = [Environment]::GetFolderPath('ProgramFiles')
+        if ([string]::IsNullOrWhiteSpace($programFilesPath)) {
+            throw 'The Program Files directory could not be resolved.'
+        }
+        $DestinationRoot = Join-Path $programFilesPath `
+            'WindowsPowerShell\Modules\AutopilotImport.Client'
+    }
+
+    $destinationModuleRoot = [IO.Path]::GetFullPath($DestinationRoot)
+    $destinationVersionDirectory = Join-Path `
+        $destinationModuleRoot `
+        $moduleVersion
+    $sameDirectory = [string]::Equals(
+        [IO.Path]::GetFullPath($sourceVersionDirectory).TrimEnd('\'),
+        [IO.Path]::GetFullPath($destinationVersionDirectory).TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase
+    )
+
+    try {
+        [void] (New-Item `
+            -Path $destinationVersionDirectory `
+            -ItemType Directory `
+            -Force)
+        if (-not $sameDirectory) {
+            foreach ($fileName in @(
+                    'AutopilotImport.Client.psm1'
+                    'AutopilotImport.Client.psd1'
+                    'AutopilotImport.psm1'
+                    'client.settings.json'
+                )) {
+                Copy-Item `
+                    -LiteralPath (Join-Path $sourceVersionDirectory $fileName) `
+                    -Destination (Join-Path $destinationVersionDirectory $fileName) `
+                    -Force `
+                    -ErrorAction Stop
+            }
+        }
+    }
+    catch [UnauthorizedAccessException] {
+        throw "The system-wide client module could not be updated in '$destinationModuleRoot'. Run the update from an elevated PowerShell session."
+    }
+
+    Get-ChildItem -LiteralPath $destinationModuleRoot -Directory |
+        Where-Object { $_.Name -ne $moduleVersion } |
+        ForEach-Object {
+            try {
+                Remove-Item `
+                    -LiteralPath $_.FullName `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Older system-wide client module '$($_.FullName)' could not be removed. Close PowerShell sessions using that version and remove it later."
+            }
+        }
+
+    return Join-Path $destinationVersionDirectory 'client.settings.json'
+}
+
 function ConvertTo-UpdateTagAuthorizationRules {
     <#
     .SYNOPSIS
-    Converts the deployed Group Tag policy into installer rule strings.
+    Converts the deployed Group Tag policy into installer rule objects.
 
     .DESCRIPTION
-    Validates every policy entry and converts it to the
-    <group-object-id>=<tag1>,<tag2> format accepted by
-    Install-AutopilotImport.ps1. Invalid or empty policies terminate the
+    Validates every policy entry and preserves its optional restricted
+    management administrative unit. Invalid or empty policies terminate the
     update before deployment changes are made.
 
     .PARAMETER Policy
-    Group Tag policy objects returned by Get-AutopilotTagPolicy.
+    Group Tag policy objects returned by Get-AutoPilotTagPolicy.
 
     .OUTPUTS
-    System.String[]. Installer-compatible Group Tag authorization rules.
+    System.Object[]. Installer-compatible Group Tag authorization rules.
     #>
     param([Parameter(Mandatory)][object[]] $Policy)
 
@@ -522,7 +645,18 @@ function ConvertTo-UpdateTagAuthorizationRules {
             $tags.Count -eq 0) {
             throw 'The current Group Tag policy contains an invalid rule.'
         }
-        "$($_.groupId)=$($tags -join ',')"
+        $rule = [ordered]@{
+            groupId = ([guid] $_.groupId).ToString()
+            tags = $tags
+        }
+        if ($_.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName'] -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string] $_.restrictedManagementAdministrativeUnitName)) {
+            $rule.restrictedManagementAdministrativeUnitName =
+                ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+        }
+        [pscustomobject] $rule
     })
     if ($rules.Count -eq 0) {
         throw 'The current Group Tag policy is empty.'
@@ -530,41 +664,7 @@ function ConvertTo-UpdateTagAuthorizationRules {
     return $rules
 }
 
-function Get-UpdateRestrictedManagementAdministrativeUnitName {
-    <#
-    .SYNOPSIS
-    Reads the administrative unit preserved by the current policy.
-
-    .DESCRIPTION
-    Returns the single non-empty restricted management administrative unit
-    name stored in the policy. The update stops when policy entries disagree,
-    because choosing one value could silently change deployment behavior.
-
-    .PARAMETER Policy
-    Current Group Tag policy objects. Older policies may omit the
-    restrictedManagementAdministrativeUnitName property.
-
-    .OUTPUTS
-    System.String. The configured administrative unit name, or no output when
-    the existing policy does not configure one.
-    #>
-    param([object[]] $Policy = @())
-
-    $names = @($Policy | Where-Object {
-        $_.PSObject.Properties[
-            'restrictedManagementAdministrativeUnitName'
-        ] -and -not [string]::IsNullOrWhiteSpace(
-            [string] $_.restrictedManagementAdministrativeUnitName)
-    } | ForEach-Object {
-        ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
-    } | Select-Object -Unique)
-    if ($names.Count -gt 1) {
-        throw 'The current Group Tag policy contains multiple restricted management administrative units.'
-    }
-    return $names | Select-Object -First 1
-}
-
-function Assert-AutopilotAppSettingsResponse {
+function Assert-AutoPilotAppSettingsResponse {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -816,7 +916,7 @@ if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
     throw 'Az.Accounts did not provide the required Azure commands.'
 }
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
-$resolvedConfigPath = Resolve-AutopilotUpdateConfigPath `
+$resolvedConfigPath = Resolve-AutoPilotUpdateConfigPath `
     -Path $ConfigPath `
     -AllowMissing
 $settings = if ($resolvedConfigPath) {
@@ -826,16 +926,16 @@ else {
     $null
 }
 
-$configuredSubscriptionId = Get-AutopilotUpdateConfigurationValue `
+$configuredSubscriptionId = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'subscriptionId'
-$configuredTenantId = Get-AutopilotUpdateConfigurationValue `
+$configuredTenantId = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'tenantId'
-$configuredResourceGroupName = Get-AutopilotUpdateConfigurationValue `
+$configuredResourceGroupName = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'resourceGroupName'
-$configuredFunctionAppName = Get-AutopilotUpdateConfigurationValue `
+$configuredFunctionAppName = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'functionAppName'
 
@@ -850,7 +950,7 @@ if ($hasFunctionUrl) {
     if ($PSBoundParameters.ContainsKey('SubscriptionId')) {
         $discoveryParameters.SubscriptionId = $SubscriptionId
     }
-    $discoveredFunctionApp = Resolve-AutopilotFunctionAppFromUrl `
+    $discoveredFunctionApp = Resolve-AutoPilotFunctionAppFromUrl `
         @discoveryParameters
 
     foreach ($identityParameter in @{
@@ -867,7 +967,7 @@ if ($hasFunctionUrl) {
     Write-Host "Function URL resolved to '$($discoveredFunctionApp.FunctionAppName)' in resource group '$($discoveredFunctionApp.ResourceGroupName)' and subscription '$($discoveredFunctionApp.SubscriptionId)'."
 }
 
-$SubscriptionId = Read-AutopilotUpdateValue `
+$SubscriptionId = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.SubscriptionId
     } elseif ($PSBoundParameters.ContainsKey('SubscriptionId')) {
@@ -877,7 +977,7 @@ $SubscriptionId = Read-AutopilotUpdateValue `
     -DefaultValue $(if ($currentContext) {
         [string] $currentContext.Subscription.Id
     })
-$TenantId = Read-AutopilotUpdateValue `
+$TenantId = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.TenantId
     } elseif ($PSBoundParameters.ContainsKey('TenantId')) {
@@ -895,7 +995,7 @@ $parsedGuid = [guid]::Empty
 if (-not [guid]::TryParse($TenantId, [ref] $parsedGuid)) {
     throw 'Entra Tenant ID must be a GUID.'
 }
-$ResourceGroupName = Read-AutopilotUpdateValue `
+$ResourceGroupName = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.ResourceGroupName
     } elseif ($PSBoundParameters.ContainsKey('ResourceGroupName')) {
@@ -904,7 +1004,7 @@ $ResourceGroupName = Read-AutopilotUpdateValue `
     -Prompt 'Azure Resource Group' `
     -DefaultValue 'rg-autopilot-import'
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
-$FunctionAppName = Read-AutopilotUpdateValue `
+$FunctionAppName = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.FunctionAppName
     } elseif ($PSBoundParameters.ContainsKey('FunctionAppName')) {
@@ -914,7 +1014,7 @@ $FunctionAppName = Read-AutopilotUpdateValue `
     -DefaultValue $defaultFunctionName
 
 if ($resolvedConfigPath) {
-    $resolvedClientToolsPath = Get-AutopilotClientToolsPath `
+    $resolvedClientToolsPath = Get-AutoPilotClientToolsPath `
         -SettingsPath $resolvedConfigPath `
         -OverridePath $ClientToolsPath
 }
@@ -923,7 +1023,7 @@ else {
     if ([string]::IsNullOrWhiteSpace($documentsPath)) {
         $documentsPath = $HOME
     }
-    $resolvedClientToolsPath = Read-AutopilotUpdateValue `
+    $resolvedClientToolsPath = Read-AutoPilotUpdateValue `
         -CurrentValue $ClientToolsPath `
         -Prompt 'Operational PowerShell scripts directory' `
         -DefaultValue (Join-Path $documentsPath 'AutopilotImport')
@@ -973,9 +1073,9 @@ $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
     -WhatIf:$false
-Assert-AutopilotAppSettingsResponse -Response $appSettingsResponse
+Assert-AutoPilotAppSettingsResponse -Response $appSettingsResponse
 $appSettings = $appSettingsResponse.Content | ConvertFrom-Json
-$configuredApiAudience = Get-AutopilotUpdateConfigurationValue `
+$configuredApiAudience = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'apiApplicationIdUri'
 $resolvedApiAudience = if ($PSBoundParameters.ContainsKey('ApiAudience')) {
@@ -998,7 +1098,7 @@ if ($resolvedApiAudience -notmatch '^api://' -or
     throw "API audience '$resolvedApiAudience' does not contain a valid Entra Client ID."
 }
 
-$configuredManagementUrl = Get-AutopilotUpdateConfigurationValue `
+$configuredManagementUrl = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'managementUrl'
 $defaultHostName = [string] $site.properties.defaultHostName
@@ -1017,7 +1117,7 @@ else {
 }
 
 Import-Module $clientModulePath -Force
-$policyResponse = Get-AutopilotTagPolicy `
+$policyResponse = Get-AutoPilotTagPolicy `
     -ManagementUrl $resolvedManagementUrl `
     -ApiApplicationIdUri $resolvedApiAudience `
     -TenantId $TenantId `
@@ -1030,9 +1130,7 @@ $tagAuthorizationRules = @(
     ConvertTo-UpdateTagAuthorizationRules `
         -Policy @($policyResponse.policy)
 )
-$restrictedManagementAdministrativeUnitName = `
-    Get-UpdateRestrictedManagementAdministrativeUnitName `
-        -Policy @($policyResponse.policy)
+$restrictedManagementAdministrativeUnitName = ''
 
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
@@ -1075,7 +1173,7 @@ Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host "  Restricted management AU: $restrictedManagementAdministrativeUnitName"
+Write-Host '  Restricted management AU: preserved per policy rule'
 Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 
@@ -1113,7 +1211,13 @@ if (-not $Force -and
     return
 }
 
-$deploymentResult = & $installerPath @installerParameters -Confirm:$false
+Assert-SystemWideClientModuleAccess
+$installerOutput = @(& $installerPath @installerParameters -Confirm:$false)
+$deploymentResult = Resolve-AutoPilotDeploymentResult `
+    -InstallerOutput $installerOutput
+$systemWideClientSettingsPath = Install-SystemWideAutopilotClientModule `
+    -SourceSettingsPath ([string] $deploymentResult.InstalledClientSettingsPath)
+Write-Host "  System module : $systemWideClientSettingsPath"
 Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
     -PreviousWorkspaceResourceId `
         $previousApplicationInsightsWorkspaceResourceId `

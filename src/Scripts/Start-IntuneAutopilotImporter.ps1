@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.1.20260912.2
+.VERSION 1.1.20260913.16
 .GUID 8f3a78b6-8c87-4a89-b8cf-fb20f90ef96d
 .AUTHOR andreas.lucas@microsoft.com (aka Kili)
 .COMPANYNAME Community
@@ -13,7 +13,7 @@ Creates an Autopilot hardware hash CSV and opens the secured web importer.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -87,7 +87,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Resolve-AutopilotImporterWebUrl {
+function Resolve-AutoPilotImporterWebUrl {
     <#
     .SYNOPSIS
     Validates and normalizes the Autopilot Import frontend URL.
@@ -108,7 +108,7 @@ function Resolve-AutopilotImporterWebUrl {
     System.Uri containing the normalized frontend URL.
 
     .EXAMPLE
-    Resolve-AutopilotImporterWebUrl `
+    Resolve-AutoPilotImporterWebUrl `
         -Url 'https://func-example.azurewebsites.net'
 
     Returns https://func-example.azurewebsites.net/api/ui/index.html.
@@ -153,7 +153,7 @@ function Resolve-AutopilotImporterWebUrl {
     return $builder.Uri
 }
 
-function Get-AutopilotImporterConfigUrl {
+function Get-AutoPilotImporterConfigUrl {
     <#
     .SYNOPSIS
     Derives the public runtime configuration endpoint from the frontend URL.
@@ -164,7 +164,7 @@ function Get-AutopilotImporterConfigUrl {
     Function App is accessed through a custom DNS name.
 
     .PARAMETER WebUri
-    Normalized URI returned by Resolve-AutopilotImporterWebUrl.
+    Normalized URI returned by Resolve-AutoPilotImporterWebUrl.
 
     .OUTPUTS
     System.Uri for the frontend runtime configuration endpoint.
@@ -310,14 +310,14 @@ function Get-LocalAutopilotDeviceInformation {
 }
 
 # Normalize user input before performing any web, device, or filesystem work.
-$resolvedWebUrl = Resolve-AutopilotImporterWebUrl -Url $WebUrl
+$resolvedWebUrl = Resolve-AutoPilotImporterWebUrl -Url $WebUrl
 $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
 
 if (-not $SkipWebValidation) {
     # The configuration endpoint is intentionally public: it contains tenant and
     # application identifiers, but no secret or access token. Reading it verifies
     # that the supplied URL points to a configured Autopilot Import deployment.
-    $configUrl = Get-AutopilotImporterConfigUrl -WebUri $resolvedWebUrl
+    $configUrl = Get-AutoPilotImporterConfigUrl -WebUri $resolvedWebUrl
     Write-Verbose "Validating frontend configuration at '$configUrl'."
     try {
         $runtimeConfig = Invoke-RestMethod `

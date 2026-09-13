@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -412,6 +412,122 @@ function Get-ClientAccessToken {
     return ConvertTo-SecureString $plainToken -AsPlainText -Force
 }
 
+function Resolve-ClientFunctionAppFromUrl {
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern('^https://')]
+        [string] $FunctionUrl,
+
+        [Parameter(Mandatory)]
+        [string] $TenantId,
+
+        [string] $SubscriptionId
+    )
+
+    Assert-ClientCommand -Name @(
+        'Get-AzContext'
+        'Get-AzSubscription'
+        'Get-AzWebApp'
+        'Set-AzContext'
+    )
+    $functionUri = [uri] $FunctionUrl
+    $hostName = $functionUri.Host
+    [void] (Get-ClientAccessToken `
+        -TenantId $TenantId `
+        -ResourceUrl 'https://management.azure.com/' `
+        -SubscriptionId $SubscriptionId)
+    $originalContext = Get-AzContext -ErrorAction SilentlyContinue
+    $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+        @(Get-AzSubscription -TenantId $TenantId -ErrorAction Stop)
+    }
+    else {
+        @(Get-AzSubscription `
+            -SubscriptionId $SubscriptionId `
+            -TenantId $TenantId `
+            -ErrorAction Stop)
+    }
+    $matches = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($subscription in $subscriptions) {
+            try {
+                $subscriptionContext = Set-AzContext `
+                    -Tenant $subscription.TenantId `
+                    -Subscription $subscription.Id `
+                    -WhatIf:$false `
+                    -ErrorAction Stop
+                foreach ($webApp in @(Get-AzWebApp `
+                        -DefaultProfile $subscriptionContext `
+                        -ErrorAction Stop)) {
+                    $hostNames = @($webApp.HostNames) +
+                        @($webApp.DefaultHostName)
+                    if ([string] $webApp.Kind -like '*functionapp*' -and
+                        $hostName -in $hostNames) {
+                        $matches.Add([pscustomobject]@{
+                                SubscriptionId = [string] $subscription.Id
+                                ResourceGroupName = [string] $webApp.ResourceGroup
+                                FunctionAppName = [string] $webApp.Name
+                            })
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Function App discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
+            }
+        }
+    }
+    finally {
+        if ($originalContext) {
+            Set-AzContext `
+                -Context $originalContext `
+                -WhatIf:$false `
+                -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+    if ($matches.Count -eq 0) {
+        throw "No accessible Azure Function App uses hostname '$hostName'. Verify Azure access or pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+    }
+    if ($matches.Count -gt 1) {
+        throw "Hostname '$hostName' matched more than one accessible Azure Function App. Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+    }
+    return $matches[0]
+}
+
+function Save-ClientDeploymentConfiguration {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable] $Configuration,
+
+        [Parameter(Mandatory)]
+        [object] $Deployment
+    )
+
+    $settingsPath = [string] $Configuration.ConfigPath
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        return
+    }
+    $settings = Get-Content -LiteralPath $settingsPath -Raw |
+        ConvertFrom-Json -AsHashtable
+    $settings['subscriptionId'] = [string] $Deployment.SubscriptionId
+    $settings['resourceGroupName'] = [string] $Deployment.ResourceGroupName
+    $settings['functionAppName'] = [string] $Deployment.FunctionAppName
+    $temporaryPath = "$settingsPath.tmp"
+    try {
+        $settings | ConvertTo-Json | Set-Content `
+            -LiteralPath $temporaryPath `
+            -Encoding utf8NoBOM
+        Move-Item `
+            -LiteralPath $temporaryPath `
+            -Destination $settingsPath `
+            -Force
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $temporaryPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-CoreModulePath {
     <#
     .SYNOPSIS
@@ -456,6 +572,17 @@ function Get-AutoPilotImporterClientConfiguration {
     HTTPS URL of the Function App. The URL may be the Function origin or any URL
     below that origin. The command retrieves /api/ui/config from the same host.
 
+    .PARAMETER SubscriptionId
+    Optional Azure subscription ID to persist for manager-policy commands.
+
+    .PARAMETER ResourceGroupName
+    Optional Azure resource group containing the Function App. Required by
+    manager-policy commands when it is not already persisted.
+
+    .PARAMETER FunctionAppName
+    Optional Azure Function App resource name. Specify this when FunctionUrl
+    uses a custom domain and manager-policy commands will be used.
+
     .PARAMETER ConfigPath
     Optional path at which the retrieved configuration is stored or from which
     an existing configuration is read. When omitted, the command uses
@@ -467,6 +594,16 @@ function Get-AutoPilotImporterClientConfiguration {
 
     Retrieves the Function runtime configuration, stores it in the user profile,
     and returns the resolved values.
+
+    .EXAMPLE
+    Get-AutoPilotImporterClientConfiguration `
+        -FunctionUrl 'https://autopilot.example.com' `
+        -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+        -ResourceGroupName 'rg-autopilot-import' `
+        -FunctionAppName 'func-autopilot-import'
+
+    Stores both public endpoints and Azure deployment details for manager-policy
+    commands when the service uses a custom domain.
 
     .EXAMPLE
     Get-AutoPilotImporterClientConfiguration | Format-List
@@ -484,10 +621,26 @@ function Get-AutoPilotImporterClientConfiguration {
         [ValidatePattern('^https://')]
         [string] $FunctionUrl,
 
+        [guid] $SubscriptionId,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $ResourceGroupName,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $FunctionAppName,
+
         [string] $ConfigPath
     )
 
     if (-not [string]::IsNullOrWhiteSpace($FunctionUrl)) {
+        $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+            Get-DefaultClientConfigurationPath
+        }
+        else {
+            [IO.Path]::GetFullPath($ConfigPath)
+        }
+        $existingConfiguration = Resolve-ClientConfiguration `
+            -ConfigPath $resolvedConfigPath
         $functionUri = [uri] $FunctionUrl
         if (-not $functionUri.IsAbsoluteUri -or $functionUri.Scheme -ne 'https') {
             throw 'FunctionUrl must be an absolute HTTPS URL.'
@@ -563,11 +716,38 @@ function Get-AutoPilotImporterClientConfiguration {
             throw 'The Function runtime configuration contains an import URL from a different origin.'
         }
 
-        $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-            Get-DefaultClientConfigurationPath
+        $inferredFunctionAppName = if ($functionUri.Host.EndsWith(
+                '.azurewebsites.net',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $functionUri.Host.Split('.')[0]
         }
         else {
-            [IO.Path]::GetFullPath($ConfigPath)
+            $null
+        }
+        $resolvedSubscriptionId = if (
+            $PSBoundParameters.ContainsKey('SubscriptionId')) {
+            $SubscriptionId.ToString()
+        }
+        else {
+            [string] $existingConfiguration['subscriptionId']
+        }
+        $resolvedResourceGroupName = if (
+            $PSBoundParameters.ContainsKey('ResourceGroupName')) {
+            $ResourceGroupName
+        }
+        else {
+            [string] $existingConfiguration['resourceGroupName']
+        }
+        $resolvedFunctionAppName = if (
+            $PSBoundParameters.ContainsKey('FunctionAppName')) {
+            $FunctionAppName
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace(
+                $inferredFunctionAppName)) {
+            $inferredFunctionAppName
+        }
+        else {
+            [string] $existingConfiguration['functionAppName']
         }
         $configurationDirectory = Split-Path `
             -Parent `
@@ -577,20 +757,14 @@ function Get-AutoPilotImporterClientConfiguration {
             -ItemType Directory `
             -Force | Out-Null
 
-        $functionAppName = if ($functionUri.Host.EndsWith(
-                '.azurewebsites.net',
-                [StringComparison]::OrdinalIgnoreCase)) {
-            $functionUri.Host.Split('.')[0]
-        }
-        else {
-            $null
-        }
         $settings = [ordered]@{
             functionUrl         = $importUri.AbsoluteUri
             managementUrl       = "$origin/api/management/tag-policy"
             apiApplicationIdUri = $apiApplicationIdUri
             tenantId            = $parsedTenantId.ToString()
-            functionAppName     = $functionAppName
+            subscriptionId      = $resolvedSubscriptionId
+            resourceGroupName   = $resolvedResourceGroupName
+            functionAppName     = $resolvedFunctionAppName
             webUrl              = "$origin/api/ui/index.html"
             webClientId         = $parsedClientId.ToString()
         }
@@ -611,6 +785,20 @@ function Get-AutoPilotImporterClientConfiguration {
                 -LiteralPath $temporaryPath `
                 -Force `
                 -ErrorAction SilentlyContinue
+        }
+        $missingAzureValues = @(
+            if ([string]::IsNullOrWhiteSpace($resolvedSubscriptionId)) {
+                'SubscriptionId'
+            }
+            if ([string]::IsNullOrWhiteSpace($resolvedResourceGroupName)) {
+                'ResourceGroupName'
+            }
+            if ([string]::IsNullOrWhiteSpace($resolvedFunctionAppName)) {
+                'FunctionAppName'
+            }
+        )
+        if ($missingAzureValues.Count -gt 0) {
+            Write-Warning "The API configuration was saved, but Azure deployment details required by manager-policy commands are missing: $($missingAzureValues -join ', '). Run this command again with -SubscriptionId, -ResourceGroupName, and -FunctionAppName."
         }
     }
 
@@ -707,7 +895,7 @@ function New-AutoPilotImporterClientConfiguration {
     .OUTPUTS
     System.IO.FileInfo. Returns the created client.settings.json file.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [ValidateScript({ [guid]::TryParse($_, [ref] ([guid]::Empty)) })]
@@ -805,7 +993,7 @@ function New-AutoPilotImporterClientConfiguration {
     Get-Item -LiteralPath $settingsPath
 }
 
-function Import-AutopilotDevice {
+function Import-AutoPilotDevice {
     <#
     .SYNOPSIS
     Imports Windows Autopilot devices from a CSV through the secured Function.
@@ -843,19 +1031,28 @@ function Import-AutopilotDevice {
     Validates the CSV without authentication or API calls.
 
     .EXAMPLE
-    Import-AutopilotDevice `
+    Import-AutoPilotDevice `
         -CsvPath '.\AutopilotHWID.csv' `
         -GroupTag 'Shared'
 
     Validates and imports every device using the installed client settings.
 
     .EXAMPLE
-    Import-AutopilotDevice `
+    Import-AutoPilotDevice `
         -CsvPath '.\AutopilotHWID.csv' `
         -GroupTag 'Shared' `
         -ValidateOnly
 
     Validates the CSV and returns a summary without authenticating or importing.
+
+    .EXAMPLE
+    Import-AutoPilotDevice `
+        -CsvPath '.\AutopilotHWID.csv' `
+        -GroupTag 'Shared' `
+        -WhatIf
+
+    Validates the CSV and previews the import without authenticating or
+    submitting devices.
 
     .INPUTS
     None. This command does not accept pipeline input.
@@ -864,7 +1061,7 @@ function Import-AutopilotDevice {
     PSCustomObject validation summary when ValidateOnly is set. Otherwise,
     returns one enriched service response per submitted device.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [string] $CsvPath,
@@ -941,6 +1138,12 @@ function Import-AutopilotDevice {
         }
     }
 
+    if (-not $PSCmdlet.ShouldProcess(
+            "$($devices.Count) device(s) from '$($csvFile.FullName)'",
+            "Import with Group Tag '$GroupTag'")) {
+        return
+    }
+
     $resolvedFunctionUrl = Get-ConfigurationValue $configuration functionUrl 'FunctionUrl'
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
@@ -971,7 +1174,7 @@ function Import-AutopilotDevice {
     }
 }
 
-function Get-AutopilotImportStatus {
+function Get-AutoPilotImportStatus {
     <#
     .SYNOPSIS
     Returns the current Intune processing status of an Autopilot import.
@@ -983,7 +1186,7 @@ function Get-AutopilotImportStatus {
     the timeout expires.
 
     .PARAMETER ImportId
-    Import identifier returned by Import-AutopilotDevice.
+    Import identifier returned by Import-AutoPilotDevice.
 
     .PARAMETER FunctionUrl
     HTTPS URL of the Autopilot import Function endpoint. Overrides functionUrl
@@ -1009,13 +1212,13 @@ function Get-AutopilotImportStatus {
     Maximum wait time in seconds. The default is 1800 (30 minutes).
 
     .EXAMPLE
-    Get-AutopilotImportStatus `
+    Get-AutoPilotImportStatus `
         -ImportId '11111111-1111-1111-1111-111111111111'
 
     Returns the current status without waiting.
 
     .EXAMPLE
-    Get-AutopilotImportStatus `
+    Get-AutoPilotImportStatus `
         -ImportId '11111111-1111-1111-1111-111111111111' `
         -Wait `
         -PollIntervalSeconds 30 `
@@ -1094,7 +1297,7 @@ function Get-AutopilotImportStatus {
     } while ($true)
 }
 
-function Get-AutopilotImportHistory {
+function Get-AutoPilotImportHistory {
     <#
     .SYNOPSIS
     Returns Autopilot import operations for an application manager.
@@ -1129,12 +1332,12 @@ function Get-AutopilotImportHistory {
     Returns the unchanged response envelope, including count and correlationId.
 
     .EXAMPLE
-    Get-AutopilotImportHistory
+    Get-AutoPilotImportHistory
 
     Returns up to 100 import operations using client.settings.json.
 
     .EXAMPLE
-    Get-AutopilotImportHistory -Top 500 |
+    Get-AutoPilotImportHistory -Top 500 |
         Where-Object Status -eq 'error'
 
     Returns failed operations from the latest 500 records available in Intune.
@@ -1189,11 +1392,12 @@ function Get-AutopilotImportHistory {
         tenantId `
         'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
+    $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
 
     try {
         $response = Invoke-RestMethod `
             -Method Get `
-            -Uri "$($url.TrimEnd('/'))?top=$Top" `
+            -Uri $requestUrl `
             -Authentication Bearer `
             -Token $token `
             -ErrorAction Stop
@@ -1208,13 +1412,47 @@ function Get-AutopilotImportHistory {
                 $serviceResponse = $null
             }
         }
-        $message = 'Could not retrieve the Autopilot import history.'
-        if ($serviceResponse -and
+        $statusCode = $null
+        if ($_.Exception.PSObject.Properties['Response'] -and
+            $_.Exception.Response -and
+            $_.Exception.Response.PSObject.Properties['StatusCode']) {
+            $statusCode = [int] $_.Exception.Response.StatusCode
+        }
+        elseif ($_.Exception.Data.Contains('StatusCode')) {
+            $statusCode = [int] $_.Exception.Data['StatusCode']
+        }
+
+        $serviceError = if ($serviceResponse -and
             $serviceResponse.PSObject.Properties['error']) {
-            $message += " Service error: $($serviceResponse.error)."
+            [string] $serviceResponse.error
         }
         else {
-            $message += " $($_.Exception.Message)"
+            ''
+        }
+        $message = switch ($statusCode) {
+            401 {
+                'Authentication for the Autopilot import history failed. Sign in again and retry.'
+            }
+            403 {
+                'The signed-in user is not authorized to read the Autopilot import history. Ask an administrator to add the user to the manager policy or assign the Intune Role Administrator role.'
+            }
+            404 {
+                "The Autopilot import history endpoint was not found at '$requestUrl'. The deployed Function App is probably older than the installed client module or was published without GetImportHistory. Run Update-AutopilotImport.ps1 without -SkipPublish, then retry. If -ImportHistoryUrl was supplied, verify that it ends with '/api/management/imports'."
+            }
+            502 {
+                'The Autopilot import service could not retrieve the history from Microsoft Graph. Retry later or ask an administrator to inspect the Function logs.'
+            }
+            default {
+                if ($serviceError -eq 'serviceNotConfigured') {
+                    'The Autopilot import history service is not configured correctly. Ask an administrator to verify the Function App settings.'
+                }
+                elseif ($serviceError -eq 'authorizationServiceUnavailable') {
+                    'The authorization service is temporarily unavailable. Retry later.'
+                }
+                else {
+                    "Could not retrieve the Autopilot import history. $($_.Exception.Message)"
+                }
+            }
         }
         if ($serviceResponse -and
             $serviceResponse.PSObject.Properties['correlationId']) {
@@ -1226,18 +1464,93 @@ function Get-AutopilotImportHistory {
     if ($Raw) {
         return $response
     }
-    return @($response.imports)
+    return @($response.imports | ForEach-Object {
+        $importProperties = @{}
+        foreach ($property in $_.PSObject.Properties) {
+            $importProperties[$property.Name] = $property.Value
+        }
+        $result = [pscustomobject][ordered]@{
+            PSTypeName      = 'AutopilotImport.ImportHistoryRecord'
+            ImportId        = [string] $importProperties['importId']
+            BatchImportId   = [string] $importProperties['batchImportId']
+            SerialNumber    = [string] $importProperties['serialNumber']
+            GroupTag        = [string] $importProperties['groupTag']
+            Status          = [string] $importProperties['status']
+            DeviceErrorCode = $importProperties['deviceErrorCode']
+            DeviceErrorName = [string] $importProperties['deviceErrorName']
+        }
+        $displayPropertySet = [Management.Automation.PSPropertySet]::new(
+            'DefaultDisplayPropertySet',
+            [string[]] @(
+                'ImportId'
+                'SerialNumber'
+                'GroupTag'
+                'Status'
+                'DeviceErrorName'
+            )
+        )
+        $result | Add-Member `
+            -MemberType MemberSet `
+            -Name PSStandardMembers `
+            -Value ([Management.Automation.PSMemberInfo[]] @(
+                $displayPropertySet))
+        $result
+    })
 }
 
-function Get-AutopilotTagPolicy {
+function ConvertTo-ClientTagPolicyResult {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Rule,
+
+        [AllowNull()]
+        [string] $GroupName,
+
+        [AllowNull()]
+        [string] $CorrelationId
+    )
+
+    $result = [pscustomobject][ordered]@{
+        PSTypeName = 'AutopilotImport.TagPolicyRule'
+        GroupId = [string] $Rule.groupId
+        GroupName = $GroupName
+        Tags = @($Rule.tags)
+        RestrictedManagementAdministrativeUnitName = if (
+            $Rule.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']) {
+            [string] $Rule.restrictedManagementAdministrativeUnitName
+        }
+        else {
+            $null
+        }
+        CorrelationId = $CorrelationId
+    }
+    $displayPropertySet = [Management.Automation.PSPropertySet]::new(
+        'DefaultDisplayPropertySet',
+        [string[]] @(
+            'GroupId'
+            'GroupName'
+            'Tags'
+            'RestrictedManagementAdministrativeUnitName'
+        )
+    )
+    $result | Add-Member `
+        -MemberType MemberSet `
+        -Name PSStandardMembers `
+        -Value ([Management.Automation.PSMemberInfo[]] @($displayPropertySet))
+    return $result
+}
+
+function Get-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Returns the current group-to-tag policy with Entra group display names.
 
     .DESCRIPTION
     Retrieves the current policy and resolves each group object ID through
-    Microsoft Graph. The default console view shows GroupName and Tags while
-    GroupId remains available as an object property for pipeline use.
+    Microsoft Graph. Each rule is returned as a PowerShell object with stable
+    GroupId, GroupName, Tags, RestrictedManagementAdministrativeUnitName, and
+    CorrelationId properties.
 
     .PARAMETER Raw
     Returns the unchanged response from the management API without resolving
@@ -1258,12 +1571,12 @@ function Get-AutopilotTagPolicy {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Get-AutopilotTagPolicy
+    Get-AutoPilotTagPolicy
 
     Returns policy rules with Entra group display names.
 
     .EXAMPLE
-    $response = Get-AutopilotTagPolicy -Raw
+    $response = Get-AutoPilotTagPolicy -Raw
     $response.policy
 
     Returns the unchanged API response for automation.
@@ -1272,9 +1585,8 @@ function Get-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject policy rows with GroupName, Tags, GroupId, and optional
-    restricted management administrative unit and correlation ID. With Raw,
-    returns the unchanged management API response.
+    AutopilotImport.TagPolicyRule objects. With Raw, returns the unchanged
+    management API response.
     #>
     [CmdletBinding()]
     param(
@@ -1328,64 +1640,37 @@ function Get-AutopilotTagPolicy {
             $groupName = '[Unresolved group]'
         }
 
-        $result = [pscustomobject][ordered]@{
-            GroupName = $groupName
-            Tags      = @($rule.tags)
-            GroupId   = $groupId
-        }
-        if ($rule.PSObject.Properties['restrictedManagementAdministrativeUnitName']) {
-            $result | Add-Member `
-                -NotePropertyName RestrictedManagementAdministrativeUnitName `
-                -NotePropertyValue ([string] $rule.restrictedManagementAdministrativeUnitName)
-        }
-        if ($response.PSObject.Properties['correlationId']) {
-            $result | Add-Member `
-                -NotePropertyName CorrelationId `
-                -NotePropertyValue ([string] $response.correlationId)
-        }
-
-        # Keep GroupId available to pipelines while presenting the more useful
-        # name and tags in PowerShell's default table view.
-        $defaultProperties = [Collections.Generic.List[string]]::new()
-        $defaultProperties.Add('GroupName')
-        $defaultProperties.Add('Tags')
-        if ($result.PSObject.Properties['RestrictedManagementAdministrativeUnitName']) {
-            $defaultProperties.Add('RestrictedManagementAdministrativeUnitName')
-        }
-        $displayPropertySet = [Management.Automation.PSPropertySet]::new(
-            'DefaultDisplayPropertySet',
-            [string[]] $defaultProperties
-        )
-        $result | Add-Member `
-            -MemberType MemberSet `
-            -Name PSStandardMembers `
-            -Value ([Management.Automation.PSMemberInfo[]] @($displayPropertySet))
-        $result
+        ConvertTo-ClientTagPolicyResult `
+            -Rule $rule `
+            -GroupName $groupName `
+            -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
+                [string] $response.correlationId
+            })
     }
 }
 
-function Add-AutopilotTagPolicy {
+function Add-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Adds an Entra group and its allowed Group Tags to the policy.
 
     .DESCRIPTION
-    Accepts either an Entra group object ID or an exact group display name.
-    Existing rules are preserved and tags for an existing group are merged.
-    When no restricted management administrative unit is specified, the
-    currently configured MAU is preserved.
+    Accepts an Entra group object ID. Existing rules are preserved and tags
+    for an existing group are merged. When no restricted management
+    administrative unit is specified, that rule's current RMAU is preserved.
 
-    .PARAMETER Group
-    Entra group object ID or exact display name. If multiple groups have the
-    same display name, use the object ID to select one unambiguously.
+    .PARAMETER GroupId
+    Entra group object ID. Group is retained as an alias for compatibility.
 
     .PARAMETER GroupTag
-    One or more allowed Autopilot Group Tags for the group.
+    One or more allowed Autopilot Group Tags for the group. Supply multiple
+    values as an array or as a comma-separated string.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
     Optional display name of the restricted management administrative unit.
-    The policy format applies this MAU to all rules. If omitted, the current
-    policy value is retained.
+    The value applies only to the added or updated group rule. If omitted, an
+    existing value for that rule is retained; a new rule has no RMAU. Supply
+    an empty string to remove the RMAU from this rule.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1394,21 +1679,28 @@ function Add-AutopilotTagPolicy {
     Application ID URI exposed by the secured Function API.
 
     .PARAMETER TenantId
-    Microsoft Entra tenant ID used for API and group-name resolution.
+    Microsoft Entra tenant ID used for API authentication.
 
     .PARAMETER ConfigPath
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Add-AutopilotTagPolicy `
-        -Group 'Autopilot Operators' `
+    Add-AutoPilotTagPolicy `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared', 'Kiosk'
 
-    Adds two allowed Group Tags to the uniquely named Entra group.
+    Adds two allowed Group Tags to the Entra group.
 
     .EXAMPLE
-    Add-AutopilotTagPolicy `
-        -Group '11111111-1111-1111-1111-111111111111' `
+    Add-AutoPilotTagPolicy `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
+        -GroupTag 'BG-Default, PAW, PAW-CSM'
+
+    Adds three comma-separated Group Tags to the Entra group.
+
+    .EXAMPLE
+    Add-AutoPilotTagPolicy `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared' `
         -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
@@ -1419,14 +1711,13 @@ function Add-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject returned by the policy management API when the update runs.
+    AutopilotImport.TagPolicyRule object for the added or updated group rule.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
-        [Alias('GroupId', 'GroupName')]
-        [string] $Group,
+        [Alias('Group')]
+        [guid] $GroupId,
 
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -1434,7 +1725,8 @@ function Add-AutopilotTagPolicy {
         [string[]] $GroupTag,
 
         [Alias('Mau')]
-        [ValidateLength(1, 256)]
+        [AllowEmptyString()]
+        [ValidateLength(0, 256)]
         [string] $RestrictedManagementAdministrativeUnitName,
 
         [ValidatePattern('^https://')][string] $ManagementUrl,
@@ -1443,18 +1735,16 @@ function Add-AutopilotTagPolicy {
         [string] $ConfigPath
     )
 
-    $tags = @($GroupTag | ForEach-Object { $_.Trim() } | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_)
-    } | Select-Object -Unique)
+    $tags = @($GroupTag | ForEach-Object { $_.Split(',') } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
     if ($tags.Count -eq 0) {
         throw 'Specify at least one Group Tag.'
     }
     foreach ($tag in $tags) {
         if ($tag.Length -gt 128) {
             throw "Group Tag '$tag' must not exceed 128 characters."
-        }
-        if ($tag.Contains(',')) {
-            throw "Group Tag '$tag' must not contain a comma."
         }
     }
 
@@ -1468,35 +1758,7 @@ function Add-AutopilotTagPolicy {
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
 
-    # GUID input avoids a Graph lookup; display names must resolve to exactly
-    # one group to prevent updating the wrong policy principal.
-    $parsedGroupId = [guid]::Empty
-    $groupDisplayName = $null
-    if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
-        $resolvedGroupId = $parsedGroupId.ToString()
-    }
-    else {
-        $graphToken = Get-ClientAccessToken `
-            $resolvedTenantId `
-            'https://graph.microsoft.com/'
-        $escapedName = $Group.Trim().Replace("'", "''")
-        $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
-        $groupResponse = Invoke-RestMethod `
-            -Method Get `
-            -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
-            -Authentication Bearer `
-            -Token $graphToken `
-            -ErrorAction Stop
-        $matchingGroups = @($groupResponse.value)
-        if ($matchingGroups.Count -eq 0) {
-            throw "Entra group '$Group' was not found. Specify its exact display name or object ID."
-        }
-        if ($matchingGroups.Count -gt 1) {
-            throw "Multiple Entra groups are named '$Group'. Specify the group object ID instead."
-        }
-        $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
-        $groupDisplayName = [string] $matchingGroups[0].displayName
-    }
+    $resolvedGroupId = $GroupId.ToString()
 
     $currentResponse = Invoke-RestMethod `
         -Method Get `
@@ -1506,11 +1768,19 @@ function Add-AutopilotTagPolicy {
         -ErrorAction Stop
     $currentPolicy = @($currentResponse.policy)
     # Index the current rules by normalized group ID to merge tags without
-    # discarding unrelated groups or their existing assignments.
+    # discarding unrelated groups or their individual RMAU assignments.
     $rulesByGroup = [ordered]@{}
+    $mauByGroup = @{}
     foreach ($rule in $currentPolicy) {
         $currentGroupId = ([guid] $rule.groupId).ToString()
         $rulesByGroup[$currentGroupId] = @($rule.tags)
+        $mauByGroup[$currentGroupId] = if ($rule.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']) {
+            [string] $rule.restrictedManagementAdministrativeUnitName
+        }
+        else {
+            ''
+        }
     }
     $rulesByGroup[$resolvedGroupId] = @(
         @($rulesByGroup[$resolvedGroupId]) + $tags |
@@ -1518,50 +1788,33 @@ function Add-AutopilotTagPolicy {
             Select-Object -Unique
     )
 
-    # Preserve the configured restricted MAU unless the caller explicitly
-    # supplies a replacement value.
     if ($PSBoundParameters.ContainsKey(
             'RestrictedManagementAdministrativeUnitName')) {
-        $mauName = $RestrictedManagementAdministrativeUnitName.Trim()
+        $mauByGroup[$resolvedGroupId] =
+            $RestrictedManagementAdministrativeUnitName.Trim()
     }
-    else {
-        $configuredMauNames = @($currentPolicy |
-            ForEach-Object {
-                if ($_.PSObject.Properties[
-                        'restrictedManagementAdministrativeUnitName']) {
-                    $_.restrictedManagementAdministrativeUnitName
-                }
-            } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
-            Select-Object -Unique)
-        $mauName = if ($configuredMauNames.Count -gt 0) {
-            [string] $configuredMauNames[0]
+    $updatedPolicy = @($rulesByGroup.Keys | ForEach-Object {
+        $policyEntry = [ordered]@{
+            groupId = $_
+            tags = @($rulesByGroup[$_])
         }
-        else {
-            ''
+        if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
+            $policyEntry.restrictedManagementAdministrativeUnitName =
+                $mauByGroup[$_].Trim()
         }
-    }
-    $rules = @($rulesByGroup.Keys | ForEach-Object {
-        "$_=$(@($rulesByGroup[$_]) -join ',')"
+        [pscustomobject] $policyEntry
     })
     $body = @{
-        rules = $rules
-        restrictedManagementAdministrativeUnitName = $mauName
+        policy = $updatedPolicy
     } | ConvertTo-Json -Depth 4 -Compress
 
-    $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
-        $resolvedGroupId
-    }
-    else {
-        "$groupDisplayName ($resolvedGroupId)"
-    }
     if (-not $PSCmdlet.ShouldProcess(
-            $target,
+            $resolvedGroupId,
             "Add Group Tags '$($tags -join ', ')' to the Autopilot policy")) {
         return
     }
 
-    Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
         -Authentication Bearer `
@@ -1569,9 +1822,23 @@ function Add-AutopilotTagPolicy {
         -ContentType 'application/json' `
         -Body $body `
         -ErrorAction Stop
+    $responsePolicy = if ($response.PSObject.Properties['policy']) {
+        @($response.policy)
+    }
+    else {
+        $updatedPolicy
+    }
+    $updatedRule = @($responsePolicy | Where-Object {
+        ([guid] $_.groupId).ToString() -eq $resolvedGroupId
+    }) | Select-Object -First 1
+    ConvertTo-ClientTagPolicyResult `
+        -Rule $updatedRule `
+        -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
+            [string] $response.correlationId
+        })
 }
 
-function Remove-AutopilotTagPolicy {
+function Remove-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Removes Group Tags or an Entra group from the Group Tag policy.
@@ -1589,7 +1856,8 @@ function Remove-AutopilotTagPolicy {
 
     .PARAMETER GroupTag
     Optional Autopilot Group Tags to remove from the selected group's rule.
-    Omit this parameter to remove the complete rule.
+    Supply multiple values as an array or as a comma-separated string. Omit
+    this parameter to remove the complete rule.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1604,14 +1872,14 @@ function Remove-AutopilotTagPolicy {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicy `
+    Remove-AutoPilotTagPolicy `
         -Group 'Autopilot Operators' `
         -GroupTag 'Kiosk'
 
     Removes one Group Tag while preserving the group's other tags.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicy `
+    Remove-AutoPilotTagPolicy `
         -Group '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -1621,9 +1889,10 @@ function Remove-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject returned by the policy management API when the update runs.
+    System.String success message with GroupId, GroupName, RemovedTags,
+    RuleRemoved, CorrelationId, Updated, and ApiResponse metadata.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -1696,7 +1965,8 @@ function Remove-AutopilotTagPolicy {
     # group rule while still preserving every unrelated rule.
     $removeTags = @()
     if ($PSBoundParameters.ContainsKey('GroupTag')) {
-        $removeTags = @($GroupTag | ForEach-Object { $_.Trim() } |
+        $removeTags = @($GroupTag | ForEach-Object { $_.Split(',') } |
+            ForEach-Object { $_.Trim() } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Select-Object -Unique)
         if ($removeTags.Count -eq 0) {
@@ -1705,9 +1975,6 @@ function Remove-AutopilotTagPolicy {
         foreach ($tag in $removeTags) {
             if ($tag.Length -gt 128) {
                 throw "Group Tag '$tag' must not exceed 128 characters."
-            }
-            if ($tag.Contains(',')) {
-                throw "Group Tag '$tag' must not contain a comma."
             }
         }
 
@@ -1726,8 +1993,7 @@ function Remove-AutopilotTagPolicy {
             throw 'The last Group Tag cannot be removed from a policy rule. Omit -GroupTag to remove the complete group rule.'
         }
 
-        $remainingPolicy = @($currentPolicy)
-        $rules = @($remainingPolicy | ForEach-Object {
+        $remainingPolicy = @($currentPolicy | ForEach-Object {
             $ruleGroupId = ([guid] $_.groupId).ToString()
             $ruleTags = if ($ruleGroupId -eq $resolvedGroupId) {
                 $remainingTags
@@ -1735,7 +2001,18 @@ function Remove-AutopilotTagPolicy {
             else {
                 @($_.tags)
             }
-            "$ruleGroupId=$($ruleTags -join ',')"
+            $policyEntry = [ordered]@{
+                groupId = $ruleGroupId
+                tags = @($ruleTags)
+            }
+            if ($_.PSObject.Properties[
+                    'restrictedManagementAdministrativeUnitName'] -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string] $_.restrictedManagementAdministrativeUnitName)) {
+                $policyEntry.restrictedManagementAdministrativeUnitName =
+                    ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+            }
+            [pscustomobject] $policyEntry
         })
     }
     else {
@@ -1743,30 +2020,11 @@ function Remove-AutopilotTagPolicy {
             ([guid] $_.groupId).ToString() -ne $resolvedGroupId
         })
         if ($remainingPolicy.Count -eq 0) {
-            throw 'The last Group Tag policy rule cannot be removed. Use Set-AutopilotTagPolicy to replace the policy.'
+            throw 'The last Group Tag policy rule cannot be removed. Use Set-AutoPilotTagPolicy to replace the policy.'
         }
-        $rules = @($remainingPolicy | ForEach-Object {
-            "$(([guid] $_.groupId).ToString())=$(@($_.tags) -join ',')"
-        })
-    }
-    $configuredMauNames = @($remainingPolicy |
-        ForEach-Object {
-            if ($_.PSObject.Properties[
-                    'restrictedManagementAdministrativeUnitName']) {
-                $_.restrictedManagementAdministrativeUnitName
-            }
-        } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
-        Select-Object -Unique)
-    $mauName = if ($configuredMauNames.Count -gt 0) {
-        [string] $configuredMauNames[0]
-    }
-    else {
-        ''
     }
     $body = @{
-        rules = $rules
-        restrictedManagementAdministrativeUnitName = $mauName
+        policy = $remainingPolicy
     } | ConvertTo-Json -Depth 4 -Compress
 
     $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
@@ -1785,7 +2043,7 @@ function Remove-AutopilotTagPolicy {
         return
     }
 
-    Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
         -Authentication Bearer `
@@ -1793,9 +2051,46 @@ function Remove-AutopilotTagPolicy {
         -ContentType 'application/json' `
         -Body $body `
         -ErrorAction Stop
+
+    $groupLabel = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
+        $resolvedGroupId
+    }
+    else {
+        $groupDisplayName
+    }
+    $message = if ($removeTags.Count -eq 0) {
+        "The tag policy for group '$groupLabel' was removed."
+    }
+    elseif ($removeTags.Count -eq 1) {
+        "Group Tag '$($removeTags[0])' was removed from the tag policy for group '$groupLabel'."
+    }
+    else {
+        "Group Tags '$($removeTags -join ', ')' were removed from the tag policy for group '$groupLabel'."
+    }
+    $message | Add-Member `
+        -NotePropertyMembers @{
+            GroupId      = $resolvedGroupId
+            GroupName    = $groupDisplayName
+            RemovedTags  = @($removeTags)
+            RuleRemoved  = $removeTags.Count -eq 0
+            CorrelationId = if ($response.PSObject.Properties['correlationId']) {
+                [string] $response.correlationId
+            }
+            else {
+                $null
+            }
+            Updated      = if ($response.PSObject.Properties['updated']) {
+                [bool] $response.updated
+            }
+            else {
+                $true
+            }
+            ApiResponse  = $response
+        } `
+        -PassThru
 }
 
-function Set-AutopilotTagPolicy {
+function Set-AutoPilotTagPolicy {
     <#
     .SYNOPSIS
     Replaces the complete group-to-tag policy.
@@ -1807,13 +2102,15 @@ function Set-AutopilotTagPolicy {
     are removed from the policy.
 
     .PARAMETER TagAuthorizationRule
-    Complete policy in <group-object-id>=<tag1>,<tag2> format. Each group object
-    ID must be a GUID and each rule must contain at least one Group Tag.
+    Complete policy as <group-object-id>=<tag1>,<tag2> strings or rule objects
+    with groupId, tags, and an optional
+    restrictedManagementAdministrativeUnitName. Each group object ID must be a
+    GUID and each rule must contain at least one Group Tag.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
-    Optional display name of the restricted management administrative unit
-    associated with all rules. Supply an empty string to disable automatic
-    administrative-unit membership.
+    Optional fallback RMAU applied to legacy string rules. Rule objects can
+    specify their own RMAU. Supply an empty string to disable automatic
+    administrative-unit membership for legacy string rules.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1829,15 +2126,22 @@ function Set-AutopilotTagPolicy {
     read from this file.
 
     .EXAMPLE
-    Set-AutopilotTagPolicy `
+    Set-AutoPilotTagPolicy `
         -TagAuthorizationRule @(
-            '11111111-1111-1111-1111-111111111111=Standard,Kiosk'
-            '22222222-2222-2222-2222-222222222222=Engineering'
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Standard', 'Kiosk')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Engineering')
+                restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+            }
         ) `
-        -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
 
-    Validates and previews replacement of the complete policy.
+    Previews a complete policy with an individual RMAU for each rule.
 
     .INPUTS
     None. This command does not accept pipeline input.
@@ -1845,9 +2149,9 @@ function Set-AutopilotTagPolicy {
     .OUTPUTS
     PSCustomObject returned by the policy management API when the update runs.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
-        [Parameter(Mandatory)][string[]] $TagAuthorizationRule,
+        [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
         [string] $RestrictedManagementAdministrativeUnitName,
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
@@ -1874,15 +2178,152 @@ function Set-AutopilotTagPolicy {
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
     $body = @{
-        rules = @($TagAuthorizationRule)
-        restrictedManagementAdministrativeUnitName = `
-            $RestrictedManagementAdministrativeUnitName
+        policy = $policy
     } | ConvertTo-Json -Depth 4 -Compress
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body
 }
 
-function Update-AutopilotTagPolicyManager {
+function Get-AutoPilotTagPolicyManager {
+    <#
+    .SYNOPSIS
+    Gets the explicitly configured Group Tag managers.
+
+    .DESCRIPTION
+    Reads MANAGER_AUTHORIZATION_POLICY from the configured Azure Function App
+    and returns the installing manager and every additional manager as
+    structured PowerShell objects. Values not supplied explicitly are resolved
+    from client.settings.json.
+
+    .PARAMETER SubscriptionId
+    Azure subscription containing the Function App.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant used for Azure authentication.
+
+    .PARAMETER ResourceGroupName
+    Resource group containing the Function App.
+
+    .PARAMETER FunctionAppName
+    Name of the Autopilot Import Function App.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Get-AutoPilotTagPolicyManager
+
+    Lists the configured managers using the installed client settings.
+
+    .OUTPUTS
+    PSCustomObject records containing FunctionAppName, PrincipalId, and
+    ManagerType.
+    #>
+    [CmdletBinding()]
+    param(
+        [guid] $SubscriptionId,
+        [guid] $TenantId,
+        [string] $ResourceGroupName,
+        [string] $FunctionAppName,
+        [string] $ConfigPath
+    )
+
+    Assert-ClientCommand -Name 'Get-AzWebApp', 'Set-AzContext'
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        subscriptionId = $SubscriptionId; tenantId = $TenantId
+        resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
+    }
+    $missingDeploymentValues = @(
+        foreach ($entry in @(
+                @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
+                @{ Name = 'ResourceGroupName'; Key = 'resourceGroupName' }
+                @{ Name = 'FunctionAppName'; Key = 'functionAppName' }
+            )) {
+            if ([string]::IsNullOrWhiteSpace(
+                    [string] $configuration[$entry.Key])) {
+                $entry.Name
+            }
+        }
+    )
+    if ($missingDeploymentValues.Count -gt 0) {
+        $configuredFunctionUrl = [string] $configuration['functionUrl']
+        $configuredTenantId = Get-ConfigurationValue `
+            $configuration tenantId 'TenantId'
+        if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
+            throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+        }
+        $deployment = Resolve-ClientFunctionAppFromUrl `
+            -FunctionUrl $configuredFunctionUrl `
+            -TenantId $configuredTenantId `
+            -SubscriptionId ([string] $configuration['subscriptionId'])
+        $configuration['subscriptionId'] = $deployment.SubscriptionId
+        $configuration['resourceGroupName'] = $deployment.ResourceGroupName
+        $configuration['functionAppName'] = $deployment.FunctionAppName
+        Save-ClientDeploymentConfiguration `
+            -Configuration $configuration `
+            -Deployment $deployment
+    }
+
+    $resolvedSubscriptionId = Get-ConfigurationValue `
+        $configuration subscriptionId 'SubscriptionId'
+    $resolvedTenantId = Get-ConfigurationValue `
+        $configuration tenantId 'TenantId'
+    $resolvedResourceGroup = Get-ConfigurationValue `
+        $configuration resourceGroupName 'ResourceGroupName'
+    $resolvedFunctionName = Get-ConfigurationValue `
+        $configuration functionAppName 'FunctionAppName'
+
+    [void](Get-ClientAccessToken `
+        $resolvedTenantId `
+        'https://management.azure.com/' `
+        $resolvedSubscriptionId)
+    Set-AzContext `
+        -Tenant $resolvedTenantId `
+        -Subscription $resolvedSubscriptionId `
+        -WhatIf:$false | Out-Null
+    $functionApp = Get-AzWebApp `
+        -ResourceGroupName $resolvedResourceGroup `
+        -Name $resolvedFunctionName
+    if (-not $functionApp) {
+        throw "Function App '$resolvedFunctionName' was not found."
+    }
+
+    $managerPolicySetting = @($functionApp.SiteConfig.AppSettings |
+        Where-Object Name -eq 'MANAGER_AUTHORIZATION_POLICY' |
+        Select-Object -First 1)
+    if ($managerPolicySetting.Count -eq 0) {
+        throw "Function App '$resolvedFunctionName' does not contain MANAGER_AUTHORIZATION_POLICY."
+    }
+    try {
+        $managerPolicy = $managerPolicySetting[0].Value | ConvertFrom-Json
+        $installerId = ([guid] $managerPolicy.installerPrincipalId).ToString()
+        $additionalIds = @($managerPolicy.additionalPrincipalIds |
+            Where-Object { $null -ne $_ } |
+            ForEach-Object { ([guid] $_).ToString() })
+    }
+    catch {
+        throw "The existing MANAGER_AUTHORIZATION_POLICY is invalid: $($_.Exception.Message)"
+    }
+
+    @(
+        [pscustomobject]@{
+            PSTypeName = 'AutopilotImport.TagPolicyManager'
+            FunctionAppName = $resolvedFunctionName
+            PrincipalId = $installerId
+            ManagerType = 'Installer'
+        }
+        foreach ($principalId in $additionalIds) {
+            [pscustomobject]@{
+                PSTypeName = 'AutopilotImport.TagPolicyManager'
+                FunctionAppName = $resolvedFunctionName
+                PrincipalId = $principalId
+                ManagerType = 'Additional'
+            }
+        }
+    )
+}
+
+function Update-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Adds and removes explicit Group Tag managers atomically.
@@ -1920,14 +2361,14 @@ function Update-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Update-AutopilotTagPolicyManager `
+    Update-AutoPilotTagPolicyManager `
         -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
         -RemovePrincipalId '22222222-2222-2222-2222-222222222222'
 
     Adds one manager and removes another using the installed client settings.
 
     .EXAMPLE
-    Update-AutopilotTagPolicyManager `
+    Update-AutoPilotTagPolicyManager `
         -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -1940,7 +2381,7 @@ function Update-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [guid[]] $AddPrincipalId,
         [guid[]] $RemovePrincipalId,
@@ -1952,14 +2393,6 @@ function Update-AutopilotTagPolicyManager {
     )
 
     Assert-ClientCommand -Name 'Get-AzWebApp', 'Get-AzRoleAssignment', 'Set-AzWebApp', 'Set-AzContext'
-    $configuration = Resolve-ClientConfiguration $ConfigPath @{
-        subscriptionId = $SubscriptionId; tenantId = $TenantId
-        resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
-    }
-    $resolvedSubscriptionId = Get-ConfigurationValue $configuration subscriptionId 'SubscriptionId'
-    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
-    $resolvedResourceGroup = Get-ConfigurationValue $configuration resourceGroupName 'ResourceGroupName'
-    $resolvedFunctionName = Get-ConfigurationValue $configuration functionAppName 'FunctionAppName'
     $addIds = @($AddPrincipalId | Where-Object { $null -ne $_ } |
         ForEach-Object { $_.ToString() })
     $removeIds = @($RemovePrincipalId | Where-Object { $null -ne $_ } |
@@ -1967,6 +2400,45 @@ function Update-AutopilotTagPolicyManager {
     if ($addIds.Count -eq 0 -and $removeIds.Count -eq 0) {
         throw 'Specify at least one principal ID to add or remove.'
     }
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        subscriptionId = $SubscriptionId; tenantId = $TenantId
+        resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
+    }
+    $missingDeploymentValues = @(
+        foreach ($entry in @(
+                @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
+                @{ Name = 'ResourceGroupName'; Key = 'resourceGroupName' }
+                @{ Name = 'FunctionAppName'; Key = 'functionAppName' }
+            )) {
+            if ([string]::IsNullOrWhiteSpace(
+                    [string] $configuration[$entry.Key])) {
+                $entry.Name
+            }
+        }
+    )
+    if ($missingDeploymentValues.Count -gt 0) {
+        $configuredFunctionUrl = [string] $configuration['functionUrl']
+        $configuredTenantId = Get-ConfigurationValue `
+            $configuration tenantId 'TenantId'
+        if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
+            throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
+        }
+        Write-Verbose "Discovering Azure Function App deployment details for '$configuredFunctionUrl'."
+        $deployment = Resolve-ClientFunctionAppFromUrl `
+            -FunctionUrl $configuredFunctionUrl `
+            -TenantId $configuredTenantId `
+            -SubscriptionId ([string] $configuration['subscriptionId'])
+        $configuration['subscriptionId'] = $deployment.SubscriptionId
+        $configuration['resourceGroupName'] = $deployment.ResourceGroupName
+        $configuration['functionAppName'] = $deployment.FunctionAppName
+        Save-ClientDeploymentConfiguration `
+            -Configuration $configuration `
+            -Deployment $deployment
+    }
+    $resolvedSubscriptionId = Get-ConfigurationValue $configuration subscriptionId 'SubscriptionId'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $resolvedResourceGroup = Get-ConfigurationValue $configuration resourceGroupName 'ResourceGroupName'
+    $resolvedFunctionName = Get-ConfigurationValue $configuration functionAppName 'FunctionAppName'
 
     [void](Get-ClientAccessToken $resolvedTenantId 'https://management.azure.com/' $resolvedSubscriptionId)
     Set-AzContext -Tenant $resolvedTenantId -Subscription $resolvedSubscriptionId -WhatIf:$false | Out-Null
@@ -2028,7 +2500,7 @@ function Update-AutopilotTagPolicyManager {
     [pscustomobject]@{ FunctionAppName = $resolvedFunctionName; ManagerPolicy = $updatedPolicy }
 }
 
-function Add-AutopilotTagPolicyManager {
+function Add-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Adds explicit users or groups to the Group Tag manager policy.
@@ -2036,7 +2508,7 @@ function Add-AutopilotTagPolicyManager {
     .DESCRIPTION
     Adds Microsoft Entra principal object IDs to the Function App's explicit
     Group Tag manager list. This command delegates authentication, authorization
-    checks, deduplication, and the update to Update-AutopilotTagPolicyManager.
+    checks, deduplication, and the update to Update-AutoPilotTagPolicyManager.
 
     .PARAMETER PrincipalId
     Microsoft Entra object IDs of users or groups to add as managers.
@@ -2061,13 +2533,13 @@ function Add-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Add-AutopilotTagPolicyManager `
+    Add-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111'
 
     Adds one explicit manager using the installed client settings.
 
     .EXAMPLE
-    Add-AutopilotTagPolicyManager `
+    Add-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2079,7 +2551,7 @@ function Add-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,
@@ -2097,10 +2569,10 @@ function Add-AutopilotTagPolicyManager {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    Update-AutopilotTagPolicyManager @parameters
+    Update-AutoPilotTagPolicyManager @parameters
 }
 
-function Remove-AutopilotTagPolicyManager {
+function Remove-AutoPilotTagPolicyManager {
     <#
     .SYNOPSIS
     Removes explicit users or groups from the Group Tag manager policy.
@@ -2109,7 +2581,7 @@ function Remove-AutopilotTagPolicyManager {
     Removes Microsoft Entra principal object IDs from the Function App's
     explicit Group Tag manager list. The identity that installed the solution
     remains protected. This command delegates validation and the update to
-    Update-AutopilotTagPolicyManager.
+    Update-AutoPilotTagPolicyManager.
 
     .PARAMETER PrincipalId
     Microsoft Entra object IDs of users or groups to remove. The installing
@@ -2135,13 +2607,13 @@ function Remove-AutopilotTagPolicyManager {
     Optional path to client.settings.json.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicyManager `
+    Remove-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111'
 
     Removes one explicit manager using the installed client settings.
 
     .EXAMPLE
-    Remove-AutopilotTagPolicyManager `
+    Remove-AutoPilotTagPolicyManager `
         -PrincipalId '11111111-1111-1111-1111-111111111111' `
         -WhatIf
 
@@ -2153,7 +2625,7 @@ function Remove-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,
@@ -2171,20 +2643,21 @@ function Remove-AutopilotTagPolicyManager {
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
-    Update-AutopilotTagPolicyManager @parameters
+    Update-AutoPilotTagPolicyManager @parameters
 }
 
 Export-ModuleMember -Function @(
     'New-AutoPilotImporterClientConfiguration',
     'Get-AutoPilotImporterClientConfiguration',
-    'Import-AutopilotDevice',
-    'Get-AutopilotImportStatus',
-    'Get-AutopilotImportHistory',
-    'Get-AutopilotTagPolicy',
-    'Add-AutopilotTagPolicy',
-    'Remove-AutopilotTagPolicy',
-    'Set-AutopilotTagPolicy',
-    'Update-AutopilotTagPolicyManager',
-    'Add-AutopilotTagPolicyManager',
-    'Remove-AutopilotTagPolicyManager'
+    'Import-AutoPilotDevice',
+    'Get-AutoPilotImportStatus',
+    'Get-AutoPilotImportHistory',
+    'Get-AutoPilotTagPolicy',
+    'Add-AutoPilotTagPolicy',
+    'Remove-AutoPilotTagPolicy',
+    'Set-AutoPilotTagPolicy',
+    'Get-AutoPilotTagPolicyManager',
+    'Update-AutoPilotTagPolicyManager',
+    'Add-AutoPilotTagPolicyManager',
+    'Remove-AutoPilotTagPolicyManager'
 )

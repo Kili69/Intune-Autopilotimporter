@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260912.2
+# Project-Version: 1.1.20260913.16
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -8,10 +8,21 @@ param($Request, $TriggerMetadata, $TagPolicyBlob)
 $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $modulePath -Force
 
+$versionMatch = [regex]::Match(
+    ((Get-Content -LiteralPath $PSCommandPath -TotalCount 2) -join "`n"),
+    '(?m)^# Project-Version:\s*(\S+)\s*$'
+)
+$functionVersion = if ($versionMatch.Success) {
+    $versionMatch.Groups[1].Value
+}
+else {
+    'unknown'
+}
 $correlationId = [guid]::NewGuid().ToString()
 $responseHeaders = @{
-    'Content-Type'     = 'application/json'
-    'X-Correlation-Id' = $correlationId
+    'Content-Type'              = 'application/json'
+    'X-AutopilotImport-Version' = $functionVersion
+    'X-Correlation-Id'          = $correlationId
 }
 
 function Send-JsonResponse {
@@ -28,6 +39,44 @@ function Send-JsonResponse {
         Headers    = $responseHeaders
         Body       = ($Body | ConvertTo-Json -Depth 8 -Compress)
     })
+}
+
+function Get-SubmittedTagPolicyRules {
+    param(
+        [AllowNull()]
+        [object] $Body
+    )
+
+    if ($null -eq $Body) {
+        return
+    }
+    if ($Body -is [Collections.IDictionary]) {
+        if ($Body.Contains('policy')) {
+            return $Body['policy']
+        }
+        if ($Body.Contains('rules')) {
+            return $Body['rules']
+        }
+        return
+    }
+    if ($Body.PSObject.Properties['policy']) {
+        return $Body.policy
+    }
+    if ($Body.PSObject.Properties['rules']) {
+        return $Body.rules
+    }
+}
+
+function ConvertTo-SubmittedTagPolicy {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Rules
+    )
+
+    $policy = ConvertTo-TagAuthorizationPolicy -Rules $Rules
+    foreach ($rule in $policy) {
+        $rule
+    }
 }
 
 $managerPolicyJson = $env:MANAGER_AUTHORIZATION_POLICY
@@ -103,8 +152,9 @@ if ($Request.Method -ieq 'GET') {
         return
     }
     Send-JsonResponse -StatusCode OK -Body @{
-        policy        = $currentPolicy
-        correlationId = $correlationId
+        policy          = $currentPolicy
+        functionVersion = $functionVersion
+        correlationId   = $correlationId
     }
     return
 }
@@ -116,10 +166,8 @@ try {
     else {
         $Request.Body
     }
-    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
-        -Rules @($requestBody.rules) `
-        -RestrictedManagementAdministrativeUnitName `
-            ([string] $requestBody.restrictedManagementAdministrativeUnitName))
+    $submittedRules = @(Get-SubmittedTagPolicyRules -Body $requestBody)
+    $updatedPolicy = @(ConvertTo-SubmittedTagPolicy -Rules $submittedRules)
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
 }
 catch {
@@ -133,6 +181,7 @@ catch {
 
 Push-OutputBinding -Name UpdatedTagPolicyBlob -Value $updatedPolicyJson
 Send-JsonResponse -StatusCode OK -Body @{
-    policy        = $updatedPolicy
-    correlationId = $correlationId
+    policy          = $updatedPolicy
+    functionVersion = $functionVersion
+    correlationId   = $correlationId
 }

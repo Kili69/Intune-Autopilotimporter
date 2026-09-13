@@ -13,7 +13,6 @@ updater.
 ```text
 .
 |-- .azure/                    Azure deployment planning metadata
-|-- .github/                   GitHub Actions workflows
 |-- .vscode/                   Shared VS Code workspace configuration
 |-- InstallationPackage/      Generated local installation ZIP files
 |-- src/                       Application source and development files
@@ -63,7 +62,9 @@ Functions loads them relative to the Function App root.
 
 - PowerShell 7.2 or later (`pwsh`)
 - Pester 5.0 or later
-- Node.js 22 and npm
+- Node.js 22 and npm to rebuild modified frontend sources. Release packages
+  and repository source archives contain a prebuilt frontend, so installation
+  and update do not require Node.js on the target computer.
 - Git, unless `-BranchName` is supplied when building a package
 - Azure Functions Core Tools when running the Function App locally
 - Bicep CLI or the installer-supported standalone Bicep CLI when validating
@@ -89,6 +90,10 @@ Run all commands from the repository root.
 
 ### 1. Build and Test the Frontend
 
+Run this step only when files under `src/Web` change. Documentation,
+PowerShell module, installer, and backend Function changes reuse the committed
+frontend bundle.
+
 ```powershell
 Push-Location .\src\Web
 npm ci
@@ -103,8 +108,9 @@ production build. Vite writes the deployable frontend to:
 src/FunctionApp/WebFrontend/wwwroot
 ```
 
-The package generator requires `index.html`, its referenced assets, and the
-current project version embedded in the JavaScript bundle.
+The package generator requires `index.html` and all assets referenced by it.
+The version shown by the web frontend is updated only when the frontend is
+rebuilt.
 
 ### 2. Run the PowerShell Tests
 
@@ -141,8 +147,8 @@ $package = .\src\Scripts\New-DeploymentPackage.ps1 `
 ```
 
 Characters that are not portable in file names are replaced with hyphens. If
-`-BranchName` is omitted, branch detection uses GitHub Actions variables, Azure
-Pipelines variables, and finally the current local Git branch.
+`-BranchName` is omitted, branch detection uses CI environment variables and
+finally the current local Git branch.
 
 ### 4. Verify the Result
 
@@ -166,7 +172,6 @@ condition is not met:
   `# Project-Version:` marker.
 - The client module manifest version differs from `VERSION`.
 - The compiled frontend or one of its referenced assets is missing.
-- The compiled JavaScript does not contain exactly the current project version.
 - A source entry in the package allowlist is missing.
 
 Update all project version locations with:
@@ -175,8 +180,9 @@ Update all project version locations with:
 .\src\Scripts\Update-ProjectVersion.ps1
 ```
 
-After changing the version, rebuild the frontend before creating the package so
-the embedded frontend version matches `VERSION`.
+Changing only project metadata, documentation, PowerShell modules, installers,
+or backend Function code does not require rebuilding the frontend. Rebuild it
+after changing files under `src/Web`.
 
 ## Repository-to-Package Mapping
 
@@ -209,20 +215,21 @@ Do not copy the complete repository into the package.
 
 ## CI Build Process
 
-The GitHub Actions workflow in `.github/workflows/deployment-package.yml` runs
-on every branch push and can also be started manually. Its Windows x64
-self-hosted runner must provide PowerShell, Node.js, npm, and Git. The workflow:
+Azure Pipelines is the repository's only automated build system. No GitHub
+Actions workflows are defined, so repository activity does not request GitHub
+hosted or self-hosted runners. Before each commit, run
+`src\Scripts\Update-ProjectVersion.ps1` and update `History.md`.
 
-1. Checks out the repository.
-2. Installs Pester when required.
-3. Runs the Pester suite.
-4. Installs frontend dependencies and builds the frontend.
+Azure Pipelines:
+
+1. Checks out the complete Git history.
+2. Verifies that the source commit updates `VERSION` and `History.md`.
+3. Uses Node.js 22 and runs `npm run check` only when `src/Web` changed.
+4. Runs the Pester suite.
 5. Creates the versioned installation ZIP.
-6. Uploads the ZIP as a GitHub Actions artifact for 30 days.
+6. Publishes the ZIP as a pipeline artifact.
 
-Azure Pipelines uses Node.js 22, runs `npm run check`, executes Pester, builds
-the same installation package, and publishes it as a pipeline artifact. The
-deployment stage runs only for `main`.
+The deployment stage runs only for `main`.
 
 ## Common Build Failures
 
@@ -231,11 +238,6 @@ deployment stage runs only for `main`.
 Run `npm ci` and `npm run check` in `src/Web`. Confirm that
 `src/FunctionApp/WebFrontend/wwwroot/index.html` and its referenced assets were
 created.
-
-### The frontend contains another project version
-
-Run the version update first, then rebuild the frontend. Stale hashed assets in
-`wwwroot/assets` must not contain an older project version.
 
 ### A PowerShell version marker is missing or inconsistent
 
