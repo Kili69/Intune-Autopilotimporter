@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.4
+# Project-Version: 1.1.20260913.5
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -707,7 +707,7 @@ function New-AutoPilotImporterClientConfiguration {
     .OUTPUTS
     System.IO.FileInfo. Returns the created client.settings.json file.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [ValidateScript({ [guid]::TryParse($_, [ref] ([guid]::Empty)) })]
@@ -873,7 +873,7 @@ function Import-AutopilotDevice {
     PSCustomObject validation summary when ValidateOnly is set. Otherwise,
     returns one enriched service response per submitted device.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [string] $CsvPath,
@@ -1409,7 +1409,8 @@ function Add-AutopilotTagPolicy {
     Entra group object ID. Group is retained as an alias for compatibility.
 
     .PARAMETER GroupTag
-    One or more allowed Autopilot Group Tags for the group.
+    One or more allowed Autopilot Group Tags for the group. Supply multiple
+    values as an array or as a comma-separated string.
 
     .PARAMETER RestrictedManagementAdministrativeUnitName
     Optional display name of the restricted management administrative unit.
@@ -1439,6 +1440,13 @@ function Add-AutopilotTagPolicy {
     .EXAMPLE
     Add-AutopilotTagPolicy `
         -GroupId '11111111-1111-1111-1111-111111111111' `
+        -GroupTag 'BG-Default, PAW, PAW-CSM'
+
+    Adds three comma-separated Group Tags to the Entra group.
+
+    .EXAMPLE
+    Add-AutopilotTagPolicy `
+        -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared' `
         -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
@@ -1451,7 +1459,7 @@ function Add-AutopilotTagPolicy {
     .OUTPUTS
     AutopilotImport.TagPolicyRule object for the added or updated group rule.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [Alias('Group')]
@@ -1473,18 +1481,16 @@ function Add-AutopilotTagPolicy {
         [string] $ConfigPath
     )
 
-    $tags = @($GroupTag | ForEach-Object { $_.Trim() } | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_)
-    } | Select-Object -Unique)
+    $tags = @($GroupTag | ForEach-Object { $_.Split(',') } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
     if ($tags.Count -eq 0) {
         throw 'Specify at least one Group Tag.'
     }
     foreach ($tag in $tags) {
         if ($tag.Length -gt 128) {
             throw "Group Tag '$tag' must not exceed 128 characters."
-        }
-        if ($tag.Contains(',')) {
-            throw "Group Tag '$tag' must not contain a comma."
         }
     }
 
@@ -1596,7 +1602,8 @@ function Remove-AutopilotTagPolicy {
 
     .PARAMETER GroupTag
     Optional Autopilot Group Tags to remove from the selected group's rule.
-    Omit this parameter to remove the complete rule.
+    Supply multiple values as an array or as a comma-separated string. Omit
+    this parameter to remove the complete rule.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1630,7 +1637,7 @@ function Remove-AutopilotTagPolicy {
     .OUTPUTS
     PSCustomObject returned by the policy management API when the update runs.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -1703,7 +1710,8 @@ function Remove-AutopilotTagPolicy {
     # group rule while still preserving every unrelated rule.
     $removeTags = @()
     if ($PSBoundParameters.ContainsKey('GroupTag')) {
-        $removeTags = @($GroupTag | ForEach-Object { $_.Trim() } |
+        $removeTags = @($GroupTag | ForEach-Object { $_.Split(',') } |
+            ForEach-Object { $_.Trim() } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Select-Object -Unique)
         if ($removeTags.Count -eq 0) {
@@ -1712,9 +1720,6 @@ function Remove-AutopilotTagPolicy {
         foreach ($tag in $removeTags) {
             if ($tag.Length -gt 128) {
                 throw "Group Tag '$tag' must not exceed 128 characters."
-            }
-            if ($tag.Contains(',')) {
-                throw "Group Tag '$tag' must not contain a comma."
             }
         }
 
@@ -1852,7 +1857,7 @@ function Set-AutopilotTagPolicy {
     .OUTPUTS
     PSCustomObject returned by the policy management API when the update runs.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
         [string] $RestrictedManagementAdministrativeUnitName,
@@ -1945,7 +1950,7 @@ function Update-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [guid[]] $AddPrincipalId,
         [guid[]] $RemovePrincipalId,
@@ -2084,7 +2089,7 @@ function Add-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,
@@ -2158,7 +2163,7 @@ function Remove-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,

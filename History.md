@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.5` - 2026-09-13
+
+- Prevented mutating client module commands from prompting automatically,
+  regardless of the caller's confirmation preference, while retaining
+  explicit `Confirm` and `WhatIf` support.
+- Added support for comma-separated Group Tag values when adding or removing
+  tags, in addition to existing PowerShell array input.
+
 ## `1.1.20260913.4` - 2026-09-13
 
 - Clarified that `Get-AutopilotImportHistory` is provided by the installed

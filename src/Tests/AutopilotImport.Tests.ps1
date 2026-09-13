@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.4
+# Project-Version: 1.1.20260913.5
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -780,8 +780,34 @@ Describe 'Adding a Client Group Tag policy rule' {
             $command.Parameters.ContainsKey('WhatIf') |
                 Should -BeTrue -Because "$commandName changes state"
             $binding.ConfirmImpact |
-                Should -Be 'Medium' -Because "$commandName should not prompt by default"
+                Should -Be 'None' -Because "$commandName should not prompt automatically"
         }
+    }
+
+    It 'accepts comma-separated tags as separate values' {
+        Add-AutopilotTagPolicy `
+            '22222222-2222-2222-2222-222222222222' `
+            -Tag 'BG-Default, PAW, PAW-CSM' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $newRule = @(($Body | ConvertFrom-Json).policy |
+                    Where-Object groupId -eq `
+                        '22222222-2222-2222-2222-222222222222')[0]
+                @($newRule.tags).Count -eq 3 -and
+                    'BG-Default' -in $newRule.tags -and
+                    'PAW' -in $newRule.tags -and
+                    'PAW-CSM' -in $newRule.tags
+            } `
+            -Times 1
     }
 
     It 'accepts an object ID, merges tags, and sets the specified MAU' {
@@ -1041,6 +1067,48 @@ Describe 'Removing a Client Group Tag policy rule' {
                 $Body -match '22222222-2222-2222-2222-222222222222' -and
                 $Body -match 'Legacy' -and
                 $Body -match 'Autopilot Devices'
+            } `
+            -Times 1
+    }
+
+    It 'accepts comma-separated tags when removing selected values' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @(
+                        [pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('BG-Default', 'PAW', 'PAW-CSM', 'Shared')
+                        }
+                        [pscustomobject]@{
+                            groupId = '22222222-2222-2222-2222-222222222222'
+                            tags = @('Legacy')
+                        }
+                    )
+                }
+            }
+            return [pscustomobject]@{ updated = $true }
+        }
+
+        Remove-AutopilotTagPolicy `
+            -Group '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'BG-Default, PAW, PAW-CSM' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $updatedRule = @(($Body | ConvertFrom-Json).policy |
+                    Where-Object groupId -eq `
+                        '11111111-1111-1111-1111-111111111111')[0]
+                @($updatedRule.tags).Count -eq 1 -and
+                    $updatedRule.tags[0] -eq 'Shared'
             } `
             -Times 1
     }
