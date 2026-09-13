@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.12` - 2026-09-13
+
+- Added Azure subscription, resource group, and Function App parameters to the
+  URL-based client bootstrap so custom-domain configurations can be used by
+  manager-policy commands.
+- Preserved existing Azure deployment details during configuration refreshes
+  and added actionable diagnostics when manager-policy values are missing.
+
 ## `1.1.20260913.11` - 2026-09-13
 
 - Fixed Function publishing omitting the `GetImportHistory` endpoint, which

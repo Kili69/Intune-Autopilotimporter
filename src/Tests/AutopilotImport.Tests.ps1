@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.11
+# Project-Version: 1.1.20260913.12
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -349,6 +349,64 @@ Describe 'Client configuration display' {
             -Times 1
     }
 
+    It 'persists Azure deployment details for a custom Function domain' {
+        $settingsPath = Join-Path $TestDrive `
+            'custom-domain\client.settings.json'
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://autopilot.example/api/devices/import'
+            }
+        }
+
+        $configuration = Get-AutoPilotImporterClientConfiguration `
+            -FunctionUrl 'https://autopilot.example' `
+            -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+            -ResourceGroupName 'rg-autopilot-import' `
+            -FunctionAppName 'func-autopilot-import' `
+            -ConfigPath $settingsPath
+
+        $configuration.SubscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $configuration.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $configuration.FunctionAppName | Should -Be `
+            'func-autopilot-import'
+    }
+
+    It 'preserves existing Azure deployment details during URL bootstrap' {
+        $settingsPath = Join-Path $TestDrive `
+            'existing-profile\client.settings.json'
+        New-Item -Path (Split-Path $settingsPath -Parent) `
+            -ItemType Directory -Force | Out-Null
+        @{
+            subscriptionId = '11111111-1111-1111-1111-111111111111'
+            resourceGroupName = 'rg-autopilot-import'
+            functionAppName = 'func-autopilot-import'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                clientId = '44444444-4444-4444-4444-444444444444'
+                authority = 'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = 'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://autopilot.example/api/devices/import'
+            }
+        }
+
+        $configuration = Get-AutoPilotImporterClientConfiguration `
+            -FunctionUrl 'https://autopilot.example' `
+            -ConfigPath $settingsPath
+
+        $configuration.SubscriptionId | Should -Be `
+            '11111111-1111-1111-1111-111111111111'
+        $configuration.ResourceGroupName | Should -Be `
+            'rg-autopilot-import'
+        $configuration.FunctionAppName | Should -Be `
+            'func-autopilot-import'
+    }
+
     It 'rejects a runtime import URL from a different origin' {
         Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
             [pscustomobject]@{
@@ -446,6 +504,23 @@ Describe 'Client manager policy App Settings' {
             '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
         $managerFunctionAst.Extent.Text | Should -Not -Match `
             '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
+    }
+
+    It 'explains how to add Azure details missing after URL bootstrap' {
+        $settingsPath = Join-Path $TestDrive 'client.settings.json'
+        @{
+            functionUrl = 'https://autopilot.example/api/devices/import'
+            tenantId = '22222222-2222-2222-2222-222222222222'
+        } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
+        Mock Assert-ClientCommand -ModuleName AutopilotImport.Client
+
+        {
+            Update-AutopilotTagPolicyManager `
+                -AddPrincipalId `
+                    '11111111-1111-1111-1111-111111111111' `
+                -ConfigPath $settingsPath
+        } | Should -Throw `
+            "*missing: SubscriptionId, ResourceGroupName, FunctionAppName*Get-AutoPilotImporterClientConfiguration -FunctionUrl 'https://autopilot.example/api/devices/import'*-SubscriptionId*"
     }
 }
 

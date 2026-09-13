@@ -715,22 +715,27 @@ The configuration remains in
 `$HOME\.autopilotimporter\client.settings.json` across module updates.
 
 Administrators who also need Azure control-plane values for manager-policy
-commands can create a complete deployment configuration with:
+commands can add them to the same persistent profile. `FunctionAppName` is the
+Azure resource name, not a custom DNS name:
 
 ```powershell
-New-AutoPilotImporterClientConfiguration `
+Get-AutoPilotImporterClientConfiguration `
+    -FunctionUrl 'https://autopilot.example.com' `
     -SubscriptionId '<Subscription-ID>' `
     -ResourceGroupName 'rg-autopilot-import' `
-    -TenantId '<Tenant-ID>' `
     -FunctionAppName '<Function-App-Name>'
 ```
 
-By default, this administrative file is created as `client.settings.json` in the current
-directory. Use `-OutputPath 'C:\Configuration'` to select another directory,
-and `-Force` to replace an existing file. The command reads the API Application
-ID URI from the deployed Function App's Easy Auth configuration and prints the
-module directory into which the file must be copied. The final file must be
-named `client.settings.json` next to `AutopilotImport.Client.psm1`, normally at:
+Running the URL bootstrap again preserves existing Azure deployment details
+unless explicit replacement values are supplied. This prevents a refresh from
+breaking `Add-AutopilotTagPolicyManager` and related commands.
+
+To create a separate administrative configuration file instead, use
+`New-AutoPilotImporterClientConfiguration`. By default, it creates
+`client.settings.json` in the current directory. Use
+`-OutputPath 'C:\Configuration'` to select another directory and `-Force` to
+replace an existing file. Supply that file with `-ConfigPath` when running a
+manager-policy command.
 
 ```text
 Documents\PowerShell\Modules\AutopilotImport.Client\<version>\client.settings.json

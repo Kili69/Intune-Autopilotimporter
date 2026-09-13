@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.11
+# Project-Version: 1.1.20260913.12
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -456,6 +456,17 @@ function Get-AutoPilotImporterClientConfiguration {
     HTTPS URL of the Function App. The URL may be the Function origin or any URL
     below that origin. The command retrieves /api/ui/config from the same host.
 
+    .PARAMETER SubscriptionId
+    Optional Azure subscription ID to persist for manager-policy commands.
+
+    .PARAMETER ResourceGroupName
+    Optional Azure resource group containing the Function App. Required by
+    manager-policy commands when it is not already persisted.
+
+    .PARAMETER FunctionAppName
+    Optional Azure Function App resource name. Specify this when FunctionUrl
+    uses a custom domain and manager-policy commands will be used.
+
     .PARAMETER ConfigPath
     Optional path at which the retrieved configuration is stored or from which
     an existing configuration is read. When omitted, the command uses
@@ -467,6 +478,16 @@ function Get-AutoPilotImporterClientConfiguration {
 
     Retrieves the Function runtime configuration, stores it in the user profile,
     and returns the resolved values.
+
+    .EXAMPLE
+    Get-AutoPilotImporterClientConfiguration `
+        -FunctionUrl 'https://autopilot.example.com' `
+        -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+        -ResourceGroupName 'rg-autopilot-import' `
+        -FunctionAppName 'func-autopilot-import'
+
+    Stores both public endpoints and Azure deployment details for manager-policy
+    commands when the service uses a custom domain.
 
     .EXAMPLE
     Get-AutoPilotImporterClientConfiguration | Format-List
@@ -484,10 +505,26 @@ function Get-AutoPilotImporterClientConfiguration {
         [ValidatePattern('^https://')]
         [string] $FunctionUrl,
 
+        [guid] $SubscriptionId,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $ResourceGroupName,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $FunctionAppName,
+
         [string] $ConfigPath
     )
 
     if (-not [string]::IsNullOrWhiteSpace($FunctionUrl)) {
+        $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+            Get-DefaultClientConfigurationPath
+        }
+        else {
+            [IO.Path]::GetFullPath($ConfigPath)
+        }
+        $existingConfiguration = Resolve-ClientConfiguration `
+            -ConfigPath $resolvedConfigPath
         $functionUri = [uri] $FunctionUrl
         if (-not $functionUri.IsAbsoluteUri -or $functionUri.Scheme -ne 'https') {
             throw 'FunctionUrl must be an absolute HTTPS URL.'
@@ -563,11 +600,38 @@ function Get-AutoPilotImporterClientConfiguration {
             throw 'The Function runtime configuration contains an import URL from a different origin.'
         }
 
-        $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-            Get-DefaultClientConfigurationPath
+        $inferredFunctionAppName = if ($functionUri.Host.EndsWith(
+                '.azurewebsites.net',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $functionUri.Host.Split('.')[0]
         }
         else {
-            [IO.Path]::GetFullPath($ConfigPath)
+            $null
+        }
+        $resolvedSubscriptionId = if (
+            $PSBoundParameters.ContainsKey('SubscriptionId')) {
+            $SubscriptionId.ToString()
+        }
+        else {
+            [string] $existingConfiguration['subscriptionId']
+        }
+        $resolvedResourceGroupName = if (
+            $PSBoundParameters.ContainsKey('ResourceGroupName')) {
+            $ResourceGroupName
+        }
+        else {
+            [string] $existingConfiguration['resourceGroupName']
+        }
+        $resolvedFunctionAppName = if (
+            $PSBoundParameters.ContainsKey('FunctionAppName')) {
+            $FunctionAppName
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace(
+                $inferredFunctionAppName)) {
+            $inferredFunctionAppName
+        }
+        else {
+            [string] $existingConfiguration['functionAppName']
         }
         $configurationDirectory = Split-Path `
             -Parent `
@@ -577,20 +641,14 @@ function Get-AutoPilotImporterClientConfiguration {
             -ItemType Directory `
             -Force | Out-Null
 
-        $functionAppName = if ($functionUri.Host.EndsWith(
-                '.azurewebsites.net',
-                [StringComparison]::OrdinalIgnoreCase)) {
-            $functionUri.Host.Split('.')[0]
-        }
-        else {
-            $null
-        }
         $settings = [ordered]@{
             functionUrl         = $importUri.AbsoluteUri
             managementUrl       = "$origin/api/management/tag-policy"
             apiApplicationIdUri = $apiApplicationIdUri
             tenantId            = $parsedTenantId.ToString()
-            functionAppName     = $functionAppName
+            subscriptionId      = $resolvedSubscriptionId
+            resourceGroupName   = $resolvedResourceGroupName
+            functionAppName     = $resolvedFunctionAppName
             webUrl              = "$origin/api/ui/index.html"
             webClientId         = $parsedClientId.ToString()
         }
@@ -611,6 +669,20 @@ function Get-AutoPilotImporterClientConfiguration {
                 -LiteralPath $temporaryPath `
                 -Force `
                 -ErrorAction SilentlyContinue
+        }
+        $missingAzureValues = @(
+            if ([string]::IsNullOrWhiteSpace($resolvedSubscriptionId)) {
+                'SubscriptionId'
+            }
+            if ([string]::IsNullOrWhiteSpace($resolvedResourceGroupName)) {
+                'ResourceGroupName'
+            }
+            if ([string]::IsNullOrWhiteSpace($resolvedFunctionAppName)) {
+                'FunctionAppName'
+            }
+        )
+        if ($missingAzureValues.Count -gt 0) {
+            Write-Warning "The API configuration was saved, but Azure deployment details required by manager-policy commands are missing: $($missingAzureValues -join ', '). Run this command again with -SubscriptionId, -ResourceGroupName, and -FunctionAppName."
         }
     }
 
@@ -2068,6 +2140,25 @@ function Update-AutopilotTagPolicyManager {
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         subscriptionId = $SubscriptionId; tenantId = $TenantId
         resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
+    }
+    $missingDeploymentValues = @(
+        foreach ($entry in @(
+                @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
+                @{ Name = 'ResourceGroupName'; Key = 'resourceGroupName' }
+                @{ Name = 'FunctionAppName'; Key = 'functionAppName' }
+            )) {
+            if ([string]::IsNullOrWhiteSpace(
+                    [string] $configuration[$entry.Key])) {
+                $entry.Name
+            }
+        }
+    )
+    if ($missingDeploymentValues.Count -gt 0) {
+        $configuredFunctionUrl = [string] $configuration['functionUrl']
+        if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
+            $configuredFunctionUrl = '<Function-URL>'
+        }
+        throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Save them by running Get-AutoPilotImporterClientConfiguration -FunctionUrl '$configuredFunctionUrl' -SubscriptionId '<Subscription-ID>' -ResourceGroupName '<Resource-Group>' -FunctionAppName '<Function-App-Name>', or pass the missing values directly to this command."
     }
     $resolvedSubscriptionId = Get-ConfigurationValue $configuration subscriptionId 'SubscriptionId'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'

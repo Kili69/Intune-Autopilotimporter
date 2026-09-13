@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.11
+# Project-Version: 1.1.20260913.12
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
