@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.10
+# Project-Version: 1.1.20260913.11
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1619,6 +1619,7 @@ if (-not $SkipPublish) {
                 (Join-Path $functionAppRoot 'ProcessDeviceAttribute'),
                 (Join-Path $functionAppRoot 'ManageTagPolicy'),
                 (Join-Path $functionAppRoot 'GetAuthorizedTags'),
+                (Join-Path $functionAppRoot 'GetImportHistory'),
                 (Join-Path $functionAppRoot 'WebFrontend'),
                 (Join-Path $functionAppRoot 'src')
             ) `

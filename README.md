@@ -298,8 +298,16 @@ Then retrieve the import history:
 Get-AutopilotImportHistory
 ```
 
+The command displays a compact table with serial number, Group Tag, status,
+and Intune error name. Every row remains a PowerShell object that can be
+filtered, exported, or inspected with all available properties:
+
+```powershell
+Get-AutopilotImportHistory | Format-List *
+```
+
 The command returns up to 100 operations by default. Request up to 1000 and
-filter the pipeline, for example to inspect failed imports:
+filter the objects in the pipeline, for example to inspect failed imports:
 
 ```powershell
 Get-AutopilotImportHistory -Top 1000 |
@@ -312,6 +320,11 @@ returned. The data comes from imported Windows Autopilot device identities
 currently retained by Microsoft Intune. It is operational history, not a
 permanent audit archive; use an external store when long-term retention is
 required.
+
+If the command reports that the history endpoint was not found, update the
+Function App with `Update-AutopilotImport.ps1` without `-SkipPublish`. A 404
+response means the deployed Function package does not contain the
+`GetImportHistory` endpoint; it does not mean that the history is empty.
 
 ### Change Group-to-Tag Assignments
 

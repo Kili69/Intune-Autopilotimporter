@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.10
+# Project-Version: 1.1.20260913.11
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#

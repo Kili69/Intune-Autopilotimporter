@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.10
+# Project-Version: 1.1.20260913.11
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -548,6 +548,15 @@ Describe 'Client import history' {
         $result.Count | Should -Be 2
         $result[0].serialNumber | Should -Be 'SERIAL-001'
         $result[1].status | Should -Be 'error'
+        $result[0].PSTypeNames | Should -Contain `
+            'AutopilotImport.ImportHistoryRecord'
+        $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
+            Should -Be @(
+                'SerialNumber'
+                'GroupTag'
+                'Status'
+                'DeviceErrorName'
+            )
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -Times 1 `
@@ -590,6 +599,25 @@ Describe 'Client import history' {
         $result.correlationId | Should -Be `
             '33333333-3333-3333-3333-333333333333'
     }
+
+    It 'explains that a missing history endpoint requires a Function update' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            $exception = [InvalidOperationException]::new(
+                'Response status code does not indicate success: 404 (Not Found).')
+            $exception.Data['StatusCode'] = 404
+            throw $exception
+        }
+
+        {
+            Get-AutopilotImportHistory `
+                -ImportHistoryUrl `
+                    'https://func.example/api/management/imports' `
+                -ApiApplicationIdUri `
+                    'api://44444444-4444-4444-4444-444444444444' `
+                -TenantId '55555555-5555-5555-5555-555555555555'
+        } | Should -Throw `
+            "*endpoint was not found at 'https://func.example/api/management/imports?top=100'*Run Update-AutopilotImport.ps1 without -SkipPublish*"
+    }
 }
 
 Describe 'Manager import history endpoint' {
@@ -600,6 +628,17 @@ Describe 'Manager import history endpoint' {
                 $projectRoot `
                 'src\FunctionApp\GetImportHistory\run.ps1') `
             -Raw
+        $installer = Get-Content `
+            -LiteralPath (Join-Path `
+                $projectRoot `
+                'src\Installer\Install-AutopilotImport.ps1') `
+            -Raw
+    }
+
+    It 'includes the import history Function in the Azure publish archive' {
+        $installer.Contains(
+            "Join-Path `$functionAppRoot 'GetImportHistory'") |
+            Should -BeTrue
     }
 
     It 'uses the same explicit and Intune manager authorization as tag policy management' {

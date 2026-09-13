@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.10
+# Project-Version: 1.1.20260913.11
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1204,11 +1204,12 @@ function Get-AutopilotImportHistory {
         tenantId `
         'TenantId'
     $token = Get-ClientAccessToken $resolvedTenantId $audience
+    $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
 
     try {
         $response = Invoke-RestMethod `
             -Method Get `
-            -Uri "$($url.TrimEnd('/'))?top=$Top" `
+            -Uri $requestUrl `
             -Authentication Bearer `
             -Token $token `
             -ErrorAction Stop
@@ -1223,13 +1224,47 @@ function Get-AutopilotImportHistory {
                 $serviceResponse = $null
             }
         }
-        $message = 'Could not retrieve the Autopilot import history.'
-        if ($serviceResponse -and
+        $statusCode = $null
+        if ($_.Exception.PSObject.Properties['Response'] -and
+            $_.Exception.Response -and
+            $_.Exception.Response.PSObject.Properties['StatusCode']) {
+            $statusCode = [int] $_.Exception.Response.StatusCode
+        }
+        elseif ($_.Exception.Data.Contains('StatusCode')) {
+            $statusCode = [int] $_.Exception.Data['StatusCode']
+        }
+
+        $serviceError = if ($serviceResponse -and
             $serviceResponse.PSObject.Properties['error']) {
-            $message += " Service error: $($serviceResponse.error)."
+            [string] $serviceResponse.error
         }
         else {
-            $message += " $($_.Exception.Message)"
+            ''
+        }
+        $message = switch ($statusCode) {
+            401 {
+                'Authentication for the Autopilot import history failed. Sign in again and retry.'
+            }
+            403 {
+                'The signed-in user is not authorized to read the Autopilot import history. Ask an administrator to add the user to the manager policy or assign the Intune Role Administrator role.'
+            }
+            404 {
+                "The Autopilot import history endpoint was not found at '$requestUrl'. The deployed Function App is probably older than the installed client module or was published without GetImportHistory. Run Update-AutopilotImport.ps1 without -SkipPublish, then retry. If -ImportHistoryUrl was supplied, verify that it ends with '/api/management/imports'."
+            }
+            502 {
+                'The Autopilot import service could not retrieve the history from Microsoft Graph. Retry later or ask an administrator to inspect the Function logs.'
+            }
+            default {
+                if ($serviceError -eq 'serviceNotConfigured') {
+                    'The Autopilot import history service is not configured correctly. Ask an administrator to verify the Function App settings.'
+                }
+                elseif ($serviceError -eq 'authorizationServiceUnavailable') {
+                    'The authorization service is temporarily unavailable. Retry later.'
+                }
+                else {
+                    "Could not retrieve the Autopilot import history. $($_.Exception.Message)"
+                }
+            }
         }
         if ($serviceResponse -and
             $serviceResponse.PSObject.Properties['correlationId']) {
@@ -1241,7 +1276,37 @@ function Get-AutopilotImportHistory {
     if ($Raw) {
         return $response
     }
-    return @($response.imports)
+    return @($response.imports | ForEach-Object {
+        $importProperties = @{}
+        foreach ($property in $_.PSObject.Properties) {
+            $importProperties[$property.Name] = $property.Value
+        }
+        $result = [pscustomobject][ordered]@{
+            PSTypeName      = 'AutopilotImport.ImportHistoryRecord'
+            ImportId        = [string] $importProperties['importId']
+            BatchImportId   = [string] $importProperties['batchImportId']
+            SerialNumber    = [string] $importProperties['serialNumber']
+            GroupTag        = [string] $importProperties['groupTag']
+            Status          = [string] $importProperties['status']
+            DeviceErrorCode = $importProperties['deviceErrorCode']
+            DeviceErrorName = [string] $importProperties['deviceErrorName']
+        }
+        $displayPropertySet = [Management.Automation.PSPropertySet]::new(
+            'DefaultDisplayPropertySet',
+            [string[]] @(
+                'SerialNumber'
+                'GroupTag'
+                'Status'
+                'DeviceErrorName'
+            )
+        )
+        $result | Add-Member `
+            -MemberType MemberSet `
+            -Name PSStandardMembers `
+            -Value ([Management.Automation.PSMemberInfo[]] @(
+                $displayPropertySet))
+        $result
+    })
 }
 
 function ConvertTo-ClientTagPolicyResult {

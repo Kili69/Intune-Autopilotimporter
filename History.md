@@ -4,6 +4,13 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.11` - 2026-09-13
+
+- Fixed Function publishing omitting the `GetImportHistory` endpoint, which
+  caused `Get-AutopilotImportHistory` to receive HTTP 404 after an update.
+- Added actionable import-history API errors and a concise default table view
+  while continuing to return complete PowerShell objects for automation.
+
 ## `1.1.20260913.10` - 2026-09-13
 
 - Fixed updates failing after installation when nested installer commands add
