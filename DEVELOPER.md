@@ -63,7 +63,9 @@ Functions loads them relative to the Function App root.
 
 - PowerShell 7.2 or later (`pwsh`)
 - Pester 5.0 or later
-- Node.js 22 and npm
+- Node.js 22 and npm to rebuild modified frontend sources. Release packages
+  and repository source archives contain a prebuilt frontend, so installation
+  and update do not require Node.js on the target computer.
 - Git, unless `-BranchName` is supplied when building a package
 - Azure Functions Core Tools when running the Function App locally
 - Bicep CLI or the installer-supported standalone Bicep CLI when validating

@@ -408,12 +408,11 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 ### Prerequisites
 
 - An Azure subscription and an active Intune tenant
+- For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
-- Node.js 22 and npm are required only to rebuild modified frontend sources. Release packages and repository source archives contain a prebuilt frontend, so installation and update do not require Node.js on the target computer.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
-- The appropriate Entra ID licensing for dynamic device groups
 
 ### Quick Installation Guide
 
@@ -440,6 +439,8 @@ Expand-Archive `
 ```
 
 The archive already contains the required versioned module layout and the generated `client.settings.json`.
+
+## Advanced Setup
 
 ### Required Roles and Permissions
 
@@ -478,7 +479,44 @@ identity holds the Intune-related Graph permissions independently of the user.
 Do not grant other principals Azure roles that can modify the Function App's application settings or deployed code. Such permissions can change the manager policy outside the provided script and therefore bypass its strict
 `Owner`/`Contributor` check.
 
-### 1. Entra Application for the Function API
+### Installation with `Install-AutopilotImport.ps1`
+
+`Install-AutopilotImport.ps1` supports both an interactive installation and a
+parameterized deployment. Run it from the root of the extracted installation
+package in PowerShell 7.2 or later. Values that are not supplied as parameters
+are requested interactively. The installer configures the Entra applications,
+deploys the Azure resources, grants the managed identity its Microsoft Graph
+permissions, publishes the Function code, verifies authentication, and creates
+the client tools package.
+
+For an interactive installation, including installation of missing local
+prerequisites, run:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
+```
+
+For a repeatable parameterized deployment, supply the deployment values
+directly:
+
+```powershell
+pwsh .\Install-AutopilotImport.ps1 `
+    -SubscriptionId '00000000-0000-0000-0000-000000000000' `
+    -TenantId '11111111-1111-1111-1111-111111111111' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -Location 'westus2' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -TagAuthorizationRule `
+        '22222222-2222-2222-2222-222222222222=Standard,Kiosk' `
+    -InstallMissingModules `
+    -Confirm:$false
+```
+
+Use `Get-Help .\Install-AutopilotImport.ps1 -Full` for all parameters and
+examples. The following sections describe each installation stage and its
+manual or separated-administration alternatives.
+
+#### 1. Entra Application for the Function API
 
 By default, the installer searches the selected tenant for an app registration named `Autopilot Import API`. If it does not exist, the installer creates and configures it automatically. During application setup, Microsoft Graph requests `Application.ReadWrite.All` and `User.Read`. The separate managed-identity permission step requests `Application.Read.All` and `AppRoleAssignment.ReadWrite.All`.
 
@@ -501,7 +539,7 @@ The installer configures:
 
 Use `-EntraClientId '<Client-ID>'` to select a specific existing application. Without this parameter, the installer searches by `-EntraApplicationName`, which defaults to `Autopilot Import API`.
 
-#### Manual Alternative
+##### Manual Alternative
 
 Create a single-tenant app registration in the Entra admin center, for example `Autopilot Import API`.
 
@@ -520,7 +558,7 @@ Then configure the enterprise application:
 
 The delegated scope allows Azure PowerShell to request a token for the API. It does not grant the user Microsoft Graph or Intune permissions.
 
-### 2. Deploy Azure Resources
+#### 2. Deploy Azure Resources
 
 The installer prompts for all values that were not supplied as parameters, validates the Bicep template, deploys the resources, assigns the Graph permission, publishes the Function code, and verifies that Easy Auth rejects anonymous requests with HTTP 401:
 
@@ -686,7 +724,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -WhatIf
 ```
 
-#### Azure DevOps Pipeline
+##### Azure DevOps Pipeline
 
 The repository contains `azure-pipelines.yml`. Pull requests run the Pester tests. A successful run on `main` additionally deploys the Bicep template and Function ZIP through an Azure Resource Manager service connection. The generated `client.settings.json` is published as the pipeline artifact `autopilot-import-client-settings`.
 
@@ -744,7 +782,7 @@ $function = Get-AzWebApp `
 
 Subsequent pipeline deployments update infrastructure, policies, and Function code without repeating either privileged Entra operation. Configure approvals and checks on the Azure DevOps environment `autopilot-import` when production deployments require manual authorization.
 
-#### Update an Existing Deployment
+##### Update an Existing Deployment
 
 Download or clone the desired release, then run the update script from its project directory. Preview the resolved deployment and planned installer action first:
 
@@ -813,7 +851,7 @@ The updating administrator needs the same Azure and Entra permissions as an inst
 
 Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
-#### Deployment Package
+##### Deployment Package
 
 GitHub Actions and Azure Pipelines build a deployment package for every commit pushed to any branch. Both CI workflows run the test suite first and then publish `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub Actions retains its artifact for 30 days. The downloaded artifact contains the ZIP file of the same name. Branch characters that are not portable in file names, such as `/`, are replaced with `-`. The Azure deployment stage remains restricted to `main`.
 
@@ -834,7 +872,7 @@ The workflow can also be started manually with the GitHub Actions `workflow_disp
 
 The local package is written to `InstallationPackage\Intune-autopilotImporter-<branch><version>.zip` by default. Use `-BranchName <branch>` to override local branch detection.
 
-#### Manual Bicep Deployment
+##### Manual Bicep Deployment
 
 The individual commands remain available for troubleshooting or manual installation:
 
@@ -887,7 +925,7 @@ redirect to the frontend, while the static sign-in page and its public runtime
 configuration can load without authentication. No import or policy data is
 exposed through these paths.
 
-### 3. Assign the Graph Permission
+#### 3. Assign the Graph Permission
 
 This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
@@ -898,7 +936,7 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
     -ManagedIdentityObjectId $deployment.Outputs.managedIdentityObjectId.Value
 ```
 
-### 4. Publish the Function Code
+#### 4. Publish the Function Code
 
 The ZIP archive must contain `host.json` at its root:
 
@@ -925,7 +963,7 @@ Publish-AzWebApp `
 
 Managed Dependencies can take several minutes to make `Az.Accounts` available after the first start.
 
-### 5. Distribute the Import Client to Additional PCs
+#### 5. Distribute the Import Client to Additional PCs
 
 The Azure Function itself remains in Azure. An importing PC needs only:
 
