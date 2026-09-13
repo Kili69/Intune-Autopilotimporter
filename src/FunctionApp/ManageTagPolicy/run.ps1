@@ -30,6 +30,32 @@ function Send-JsonResponse {
     })
 }
 
+function Get-SubmittedTagPolicyRules {
+    param(
+        [AllowNull()]
+        [object] $Body
+    )
+
+    if ($null -eq $Body) {
+        return
+    }
+    if ($Body -is [Collections.IDictionary]) {
+        if ($Body.Contains('policy')) {
+            return $Body['policy']
+        }
+        if ($Body.Contains('rules')) {
+            return $Body['rules']
+        }
+        return
+    }
+    if ($Body.PSObject.Properties['policy']) {
+        return $Body.policy
+    }
+    if ($Body.PSObject.Properties['rules']) {
+        return $Body.rules
+    }
+}
+
 $managerPolicyJson = $env:MANAGER_AUTHORIZATION_POLICY
 if ([string]::IsNullOrWhiteSpace($managerPolicyJson)) {
     Send-JsonResponse -StatusCode InternalServerError -Body @{
@@ -116,12 +142,7 @@ try {
     else {
         $Request.Body
     }
-    $submittedRules = if ($requestBody.PSObject.Properties['policy']) {
-        @($requestBody.policy)
-    }
-    else {
-        @($requestBody.rules)
-    }
+    $submittedRules = @(Get-SubmittedTagPolicyRules -Body $requestBody)
     $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
         -Rules $submittedRules `
         -RestrictedManagementAdministrativeUnitName `

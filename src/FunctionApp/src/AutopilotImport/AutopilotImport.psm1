@@ -133,6 +133,21 @@ function ConvertTo-TagAuthorizationPolicy {
             $tags = @($rule.Substring($separatorIndex + 1).Split(','))
             $ruleMauName = $RestrictedManagementAdministrativeUnitName
         }
+        elseif ($rule -is [Collections.IDictionary]) {
+            if (-not $rule.Contains('groupId') -or
+                -not $rule.Contains('tags')) {
+                throw 'Policy rule objects must contain groupId and tags properties.'
+            }
+            $groupId = [string] $rule['groupId']
+            $tags = @($rule['tags'])
+            $ruleMauName = if ($rule.Contains(
+                    'restrictedManagementAdministrativeUnitName')) {
+                [string] $rule['restrictedManagementAdministrativeUnitName']
+            }
+            else {
+                $RestrictedManagementAdministrativeUnitName
+            }
+        }
         else {
             if (-not $rule.PSObject.Properties['groupId'] -or
                 -not $rule.PSObject.Properties['tags']) {

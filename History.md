@@ -6,6 +6,13 @@ are consolidated into a single section.
 
 ## `1.1.20260912.2` - 2026-09-12
 
+- Simplified the installation prerequisites and moved frontend build
+  requirements to the developer guide.
+- Added an Advanced Setup section with least-privilege role guidance and
+  interactive and parameterized installer examples.
+- Added a CI policy that requires every pushed commit to update `History.md`.
+- Fixed creation of the first Group Tag policy when Azure Functions supplies
+  the JSON request body as a dictionary.
 - Changed the GitHub package workflow so every successful push still publishes
   a workflow artifact and successful `main` pushes additionally commit the
   current ZIP under `InstallationPackage`.

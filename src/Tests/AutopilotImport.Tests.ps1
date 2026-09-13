@@ -3031,6 +3031,28 @@ Describe 'Setup activity logging' {
 }
 
 Describe 'Web frontend response types' {
+    BeforeAll {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $managementFunctionPath = Join-Path $projectRoot `
+            'src\FunctionApp\ManageTagPolicy\run.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $managementFunctionAst = `
+            [Management.Automation.Language.Parser]::ParseFile(
+                $managementFunctionPath,
+                [ref] $tokens,
+                [ref] $parseErrors
+            )
+        $parseErrors.Count | Should -Be 0
+        $rulesFunctionAst = $managementFunctionAst.FindAll({
+            param($node)
+            $node -is `
+                [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Get-SubmittedTagPolicyRules'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $rulesFunctionAst.Extent.Text
+    }
+
     It 'keeps the device hash card level at every viewport width' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $style = Get-Content `
@@ -3124,18 +3146,37 @@ Describe 'Web frontend response types' {
             Should -Be '/api/ui/index.html'
     }
 
-    It 'accepts per-rule policy objects with a legacy rules fallback' {
-        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-        $managementFunction = Get-Content `
-            -LiteralPath (Join-Path $projectRoot `
-                'src\FunctionApp\ManageTagPolicy\run.ps1') `
-            -Raw
+    It 'extracts policy rules from Functions dictionary request bodies' {
+        $groupId = '11111111-1111-1111-1111-111111111111'
+        $requestBody = [ordered]@{
+            policy = @([ordered]@{
+                groupId = $groupId
+                tags = @('BG-Default')
+            })
+        }
+        $submittedRules = @(
+            Get-SubmittedTagPolicyRules -Body $requestBody
+        )
 
-        $managementFunction | Should -Match `
-            "PSObject\.Properties\['policy'\]"
-        $managementFunction | Should -Match '@\(\$requestBody\.policy\)'
-        $managementFunction | Should -Match '@\(\$requestBody\.rules\)'
-        $managementFunction | Should -Match '-Rules\s+\$submittedRules'
+        $submittedRules.Count | Should -Be 1
+        $submittedRules[0].groupId | Should -Be $groupId
+        $submittedRules[0].tags | Should -Be 'BG-Default'
+        {
+            ConvertTo-TagAuthorizationPolicy -Rules $submittedRules
+        } | Should -Not -Throw
+    }
+
+    It 'retains the legacy rules property for object request bodies' {
+        $requestBody = [pscustomobject]@{
+            rules = @('11111111-1111-1111-1111-111111111111=Standard')
+        }
+
+        $submittedRules = @(
+            Get-SubmittedTagPolicyRules -Body $requestBody
+        )
+
+        $submittedRules | Should -Be `
+            '11111111-1111-1111-1111-111111111111=Standard'
     }
 }
 
@@ -3379,6 +3420,15 @@ Describe 'Deployment package' {
         $workflow | Should -Match '(?m)^  workflow_dispatch:\s*$'
         $workflow | Should -Match `
             '(?m)^    runs-on: windows-latest\s*$'
+        $workflow | Should -Match '(?m)^          fetch-depth: 0\s*$'
+        $workflow | Should -Match `
+            '(?m)^      - name: Require change history update\s*$'
+        $workflow | Should -Match `
+            '(?m)^          BASE_COMMIT: \$\{\{ github\.event\.before \}\}\s*$'
+        $workflow | Should -Match `
+            '(?m)^          HEAD_COMMIT: \$\{\{ github\.sha \}\}\s*$'
+        $workflow | Should -Match `
+            '(?m)^          \./src/Scripts/Test-ChangeHistory\.ps1 `\s*$'
         $workflow | Should -Match `
             'PACKAGE_BRANCH: \$\{\{ github\.ref_name \}\}'
         $workflow | Should -Match `
@@ -3397,6 +3447,22 @@ Describe 'Deployment package' {
             'git commit -m "build: publish \$env:PACKAGE_NAME \[skip ci\]"'
         $workflow | Should -Match `
             '(?m)^            git push origin HEAD:main\s*$'
+    }
+
+    It 'requires History.md in every pushed first-parent commit' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $historyCheck = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\Scripts\Test-ChangeHistory.ps1') `
+            -Raw
+
+        $historyCheck | Should -Match `
+            "'rev-list', '--reverse', '--first-parent'"
+        $historyCheck | Should -Match `
+            "'diff-tree', '--root', '--no-commit-id', '--name-only'"
+        $historyCheck | Should -Match `
+            "\$changedPaths -notcontains 'History.md'"
+        $historyCheck | Should -Match '\\\[skip ci\\\]'
     }
 
     It 'publishes a package for every branch in Azure Pipelines' {

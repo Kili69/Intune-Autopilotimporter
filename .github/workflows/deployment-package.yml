@@ -16,6 +16,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require change history update
+        shell: pwsh
+        env:
+          BASE_COMMIT: ${{ github.event.before }}
+          HEAD_COMMIT: ${{ github.sha }}
+        run: |
+          $baseCommit = $env:BASE_COMMIT
+          if ([string]::IsNullOrWhiteSpace($baseCommit)) {
+            $baseCommit = "$env:HEAD_COMMIT^"
+          }
+          ./src/Scripts/Test-ChangeHistory.ps1 `
+            -BaseCommit $baseCommit `
+            -HeadCommit $env:HEAD_COMMIT
 
       - name: Install Pester
         shell: pwsh
