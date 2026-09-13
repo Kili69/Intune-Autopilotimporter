@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.2
+# Project-Version: 1.1.20260913.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -802,6 +802,54 @@ Describe 'Adding a Client Group Tag policy rule' {
                 $Body -match 'Standard' -and
                 $Body -match 'Shared' -and
                 $Body -match 'Privileged Autopilot Devices'
+            } `
+            -Times 1
+    }
+
+    It 'assigns an RMAU only to the selected rule' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @(
+                        [pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('BG-Default', 'PAW')
+                        }
+                        [pscustomobject]@{
+                            groupId = '22222222-2222-2222-2222-222222222222'
+                            tags = @('BG-Default')
+                        }
+                    )
+                }
+            }
+            return [pscustomobject]@{ correlationId = 'correlation-id' }
+        }
+
+        Add-AutopilotTagPolicy `
+            '33333333-3333-3333-3333-333333333333' `
+            'BG-Default' `
+            'BG-Devices' `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                if ($Method -ne 'Put') {
+                    return $false
+                }
+                $submittedPolicy = @(($Body | ConvertFrom-Json).policy)
+                $rulesWithMau = @($submittedPolicy | Where-Object {
+                    $_.PSObject.Properties[
+                        'restrictedManagementAdministrativeUnitName']
+                })
+                $rulesWithMau.Count -eq 1 -and
+                    $rulesWithMau[0].groupId -eq `
+                        '33333333-3333-3333-3333-333333333333' -and
+                    $rulesWithMau[0].restrictedManagementAdministrativeUnitName -eq `
+                        'BG-Devices'
             } `
             -Times 1
     }
@@ -3113,13 +3161,18 @@ Describe 'Web frontend response types' {
                 [ref] $parseErrors
             )
         $parseErrors.Count | Should -Be 0
-        $rulesFunctionAst = $managementFunctionAst.FindAll({
-            param($node)
-            $node -is `
-                [Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Get-SubmittedTagPolicyRules'
-        }, $true) | Select-Object -First 1
-        Invoke-Expression $rulesFunctionAst.Extent.Text
+        foreach ($functionName in @(
+                'Get-SubmittedTagPolicyRules'
+                'ConvertTo-SubmittedTagPolicy'
+            )) {
+            $functionAst = $managementFunctionAst.FindAll({
+                param($node)
+                $node -is `
+                    [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+        }
     }
 
     It 'keeps the device hash card level at every viewport width' {
@@ -3233,6 +3286,32 @@ Describe 'Web frontend response types' {
         {
             ConvertTo-TagAuthorizationPolicy -Rules $submittedRules
         } | Should -Not -Throw
+    }
+
+    It 'applies an RMAU only to the rule that declares it' {
+        $policy = @(ConvertTo-SubmittedTagPolicy -Rules @(
+            [ordered]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('BG-Default', 'PAW')
+            }
+            [ordered]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('BG-Default')
+            }
+            [ordered]@{
+                groupId = '33333333-3333-3333-3333-333333333333'
+                tags = @('BG-Default')
+                restrictedManagementAdministrativeUnitName = 'BG-Devices'
+            }
+        ))
+
+        $policy.Count | Should -Be 3
+        @($policy | Where-Object {
+            $_.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']
+        }).Count | Should -Be 1
+        $policy[2].restrictedManagementAdministrativeUnitName |
+            Should -Be 'BG-Devices'
     }
 
     It 'retains the legacy rules property for object request bodies' {

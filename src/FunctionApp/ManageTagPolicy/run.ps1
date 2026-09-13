@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.2
+# Project-Version: 1.1.20260913.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -53,6 +53,18 @@ function Get-SubmittedTagPolicyRules {
     }
     if ($Body.PSObject.Properties['rules']) {
         return $Body.rules
+    }
+}
+
+function ConvertTo-SubmittedTagPolicy {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Rules
+    )
+
+    $policy = ConvertTo-TagAuthorizationPolicy -Rules $Rules
+    foreach ($rule in $policy) {
+        $rule
     }
 }
 
@@ -143,10 +155,7 @@ try {
         $Request.Body
     }
     $submittedRules = @(Get-SubmittedTagPolicyRules -Body $requestBody)
-    $updatedPolicy = @(ConvertTo-TagAuthorizationPolicy `
-        -Rules $submittedRules `
-        -RestrictedManagementAdministrativeUnitName `
-            ([string] $requestBody.restrictedManagementAdministrativeUnitName))
+    $updatedPolicy = @(ConvertTo-SubmittedTagPolicy -Rules $submittedRules)
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
 }
 catch {

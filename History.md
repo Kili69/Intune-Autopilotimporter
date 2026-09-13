@@ -4,6 +4,12 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.3` - 2026-09-13
+
+- Fixed Group Tag policy updates so a restricted management administrative
+  unit applies only to the rule that explicitly declares it, rather than being
+  used as a global fallback for other rules.
+
 ## `1.1.20260913.2` - 2026-09-13
 
 - Added `WhatIf` support to device imports and retained it for all mutating
