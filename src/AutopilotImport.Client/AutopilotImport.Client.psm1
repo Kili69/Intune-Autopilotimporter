@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.1
+# Project-Version: 1.1.20260913.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -857,6 +857,15 @@ function Import-AutopilotDevice {
 
     Validates the CSV and returns a summary without authenticating or importing.
 
+    .EXAMPLE
+    Import-AutopilotDevice `
+        -CsvPath '.\AutopilotHWID.csv' `
+        -GroupTag 'Shared' `
+        -WhatIf
+
+    Validates the CSV and previews the import without authenticating or
+    submitting devices.
+
     .INPUTS
     None. This command does not accept pipeline input.
 
@@ -864,7 +873,7 @@ function Import-AutopilotDevice {
     PSCustomObject validation summary when ValidateOnly is set. Otherwise,
     returns one enriched service response per submitted device.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [string] $CsvPath,
@@ -939,6 +948,12 @@ function Import-AutopilotDevice {
             } else { $null }
             IsValid = $true
         }
+    }
+
+    if (-not $PSCmdlet.ShouldProcess(
+            "$($devices.Count) device(s) from '$($csvFile.FullName)'",
+            "Import with Group Tag '$GroupTag'")) {
+        return
     }
 
     $resolvedFunctionUrl = Get-ConfigurationValue $configuration functionUrl 'FunctionUrl'
@@ -1229,6 +1244,49 @@ function Get-AutopilotImportHistory {
     return @($response.imports)
 }
 
+function ConvertTo-ClientTagPolicyResult {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Rule,
+
+        [AllowNull()]
+        [string] $GroupName,
+
+        [AllowNull()]
+        [string] $CorrelationId
+    )
+
+    $result = [pscustomobject][ordered]@{
+        PSTypeName = 'AutopilotImport.TagPolicyRule'
+        GroupId = [string] $Rule.groupId
+        GroupName = $GroupName
+        Tags = @($Rule.tags)
+        RestrictedManagementAdministrativeUnitName = if (
+            $Rule.PSObject.Properties[
+                'restrictedManagementAdministrativeUnitName']) {
+            [string] $Rule.restrictedManagementAdministrativeUnitName
+        }
+        else {
+            $null
+        }
+        CorrelationId = $CorrelationId
+    }
+    $displayPropertySet = [Management.Automation.PSPropertySet]::new(
+        'DefaultDisplayPropertySet',
+        [string[]] @(
+            'GroupId'
+            'GroupName'
+            'Tags'
+            'RestrictedManagementAdministrativeUnitName'
+        )
+    )
+    $result | Add-Member `
+        -MemberType MemberSet `
+        -Name PSStandardMembers `
+        -Value ([Management.Automation.PSMemberInfo[]] @($displayPropertySet))
+    return $result
+}
+
 function Get-AutopilotTagPolicy {
     <#
     .SYNOPSIS
@@ -1236,8 +1294,9 @@ function Get-AutopilotTagPolicy {
 
     .DESCRIPTION
     Retrieves the current policy and resolves each group object ID through
-    Microsoft Graph. The default console view shows GroupName and Tags while
-    GroupId remains available as an object property for pipeline use.
+    Microsoft Graph. Each rule is returned as a PowerShell object with stable
+    GroupId, GroupName, Tags, RestrictedManagementAdministrativeUnitName, and
+    CorrelationId properties.
 
     .PARAMETER Raw
     Returns the unchanged response from the management API without resolving
@@ -1272,9 +1331,8 @@ function Get-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject policy rows with GroupName, Tags, GroupId, and optional
-    restricted management administrative unit and correlation ID. With Raw,
-    returns the unchanged management API response.
+    AutopilotImport.TagPolicyRule objects. With Raw, returns the unchanged
+    management API response.
     #>
     [CmdletBinding()]
     param(
@@ -1328,39 +1386,12 @@ function Get-AutopilotTagPolicy {
             $groupName = '[Unresolved group]'
         }
 
-        $result = [pscustomobject][ordered]@{
-            GroupName = $groupName
-            Tags      = @($rule.tags)
-            GroupId   = $groupId
-        }
-        if ($rule.PSObject.Properties['restrictedManagementAdministrativeUnitName']) {
-            $result | Add-Member `
-                -NotePropertyName RestrictedManagementAdministrativeUnitName `
-                -NotePropertyValue ([string] $rule.restrictedManagementAdministrativeUnitName)
-        }
-        if ($response.PSObject.Properties['correlationId']) {
-            $result | Add-Member `
-                -NotePropertyName CorrelationId `
-                -NotePropertyValue ([string] $response.correlationId)
-        }
-
-        # Keep GroupId available to pipelines while presenting the more useful
-        # name and tags in PowerShell's default table view.
-        $defaultProperties = [Collections.Generic.List[string]]::new()
-        $defaultProperties.Add('GroupName')
-        $defaultProperties.Add('Tags')
-        if ($result.PSObject.Properties['RestrictedManagementAdministrativeUnitName']) {
-            $defaultProperties.Add('RestrictedManagementAdministrativeUnitName')
-        }
-        $displayPropertySet = [Management.Automation.PSPropertySet]::new(
-            'DefaultDisplayPropertySet',
-            [string[]] $defaultProperties
-        )
-        $result | Add-Member `
-            -MemberType MemberSet `
-            -Name PSStandardMembers `
-            -Value ([Management.Automation.PSMemberInfo[]] @($displayPropertySet))
-        $result
+        ConvertTo-ClientTagPolicyResult `
+            -Rule $rule `
+            -GroupName $groupName `
+            -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
+                [string] $response.correlationId
+            })
     }
 }
 
@@ -1418,9 +1449,9 @@ function Add-AutopilotTagPolicy {
     None. This command does not accept pipeline input.
 
     .OUTPUTS
-    PSCustomObject returned by the policy management API when the update runs.
+    AutopilotImport.TagPolicyRule object for the added or updated group rule.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [Alias('Group')]
@@ -1523,7 +1554,7 @@ function Add-AutopilotTagPolicy {
         return
     }
 
-    Invoke-RestMethod `
+    $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
         -Authentication Bearer `
@@ -1531,6 +1562,20 @@ function Add-AutopilotTagPolicy {
         -ContentType 'application/json' `
         -Body $body `
         -ErrorAction Stop
+    $responsePolicy = if ($response.PSObject.Properties['policy']) {
+        @($response.policy)
+    }
+    else {
+        $updatedPolicy
+    }
+    $updatedRule = @($responsePolicy | Where-Object {
+        ([guid] $_.groupId).ToString() -eq $resolvedGroupId
+    }) | Select-Object -First 1
+    ConvertTo-ClientTagPolicyResult `
+        -Rule $updatedRule `
+        -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
+            [string] $response.correlationId
+        })
 }
 
 function Remove-AutopilotTagPolicy {
@@ -1585,7 +1630,7 @@ function Remove-AutopilotTagPolicy {
     .OUTPUTS
     PSCustomObject returned by the policy management API when the update runs.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -1807,7 +1852,7 @@ function Set-AutopilotTagPolicy {
     .OUTPUTS
     PSCustomObject returned by the policy management API when the update runs.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
         [string] $RestrictedManagementAdministrativeUnitName,
@@ -1900,7 +1945,7 @@ function Update-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [guid[]] $AddPrincipalId,
         [guid[]] $RemovePrincipalId,
@@ -2039,7 +2084,7 @@ function Add-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,
@@ -2113,7 +2158,7 @@ function Remove-AutopilotTagPolicyManager {
     .OUTPUTS
     PSCustomObject containing FunctionAppName and the resulting ManagerPolicy.
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][guid[]] $PrincipalId,
         [guid] $SubscriptionId, [guid] $TenantId,

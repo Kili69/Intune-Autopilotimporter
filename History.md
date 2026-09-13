@@ -4,6 +4,14 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260913.2` - 2026-09-13
+
+- Added `WhatIf` support to device imports and retained it for all mutating
+  client module commands while removing confirmation prompts from normal use.
+- Changed `Get-AutopilotTagPolicy` and `Add-AutopilotTagPolicy` to return
+  reusable policy-rule objects with group IDs, names, tags, restricted
+  management administrative units, and correlation IDs.
+
 ## `1.1.20260913.1` - 2026-09-13
 
 - Fixed creation of the first Group Tag policy when Azure Functions supplies

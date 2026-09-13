@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.1
+# Project-Version: 1.1.20260913.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -140,6 +140,31 @@ Describe 'Client CSV input validation' {
                 -ValidateOnly
         } | Should -Throw `
             "The Autopilot CSV file '$emptyPath' is empty. Export the device data again and try again."
+    }
+
+    It 'validates but does not authenticate or submit devices with WhatIf' {
+        $csvPath = Join-Path $TestDrive 'devices.csv'
+        @'
+"Device Serial Number","Hardware Hash"
+"SERIAL-001","AQ=="
+'@ | Set-Content -LiteralPath $csvPath
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client
+
+        Import-AutopilotDevice `
+            -CsvPath $csvPath `
+            -GroupTag 'EUD' `
+            -FunctionUrl 'https://func.example/api/devices/import' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Get-ClientAccessToken `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
     }
 }
 
@@ -641,8 +666,19 @@ Describe 'Client Group Tag policy display' {
         $result[0].GroupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $result[0].Tags | Should -Be @('Standard', 'Kiosk')
+        $result[0].RestrictedManagementAdministrativeUnitName |
+            Should -BeNullOrEmpty
+        $result[0].CorrelationId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result[0].PSObject.TypeNames[0] | Should -Be `
+            'AutopilotImport.TagPolicyRule'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
-            Should -Be @('GroupName', 'Tags')
+            Should -Be @(
+                'GroupId'
+                'GroupName'
+                'Tags'
+                'RestrictedManagementAdministrativeUnitName'
+            )
     }
 
     It 'returns the unchanged API response when Raw is specified' {
@@ -683,21 +719,31 @@ Describe 'Adding a Client Group Tag policy rule' {
                     })
                 }
             }
-            return [pscustomobject]@{ updated = $true }
+            return [pscustomobject]@{
+                correlationId = '55555555-5555-5555-5555-555555555555'
+            }
         }
     }
 
-    It 'assigns the new rule its own RMAU and preserves the existing rule RMAU' {
+    It 'returns the added rule without requiring confirmation' {
         $result = Add-AutopilotTagPolicy `
             -GroupId '22222222-2222-2222-2222-222222222222' `
             -GroupTag 'Kiosk' `
             -Mau 'Kiosk Devices' `
             -ManagementUrl 'https://func.example/api/management/tag-policy' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
-            -TenantId '44444444-4444-4444-4444-444444444444' `
-            -Confirm:$false
+            -TenantId '44444444-4444-4444-4444-444444444444'
 
-        $result.updated | Should -BeTrue
+        $result.GroupId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.GroupName | Should -BeNullOrEmpty
+        $result.Tags | Should -Be @('Kiosk')
+        $result.RestrictedManagementAdministrativeUnitName |
+            Should -Be 'Kiosk Devices'
+        $result.CorrelationId | Should -Be `
+            '55555555-5555-5555-5555-555555555555'
+        $result.PSObject.TypeNames[0] | Should -Be `
+            'AutopilotImport.TagPolicyRule'
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
@@ -713,6 +759,29 @@ Describe 'Adding a Client Group Tag policy rule' {
             Should -Invoke Get-ClientAccessToken `
                 -ModuleName AutopilotImport.Client `
                 -Times 1
+    }
+
+    It 'supports WhatIf without requesting confirmation by default' {
+        foreach ($commandName in @(
+                'New-AutoPilotImporterClientConfiguration'
+                'Import-AutopilotDevice'
+                'Add-AutopilotTagPolicy'
+                'Remove-AutopilotTagPolicy'
+                'Set-AutopilotTagPolicy'
+                'Update-AutopilotTagPolicyManager'
+                'Add-AutopilotTagPolicyManager'
+                'Remove-AutopilotTagPolicyManager'
+            )) {
+            $command = Get-Command $commandName
+            $binding = @($command.ScriptBlock.Attributes | Where-Object {
+                $_ -is [Management.Automation.CmdletBindingAttribute]
+            })[0]
+
+            $command.Parameters.ContainsKey('WhatIf') |
+                Should -BeTrue -Because "$commandName changes state"
+            $binding.ConfirmImpact |
+                Should -Be 'Medium' -Because "$commandName should not prompt by default"
+        }
     }
 
     It 'accepts an object ID, merges tags, and sets the specified MAU' {
