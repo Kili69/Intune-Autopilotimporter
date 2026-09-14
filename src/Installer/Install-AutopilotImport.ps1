@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.16
+# Project-Version: 1.1.20260914.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1294,9 +1294,12 @@ if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)
 #region Azure context and confirmation
 
 $npmCommand = $null
+$builtWebFrontendAvailable = $false
 if (-not $SkipPublish) {
+    $builtWebFrontendAvailable = Test-BuiltWebFrontend `
+        -ProjectRoot $projectRoot
     $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
-    if (-not $npmCommand -and -not (Test-BuiltWebFrontend -ProjectRoot $projectRoot)) {
+    if (-not $npmCommand -and -not $builtWebFrontendAvailable) {
         throw 'Publishing requires Node.js and npm, or a deployment package containing a complete prebuilt WebFrontend\wwwroot bundle. Install Node.js 22 or download the release deployment package.'
     }
 }
@@ -1586,7 +1589,7 @@ if (-not $SkipGraphPermission) {
 }
 
 if (-not $SkipPublish) {
-    if ($npmCommand) {
+    if (-not $builtWebFrontendAvailable) {
         Write-Host 'Building web frontend...'
         Push-Location $webProjectRoot
         try {
@@ -1604,7 +1607,7 @@ if (-not $SkipPublish) {
         }
     }
     else {
-        Write-Warning 'Node.js and npm are unavailable. Publishing the complete prebuilt web frontend included in this deployment package.'
+        Write-Host 'Publishing the complete prebuilt web frontend included in this deployment package.'
     }
 
     $packagePath = Join-Path ([IO.Path]::GetTempPath()) "autopilot-import-$([guid]::NewGuid()).zip"

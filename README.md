@@ -979,6 +979,11 @@ start GitHub-hosted or self-hosted workers.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
+The installer and updater publish the complete prebuilt web frontend included
+in a deployment package without running `npm ci`. Node.js and npm are required
+only when publishing from a source tree whose prebuilt frontend bundle is
+missing or incomplete.
+
 To build the package locally using the current Git branch, run:
 
 ```powershell

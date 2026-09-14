@@ -4,6 +4,11 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260914.1` - 2026-09-14
+
+- Prevented installation and update failures caused by running `npm ci` when a
+  complete prebuilt web frontend is already included in the deployment package.
+
 ## `1.1.20260913.16` - 2026-09-13
 
 - Added the import GUID (`ImportId`) to the default table output of

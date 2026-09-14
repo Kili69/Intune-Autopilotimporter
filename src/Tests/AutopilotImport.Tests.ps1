@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.16
+# Project-Version: 1.1.20260914.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2854,6 +2854,15 @@ Describe 'Installer packaged web frontend fallback' {
             -Value '<script src="/api/ui/assets/missing.js"></script>'
 
         Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
+    }
+
+    It 'prefers a complete prebuilt bundle even when npm is installed' {
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'if \(-not \$builtWebFrontendAvailable\) \{\s+Write-Host ''Building web frontend\.\.\.'''
+        $installer | Should -Not -Match `
+            'if \(\$npmCommand\) \{\s+Write-Host ''Building web frontend\.\.\.'''
     }
 
     It 'rebuilds the frontend in Azure CI only when its source changes' {
