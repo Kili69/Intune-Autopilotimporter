@@ -938,8 +938,11 @@ By default, the script selects the newest installed `client.settings.json` from 
 After a successful update, the script also installs the current module and
 configuration under
 `C:\Program Files\WindowsPowerShell\Modules\AutopilotImport.Client\<version>`
-and removes older versions when they are not in use. Run the update from an
-elevated PowerShell 7 session so this system-wide location can be changed.
+and removes older versions when they are not in use. When the update is not
+running with local administrator rights, it installs the current module in the
+current user's PowerShell 7 and Windows PowerShell module directories instead.
+The update continues and warns that the system-wide module remains unchanged
+and must be updated later from an elevated PowerShell 7 session.
 
 When the client module and configuration are not installed on the update computer, the script prompts for the subscription ID, tenant ID, resource group, Function App name, and client tools destination. The current Az context and standard deployment names are offered as defaults. These values can also be supplied for an unattended discovery phase:
 

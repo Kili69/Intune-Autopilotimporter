@@ -4,6 +4,13 @@ This file describes the development of the project by released or recorded
 project version. Changes made by multiple commits with the same project version
 are consolidated into a single section.
 
+## `1.1.20260914.2` - 2026-09-14
+
+- Allowed updates without local administrator rights by installing the current
+  client module in the current user's PowerShell module paths when the
+  system-wide module cannot be updated, with a warning to update the
+  system-wide installation later from an elevated session.
+
 ## `1.1.20260914.1` - 2026-09-14
 
 - Prevented installation and update failures caused by running `npm ci` when a

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.1
+# Project-Version: 1.1.20260914.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -497,17 +497,27 @@ function Get-AutoPilotClientToolsPath {
     return Split-Path $modulesDirectory -Parent
 }
 
-function Assert-SystemWideClientModuleAccess {
+function Test-SystemWideClientModuleAccess {
     if (-not $IsWindows) {
-        throw 'Updating the system-wide client module requires Windows.'
+        return $false
     }
-
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    if (-not $principal.IsInRole(
-            [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Run Update-AutopilotImport.ps1 from an elevated PowerShell 7 session so the system-wide client module can be updated.'
+    return $principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-UserAutoPilotClientModuleRoots {
+    $documentsPath = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($documentsPath)) {
+        $documentsPath = $HOME
     }
+
+    return @(
+        Join-Path $documentsPath 'PowerShell\Modules\AutopilotImport.Client'
+        Join-Path $documentsPath `
+            'WindowsPowerShell\Modules\AutopilotImport.Client'
+    ) | Select-Object -Unique
 }
 
 function Resolve-AutoPilotDeploymentResult {
@@ -597,8 +607,8 @@ function Install-SystemWideAutopilotClientModule {
             }
         }
     }
-    catch [UnauthorizedAccessException] {
-        throw "The system-wide client module could not be updated in '$destinationModuleRoot'. Run the update from an elevated PowerShell session."
+    catch {
+        throw "The client module could not be updated in '$destinationModuleRoot'. $($_.Exception.Message)"
     }
 
     Get-ChildItem -LiteralPath $destinationModuleRoot -Directory |
@@ -1211,13 +1221,34 @@ if (-not $Force -and
     return
 }
 
-Assert-SystemWideClientModuleAccess
 $installerOutput = @(& $installerPath @installerParameters -Confirm:$false)
 $deploymentResult = Resolve-AutoPilotDeploymentResult `
     -InstallerOutput $installerOutput
-$systemWideClientSettingsPath = Install-SystemWideAutopilotClientModule `
-    -SourceSettingsPath ([string] $deploymentResult.InstalledClientSettingsPath)
-Write-Host "  System module : $systemWideClientSettingsPath"
+$sourceSettingsPath = [string] $deploymentResult.InstalledClientSettingsPath
+$systemWideClientSettingsPath = $null
+if (Test-SystemWideClientModuleAccess) {
+    try {
+        $systemWideClientSettingsPath = `
+            Install-SystemWideAutopilotClientModule `
+                -SourceSettingsPath $sourceSettingsPath
+        Write-Host "  System module : $systemWideClientSettingsPath"
+    }
+    catch {
+        Write-Warning "The system-wide PowerShell module could not be updated: $($_.Exception.Message)"
+    }
+}
+
+if (-not $systemWideClientSettingsPath) {
+    $userClientSettingsPaths = @(
+        Get-UserAutoPilotClientModuleRoots | ForEach-Object {
+            Install-SystemWideAutopilotClientModule `
+                -SourceSettingsPath $sourceSettingsPath `
+                -DestinationRoot $_
+        }
+    )
+    Write-Host "  User modules  : $($userClientSettingsPaths -join ', ')"
+    Write-Warning 'The updated PowerShell modules were installed for the current user. The system-wide modules under Program Files were not updated. Run Update-AutopilotImport.ps1 later from an elevated PowerShell 7 session to update them.'
+}
 Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
     -PreviousWorkspaceResourceId `
         $previousApplicationInsightsWorkspaceResourceId `

@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.1
+# Project-Version: 1.1.20260914.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2207,7 +2207,8 @@ Describe 'Update script deployment discovery' {
             'Read-AutoPilotUpdateValue',
             'Get-AutoPilotUpdateConfigurationValue',
                 'Get-AutoPilotClientToolsPath',
-                'Assert-SystemWideClientModuleAccess',
+                'Test-SystemWideClientModuleAccess',
+                'Get-UserAutoPilotClientModuleRoots',
                 'Resolve-AutoPilotDeploymentResult',
                 'Install-SystemWideAutopilotClientModule',
                 'ConvertTo-UpdateTagAuthorizationRules',
@@ -2252,8 +2253,8 @@ Describe 'Update script deployment discovery' {
             '(?s)Resolve-AutoPilotUpdateConfigPath\s+.*?-AllowMissing'
     }
 
-    It 'requires elevation immediately before deployment changes are made' {
-        $updateAst.Extent.Text | Should -Match `
+    It 'does not require elevation before deployment changes are made' {
+        $updateAst.Extent.Text | Should -Not -Match `
             '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$installerOutput\s*='
     }
 
@@ -2480,9 +2481,28 @@ Describe 'Update script deployment discovery' {
         $oldVersionDirectory | Should -Not -Exist
     }
 
+    It 'defines PowerShell 7 and Windows PowerShell per-user module roots' {
+        $roots = @(Get-UserAutoPilotClientModuleRoots)
+
+        $roots.Count | Should -Be 2
+        $roots[0] | Should -BeLike `
+            '*\PowerShell\Modules\AutopilotImport.Client'
+        $roots[1] | Should -BeLike `
+            '*\WindowsPowerShell\Modules\AutopilotImport.Client'
+    }
+
+    It 'falls back to user modules and warns when system-wide access is unavailable' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)if \(Test-SystemWideClientModuleAccess\).*?if \(-not \$systemWideClientSettingsPath\).*?Get-UserAutoPilotClientModuleRoots'
+        $updateAst.Extent.Text | Should -Match `
+            'The system-wide modules under Program Files were not updated\.'
+        $updateAst.Extent.Text | Should -Match `
+            'Run Update-AutopilotImport\.ps1 later from an elevated PowerShell 7 session'
+    }
+
     It 'synchronizes the system-wide module after the installer succeeds' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?\$sourceSettingsPath\s*=.*?InstalledClientSettingsPath.*?if \(Test-SystemWideClientModuleAccess\).*?Install-SystemWideAutopilotClientModule'
     }
 
     It 'converts the current policy into installer rules with individual RMAUs' {
