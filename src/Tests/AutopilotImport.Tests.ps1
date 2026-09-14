@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.2
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2214,6 +2214,7 @@ Describe 'Update script deployment discovery' {
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Assert-AutoPilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
+                'Get-UpdateWebRedirectUri',
                 'Get-UpdateApplicationInsightsWorkspaceResourceId',
                 'Write-UpdateLogAnalyticsWorkspaceMigrationNotice',
                 'Test-AzurePermissionPattern',
@@ -2632,6 +2633,27 @@ Describe 'Update script deployment discovery' {
             Should -Be $expected
     }
 
+    It 'builds redirect URIs only for custom Function App domains' {
+        $redirectUris = @(Get-UpdateWebRedirectUri -HostName @(
+            'func-example.azurewebsites.net'
+            'func-example.scm.azurewebsites.net'
+            'autopilot.example.com'
+            'autopilot.example.com'
+            ' imports.example.org '
+            $null
+        ))
+
+        $redirectUris | Should -Be @(
+            'https://autopilot.example.com/api/ui/index.html'
+            'https://imports.example.org/api/ui/index.html'
+        )
+    }
+
+    It 'passes discovered custom web redirects to the installer' {
+        $updateAst.Extent.Text | Should -Match `
+            'AdditionalWebRedirectUri\s*=\s*\$additionalWebRedirectUris'
+    }
+
     It 'reads the workspace currently linked to Application Insights' {
         $expectedWorkspaceId = `
             '/subscriptions/sub-old/resourceGroups/ai-managed/providers/Microsoft.OperationalInsights/workspaces/managed-insights-ws'
@@ -2825,6 +2847,13 @@ Describe 'Entra web application Graph responses' {
         $scriptText | Should -Not -Match `
             '\$existingDelegatedPermissionIds\s*\+\s*\$apiScopeIdString'
     }
+
+    It 'adds custom-domain redirects without replacing existing SPA redirects' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should -Match `
+            '\$existingRedirectUris\s*\+\s*\$RedirectUri\s*\+\s*\$AdditionalRedirectUri'
+    }
 }
 
 Describe 'Installer optional web client application' {
@@ -2838,6 +2867,14 @@ Describe 'Installer optional web client application' {
             '\$webApplicationParameters\.ClientId = \$WebClientId'
         $installer | Should -Not -Match `
             '(?m)^\s*-ClientId \$WebClientId `\s*$'
+    }
+
+    It 'passes additional custom-domain redirect URIs to the web application script' {
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'AdditionalRedirectUri\s*=\s*@\(\$AdditionalWebRedirectUri\)'
     }
 }
 

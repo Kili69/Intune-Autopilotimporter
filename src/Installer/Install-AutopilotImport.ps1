@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.2
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -70,6 +70,10 @@ frontend. When omitted, the installer finds or creates it by display name.
 .PARAMETER EntraWebApplicationName
 Display name used to find or create the SPA registration. The default is
 Autopilot Import Web.
+
+.PARAMETER AdditionalWebRedirectUri
+Optional HTTPS redirect URIs for custom Function App domains. Existing SPA
+redirect URIs are preserved.
 
 .PARAMETER InstallerPrincipalId
 Entra object ID of the user or group that remains a permanent Group Tag
@@ -194,6 +198,9 @@ param(
     [guid] $WebClientId,
 
     [string] $EntraWebApplicationName = 'Autopilot Import Web',
+
+    [ValidatePattern('^https://')]
+    [string[]] $AdditionalWebRedirectUri,
 
     [guid] $InstallerPrincipalId,
 
@@ -1402,6 +1409,7 @@ if (-not $SkipEntraAppConfiguration) {
         ApiClientId            = $entraApplication.ClientId
         ApiScopeId             = $entraApplication.ScopeId
         RedirectUri            = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
+        AdditionalRedirectUri  = @($AdditionalWebRedirectUri)
         DisplayName            = $EntraWebApplicationName
         Confirm                = $false
     }

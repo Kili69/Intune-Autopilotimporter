@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.1.20260914.2
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -27,6 +27,9 @@ Object ID of the DeviceHash.Import delegated permission scope.
 .PARAMETER RedirectUri
 HTTPS URL of the deployed web frontend.
 
+.PARAMETER AdditionalRedirectUri
+Optional additional HTTPS URLs for custom Function App domains.
+
 .PARAMETER ClientId
 Optional Client ID of an existing SPA registration.
 
@@ -51,6 +54,9 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^https://')]
     [string] $RedirectUri,
+
+    [ValidatePattern('^https://')]
+    [string[]] $AdditionalRedirectUri,
 
     [guid] $ClientId = [guid]::Empty,
 
@@ -154,7 +160,11 @@ $existingRedirectUris = if ($application.PSObject.Properties['spa'] -and
 else {
     @()
 }
-$redirectUris = @($existingRedirectUris + $RedirectUri | Select-Object -Unique)
+$redirectUris = @(
+    $existingRedirectUris + $RedirectUri + $AdditionalRedirectUri |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+        Select-Object -Unique
+)
 $requiredResourceAccess = if ($application.PSObject.Properties['requiredResourceAccess']) {
     @($application.requiredResourceAccess)
 }
@@ -275,5 +285,6 @@ if ($PSCmdlet.ShouldProcess($apiApplication.id, 'Preauthorize web application fo
     ApplicationObjectId      = [string] $application.id
     ServicePrincipalObjectId = if ($servicePrincipal) { [string] $servicePrincipal.id } else { $null }
     RedirectUri              = $RedirectUri
+    RedirectUris             = $redirectUris
     ApiScopeId               = $ApiScopeId.ToString()
 }

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.2
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -719,6 +719,24 @@ function Get-UpdateWebClientId {
     return $webClientId
 }
 
+function Get-UpdateWebRedirectUri {
+    param(
+        [AllowNull()]
+        [object[]] $HostName
+    )
+
+    return @(
+        @($HostName) |
+            ForEach-Object { ([string] $_).Trim() } |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                $_ -notlike '*.azurewebsites.net'
+            } |
+            ForEach-Object { "https://$_/api/ui/index.html" } |
+            Select-Object -Unique
+    )
+}
+
 function Get-UpdateApplicationInsightsWorkspaceResourceId {
     <#
     .SYNOPSIS
@@ -1115,6 +1133,9 @@ $defaultHostName = [string] $site.properties.defaultHostName
 if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
     $defaultHostName = "$FunctionAppName.azurewebsites.net"
 }
+$additionalWebRedirectUris = @(
+    Get-UpdateWebRedirectUri -HostName @($site.properties.hostNames)
+)
 $resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
     $ManagementUrl
 }
@@ -1186,6 +1207,7 @@ Write-Host "  Device Tag attribute: $extensionAttribute"
 Write-Host '  Restricted management AU: preserved per policy rule'
 Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
+Write-Host "  Custom web redirects: $($additionalWebRedirectUris.Count)"
 
 $installerParameters = @{
     SubscriptionId              = $SubscriptionId
@@ -1195,6 +1217,7 @@ $installerParameters = @{
     FunctionAppName             = $FunctionAppName
     EntraClientId               = $entraClientId.ToString()
     WebClientId                 = $webClientId
+    AdditionalWebRedirectUri    = $additionalWebRedirectUris
     InstallerPrincipalId        = $installerPrincipalId
     ApiAudience                 = $resolvedApiAudience
     TagAuthorizationRule        = $tagAuthorizationRules

@@ -1613,6 +1613,10 @@ until the company hostname has been tested and all bookmarks have been
 migrated. The API Application ID URI and audience, such as
 `api://<application-client-id>`, do not change.
 
+After the custom domain is assigned to the Function App, subsequent runs of
+`Update-AutopilotImport.ps1` discover it and ensure that its frontend redirect
+URI remains registered in the Entra SPA application.
+
 ### 4. Validate the Company URL
 
 Test the configuration in this order:
