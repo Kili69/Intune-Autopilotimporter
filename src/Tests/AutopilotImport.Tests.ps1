@@ -168,6 +168,239 @@ Describe 'Client CSV input validation' {
     }
 }
 
+Describe 'Standalone REST import script' {
+    BeforeAll {
+        $standaloneRepositoryRoot = Split-Path `
+            (Split-Path $PSScriptRoot -Parent) -Parent
+        $importScriptPath = Join-Path $standaloneRepositoryRoot `
+            'src\Scripts\Import-AutopilotDevice.ps1'
+        $importScriptContent = Get-Content $importScriptPath -Raw
+    }
+
+    BeforeEach {
+        $csvPath = Join-Path $TestDrive 'standalone-devices.csv'
+        @'
+"Device Serial Number","Hardware Hash"
+"SERIAL-REST-001","AQ=="
+'@ | Set-Content -LiteralPath $csvPath
+
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                authority = `
+                    'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = `
+                    'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://import.example/api/devices/import'
+            }
+        }
+    }
+
+    It 'uses REST directly, imports without a default confirmation, and retains WhatIf support' {
+        $importScriptContent | Should -Match `
+            '(?m)^#Requires -Version 5\.1\r?$'
+        $importScriptContent | Should -Not -Match `
+            'Import-Module\s+.*AutopilotImport\.Client'
+        $importScriptContent | Should -Match `
+            'Install-Module\s+`\s*-Name Az\.Accounts'
+        $importScriptContent | Should -Not -Match `
+            '(?m)^\s*-(Authentication|Token)\s'
+        $importScriptContent | Should -Not -Match `
+            'ConvertFrom-SecureString.*-AsPlainText'
+        $importScriptContent | Should -Match `
+            "CmdletBinding\(SupportsShouldProcess, ConfirmImpact = 'Low'\)"
+        $importScriptContent | Should -Not -Match `
+            '(?s)\[Parameter\(Mandatory\)\]\s*\[ValidateScript.*?\[string\] \$CsvPath'
+        $importScriptContent | Should -Match `
+            "else \{\s*Get-LocalAutoPilotDevice\s*\}"
+        $importScriptContent | Should -Match '\$pollIntervalSeconds = 10'
+        $importScriptContent | Should -Match 'Invoke-RestMethod'
+    }
+
+    It 'normalizes the application root and validates a CSV without authentication' {
+        $result = & $importScriptPath `
+            -ApplicationUrl 'https://import.example' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -ValidateOnly
+
+        $result.ApplicationUrl | Should -Be `
+            'https://import.example/api/ui/index.html'
+        $result.ImportUrl | Should -Be `
+            'https://import.example/api/devices/import'
+        $result.DeviceCount | Should -Be 1
+        $result.SerialNumbers | Should -Be 'SERIAL-REST-001'
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'Get' -and
+            [string] $Uri -eq 'https://import.example/api/ui/config'
+        }
+    }
+
+    It 'stops before authentication and import when WhatIf is used' {
+        & $importScriptPath `
+            -ApplicationUrl 'https://import.example/api/ui' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -WhatIf
+
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'Get'
+        }
+    }
+
+    It 'writes non-sensitive execution details with Verbose' {
+        $verboseOutput = & $importScriptPath `
+            -ApplicationUrl 'https://import.example' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -ValidateOnly `
+            -Verbose 4>&1
+        $verboseText = $verboseOutput | Out-String
+
+        $verboseText | Should -Match 'Reading runtime configuration'
+        $verboseText | Should -Match 'Validated 1 device record'
+        $verboseText | Should -Match 'authentication and import were skipped'
+        $verboseText | Should -Not -Match 'AQ=='
+    }
+
+    It 'explains a forbidden Group Tag and shows its correlation ID only with Verbose' {
+        function global:Get-AzContext {
+            [pscustomobject]@{
+                Tenant = [pscustomobject]@{
+                    Id = '22222222-2222-2222-2222-222222222222'
+                }
+            }
+        }
+        function global:Connect-AzAccount {}
+        function global:Get-AzAccessToken {
+            [pscustomobject]@{ Token = 'test-token' }
+        }
+        try {
+            Mock Invoke-RestMethod {
+                if ($Method -eq 'Post') {
+                    $exception = [InvalidOperationException]::new(
+                        'The remote server returned an error: (403) Forbidden.')
+                    $apiError = [Management.Automation.ErrorRecord]::new(
+                        $exception,
+                        'HttpResponseException',
+                        [Management.Automation.ErrorCategory]::PermissionDenied,
+                        $null)
+                    $apiError.ErrorDetails = `
+                        [Management.Automation.ErrorDetails]::new(
+                            '{"error":"groupTagNotAllowed","correlationId":"109ff31c-4392-415a-b39f-56d3d7776110"}')
+                    throw $apiError
+                }
+                [pscustomobject]@{
+                    authority = `
+                        'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                    scope = `
+                        'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                    importUrl = 'https://import.example/api/devices/import'
+                }
+            }
+
+            $global:LASTEXITCODE = 0
+            $standardOutput = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'paw/csm' 6>&1
+            $standardText = $standardOutput | Out-String
+
+            $standardText | Should -Match `
+                "Group Tag 'paw/csm' is not allowed for the signed-in user"
+            $standardText | Should -Not -Match 'Correlation ID'
+            $standardText | Should -Not -Match `
+                'CategoryInfo|FullyQualifiedErrorId|At .*Import-AutopilotDevice'
+            $global:LASTEXITCODE | Should -Be 1
+
+            $global:LASTEXITCODE = 0
+            $verboseOutput = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'paw/csm' `
+                -Verbose 4>&1 6>&1
+            $verboseText = $verboseOutput | Out-String
+
+            $verboseText | Should -Match `
+                'Correlation ID: 109ff31c-4392-415a-b39f-56d3d7776110'
+            $verboseText | Should -Not -Match `
+                'CategoryInfo|FullyQualifiedErrorId|At .*Import-AutopilotDevice'
+            $global:LASTEXITCODE | Should -Be 1
+        }
+        finally {
+            Remove-Item Function:\Get-AzContext -ErrorAction SilentlyContinue
+            Remove-Item Function:\Connect-AzAccount -ErrorAction SilentlyContinue
+            Remove-Item Function:\Get-AzAccessToken -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'posts the hash and polls every ten seconds until the workflow completes' {
+        function global:Get-AzContext {
+            [pscustomobject]@{
+                Tenant = [pscustomobject]@{
+                    Id = '22222222-2222-2222-2222-222222222222'
+                }
+            }
+        }
+        function global:Connect-AzAccount {}
+        function global:Get-AzAccessToken {
+            [pscustomobject]@{
+                Token = ConvertTo-SecureString `
+                    'test-token' `
+                    -AsPlainText `
+                    -Force
+            }
+        }
+        try {
+            Mock Start-Sleep
+            Mock Invoke-RestMethod {
+                if ($Method -eq 'Post') {
+                    return [pscustomobject]@{
+                        importId = '44444444-4444-4444-4444-444444444444'
+                        serialNumber = 'SERIAL-REST-001'
+                        status = 'pending'
+                    }
+                }
+                if ([string] $Uri -match '\?importId=') {
+                    return [pscustomobject]@{
+                        importId = '44444444-4444-4444-4444-444444444444'
+                        serialNumber = 'SERIAL-REST-001'
+                        status = 'complete'
+                        workflowStatus = 'complete'
+                        extensionAttributeStatus = 'complete'
+                    }
+                }
+                return [pscustomobject]@{
+                    authority = `
+                        'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                    scope = `
+                        'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                    importUrl = 'https://import.example/api/devices/import'
+                }
+            }
+
+            $result = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'PAW'
+
+            $result.workflowStatus | Should -Be 'complete'
+            Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+                $Method -eq 'Post' -and
+                [string] $Uri -eq 'https://import.example/api/devices/import' -and
+                $Headers.Authorization -eq 'Bearer test-token'
+            }
+            Should -Invoke Start-Sleep -Times 1 -ParameterFilter {
+                $Seconds -eq 10
+            }
+        }
+        finally {
+            Remove-Item Function:\Get-AzContext -ErrorAction SilentlyContinue
+            Remove-Item Function:\Connect-AzAccount -ErrorAction SilentlyContinue
+            Remove-Item Function:\Get-AzAccessToken -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'Client configuration creation' {
     BeforeAll {
         $clientModulePath = Join-Path $PSScriptRoot `
