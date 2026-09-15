@@ -68,63 +68,56 @@ The hardware hashes are not stored by the frontend. They remain in browser
 memory and are sent only to the secured Function API after validation and user
 confirmation.
 
-#### Open the Frontend During Windows OOBE
+#### Import a Device During Windows OOBE
 
 During Windows Out-of-Box Experience, press **Shift + F10** to open Command
-Prompt. If PowerShell was started for collecting the hardware hash and the
-prompt begins with `PS`, open the page with:
+Prompt, then start Windows PowerShell:
 
-```powershell
-Start-Process `
-        -FilePath "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe" `
-        -ArgumentList '--inprivate', '<webUrl>'
+```cmd
+powershell.exe
 ```
 
-If Edge is installed in the 64-bit Program Files directory instead, use:
+Install the standalone importer from PowerShell Gallery:
 
 ```powershell
-Start-Process `
-        -FilePath "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" `
-        -ArgumentList '--inprivate', '<webUrl>'
+Install-Script -Name Import-AutopilotDevice
 ```
 
-Replace `<webUrl>` with the URL reported by the installer, for example
-`https://<function-app-name>.azurewebsites.net/api/ui/index.html`.
+On a computer where no script installation directory has been configured yet,
+PowerShellGet may ask to add its Scripts directory to `PATH`. Confirm the prompt
+to run the installed script by name. PowerShellGet may also ask whether the
+PSGallery repository should be used; confirm only after verifying that the
+repository name is `PSGallery`.
 
-In PowerShell, do not use the CMD command `start "" ...`: `start` is an alias
-for `Start-Process` there and interprets the arguments differently.
-
-The included `Start-IntuneAutopilotImporter.ps1` script automates this process.
-It reads the serial number and hardware hash directly from Windows, creates
-`AutopilotHWID.csv` in the current user's temporary directory, validates the
-public runtime configuration of the supplied frontend URL, copies the CSV path
-to the clipboard when possible, and opens Microsoft Edge in InPrivate mode:
+Run the importer with the complete HTTPS application URL and an authorized
+Group Tag:
 
 ```powershell
-.\scripts\Start-IntuneAutopilotImporter.ps1 `
-    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://<function-app-name>.azurewebsites.net' `
+    -GroupTag 'Autopilot-Standard'
 ```
 
-Omit `-WebUrl` to enter the URL interactively. The script accepts the Function
-App root URL, `/api/ui`, or the complete `/api/ui/index.html` URL. It does not
-upload the hardware hash automatically; paste the copied CSV path into the
-frontend's file picker, sign in, review the device, and start the import.
-
-After the script has been published to PowerShell Gallery, it can be installed
-and started during OOBE with:
+For a deployment with a custom domain, use that HTTPS origin instead:
 
 ```powershell
-Install-Script `
-    -Name Start-IntuneAutopilotImporter `
-    -Scope CurrentUser `
-    -Force
-
-Start-IntuneAutopilotImporter.ps1 `
-    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://autopilot.contoso.com' `
+    -GroupTag 'Autopilot-Standard'
 ```
+
+`ApplicationUrl` must be an absolute URL including `https://`. The Function App
+root, `/api/ui`, and the complete `/api/ui/index.html` URL are accepted. When
+`-CsvPath` is omitted, the script reads the local BIOS serial number and
+Autopilot hardware hash, signs the user in through Azure PowerShell, submits the
+device, and monitors processing until the workflow completes or fails. Add
+`-Verbose` to display diagnostic details.
 
 The script requires an elevated Windows PowerShell 5.1 or PowerShell 7 session.
-It has no dependency on `Get-WindowsAutopilotInfo`.
+It installs `Az.Accounts` for the current user when the module is not already
+available and has no dependency on `Get-WindowsAutopilotInfo`. Do not change the
+execution policy to `Unrestricted`; use the execution policy approved by your
+organization.
 
 #### Import Workflow and Status Updates
 
@@ -179,14 +172,25 @@ Import-AutoPilotDevice `
 
 PowerShell signs you in with your Entra account when an access token is needed. The Azure Function then verifies that your account is authorized for the requested Group Tag before submitting each device to Intune. No Azure role, Microsoft Graph permission, client secret, or direct Intune role is required on the importing computer.
 
-The client package also contains `Import-AutopilotDevice.ps1`. This script is a compatibility wrapper around the module command and performs the same import. Use it when a software distribution system or shortcut needs to start a `.ps1` file directly:
+The client package also contains the standalone REST client
+`Import-AutopilotDevice.ps1`. It reads the public runtime configuration from
+the application URL and does not require `AutopilotImport.Client`. Supply a CSV
+to import one or more devices, or omit `-CsvPath` to collect the serial number
+and hardware hash from the local Windows device in an elevated session:
 
 ```powershell
-pwsh -NoProfile -File .\Import-AutopilotDevice.ps1 `
-    -CsvPath '.\devices.csv' `
-    -GroupTag 'PAW' `
-    -ConfigPath '.\client.settings.json'
+powershell.exe -NoProfile -File .\Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://autopilot.contoso.com' `
+    -GroupTag 'PAW'
 ```
+
+The script validates the data and submits the hash through the REST API without
+a confirmation prompt. It displays the import and device-attribute status every
+10 seconds until the complete workflow succeeds or fails. Use `-Verbose` for
+additional configuration, authentication, request, and polling details. Use
+`-ValidateOnly` to validate configuration and device data without
+authentication, or `-WhatIf` to preview the import without requesting a token
+or submitting data.
 
 Initialize the module once for the current Windows user:
 
@@ -690,8 +694,7 @@ After the Azure resources are deployed, the installer creates a portable client 
 - `scripts\Set-TagAuthorizationPolicy.ps1`
 - `scripts\Set-TagPolicyManagers.ps1`
 
-The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module loads these values automatically, while
-explicitly supplied parameters take precedence. The scripts are thin compatibility wrappers over the module commands.
+The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module and policy-management scripts load these values automatically, while explicitly supplied parameters take precedence. The standalone import script instead reads its public configuration directly from the supplied application URL.
 
 During installation and update, the installer creates `Intune-Autopilotimport-psmodule-<version>.zip` in the current user's Documents directory. An existing archive with the same version is replaced. The ZIP contains the current versioned PowerShell modules and `client.settings.json`, with the folder layout required by PowerShell module autoloading. Transfer the archive to another computer and extract it into the current user's PowerShell module directory:
 
@@ -938,8 +941,11 @@ By default, the script selects the newest installed `client.settings.json` from 
 After a successful update, the script also installs the current module and
 configuration under
 `C:\Program Files\WindowsPowerShell\Modules\AutopilotImport.Client\<version>`
-and removes older versions when they are not in use. Run the update from an
-elevated PowerShell 7 session so this system-wide location can be changed.
+and removes older versions when they are not in use. When the update is not
+running with local administrator rights, it installs the current module in the
+current user's PowerShell 7 and Windows PowerShell module directories instead.
+The update continues and warns that the system-wide module remains unchanged
+and must be updated later from an elevated PowerShell 7 session.
 
 When the client module and configuration are not installed on the update computer, the script prompts for the subscription ID, tenant ID, resource group, Function App name, and client tools destination. The current Az context and standard deployment names are offered as defaults. These values can also be supplied for an unattended discovery phase:
 
@@ -978,6 +984,11 @@ GitHub Actions workflows are configured, so pushes and pull requests do not
 start GitHub-hosted or self-hosted workers.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
+
+The installer and updater publish the complete prebuilt web frontend included
+in a deployment package without running `npm ci`. Node.js and npm are required
+only when publishing from a source tree whose prebuilt frontend bundle is
+missing or incomplete.
 
 To build the package locally using the current Git branch, run:
 
@@ -1086,15 +1097,19 @@ Managed Dependencies can take several minutes to make `Az.Accounts` available af
 
 The Azure Function itself remains in Azure. An importing PC needs only:
 
-- PowerShell 7.2 or later (`pwsh`)
+- Windows PowerShell 5.1 or PowerShell 7.2 or later
 - `scripts\Import-AutopilotDevice.ps1`
-- the PowerShell module `Az.Accounts`
-- a configured `client.settings.json`
 - HTTPS access to Microsoft Entra sign-in and the Function App
+- HTTPS access to the PowerShell Gallery when `Az.Accounts` is not installed
 
 The `src\AutopilotImport` module, Function folders, Bicep template, deployment scripts, and `Microsoft.Graph.Authentication` are not required on importing PCs. `Microsoft.Graph.Authentication` is used only for administrative setup.
 
-For a PC with access to the PowerShell Gallery, install `Az.Accounts` for the current user:
+When authentication is first needed, the script checks for the required
+`Az.Accounts` commands. If they are missing, it installs the NuGet package
+provider when necessary and downloads `Az.Accounts` from the PowerShell Gallery
+for the current user. `-ValidateOnly` and `-WhatIf` do not install modules.
+
+To prepare a PC in advance, install `Az.Accounts` for the current user:
 
 ```powershell
 Install-Module Az.Accounts `
@@ -1125,8 +1140,6 @@ Save-Module Az.Accounts `
 
 Copy-Item .\scripts\Import-AutopilotDevice.ps1 `
         -Destination $packagePath
-Copy-Item .\client.settings.json `
-        -Destination $packagePath
 ```
 
 Copy the package to each target PC and place every directory below `Modules` in a PowerShell 7 module path. For a per-machine installation, use:
@@ -1144,31 +1157,29 @@ This copy step requires local administrator rights. For a per-user installation,
 another software deployment system when many PCs must be maintained. Sign the PowerShell script with a trusted code-signing certificate when the target environment enforces `AllSigned` or `RemoteSigned`; do not weaken the execution
 policy as part of deployment.
 
-When Azure DevOps performs the Function deployment, download the `autopilot-import-client-settings` pipeline artifact and distribute its `client.settings.json` together with the import script. The file contains no password, client secret, or access token, but it selects a tenant and Function environment and should therefore be managed as environment-specific
-configuration.
+Start the standalone script with the HTTPS application URL. The Function App
+root, `/api/ui`, and `/api/ui/index.html` forms are accepted. The script reads
+tenant, audience, and import endpoint data from `/api/ui/config` and rejects an
+import endpoint hosted on another origin:
 
-The configuration must contain these values:
-
-```json
-{
-    "functionUrl": "https://<function-app>.azurewebsites.net/api/devices/import",
-    "managementUrl": "https://<function-app>.azurewebsites.net/api/management/tag-policy",
-    "apiApplicationIdUri": "api://<application-client-id>",
-    "tenantId": "<tenant-id>"
-}
+```powershell
+powershell.exe -NoProfile -File .\Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://<function-app>.azurewebsites.net' `
+    -CsvPath '.\devices.csv' `
+    -GroupTag 'PAW' `
+    -Verbose
 ```
 
-- `functionUrl` is the complete HTTPS import endpoint, including
-    `/api/devices/import`.
-- `managementUrl` is used only by the policy-management script and may remain
-    in the shared configuration.
-- `apiApplicationIdUri` must match the Application ID URI exposed by the Entra
-    API application and the Easy Auth audience.
-- `tenantId` is the Entra tenant in which users authenticate.
+When `-CsvPath` is omitted, run PowerShell elevated so the script can read the
+local BIOS serial number and `MDM_DevDetail_Ext01` hardware hash. CSV files must
+contain `Device Serial Number` and `Hardware Hash`. The selected Group Tag is
+applied to every row.
 
-Store `client.settings.json` next to `Import-AutopilotDevice.ps1`, or keep it in a centrally managed location and pass its path with `-ConfigPath`. When the script remains in the repository layout under `scripts`, its default is the repository-root `client.settings.json`. Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` parameters override file values, which is useful when one PC targets multiple environments.
-
-The client machine needs PowerShell 7.2 or later and `Az.Accounts`. Managing the explicit manager list additionally requires `Az.Resources` and `Az.Websites`. The project module dependency is included in the installed package.
+The standalone import script supports Windows PowerShell 5.1 and later and
+installs `Az.Accounts` on demand. The `AutopilotImport.Client` module and the
+policy-management scripts retain their PowerShell 7.2 requirement. Managing the
+explicit manager list additionally requires `Az.Resources` and `Az.Websites`.
+The project module dependency is included in the installed package.
 
 ## REST API Reference
 
@@ -1604,6 +1615,10 @@ Redirect URIs are case-sensitive and must match the complete URL returned by
 until the company hostname has been tested and all bookmarks have been
 migrated. The API Application ID URI and audience, such as
 `api://<application-client-id>`, do not change.
+
+After the custom domain is assigned to the Function App, subsequent runs of
+`Update-AutopilotImport.ps1` discover it and ensure that its frontend redirect
+URI remains registered in the Entra SPA application.
 
 ### 4. Validate the Company URL
 

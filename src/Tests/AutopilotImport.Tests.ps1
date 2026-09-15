@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260913.16
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -165,6 +165,239 @@ Describe 'Client CSV input validation' {
         Should -Invoke Invoke-RestMethod `
             -ModuleName AutopilotImport.Client `
             -Times 0
+    }
+}
+
+Describe 'Standalone REST import script' {
+    BeforeAll {
+        $standaloneRepositoryRoot = Split-Path `
+            (Split-Path $PSScriptRoot -Parent) -Parent
+        $importScriptPath = Join-Path $standaloneRepositoryRoot `
+            'src\Scripts\Import-AutopilotDevice.ps1'
+        $importScriptContent = Get-Content $importScriptPath -Raw
+    }
+
+    BeforeEach {
+        $csvPath = Join-Path $TestDrive 'standalone-devices.csv'
+        @'
+"Device Serial Number","Hardware Hash"
+"SERIAL-REST-001","AQ=="
+'@ | Set-Content -LiteralPath $csvPath
+
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                authority = `
+                    'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                scope = `
+                    'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                importUrl = 'https://import.example/api/devices/import'
+            }
+        }
+    }
+
+    It 'uses REST directly, imports without a default confirmation, and retains WhatIf support' {
+        $importScriptContent | Should -Match `
+            '(?m)^#Requires -Version 5\.1\r?$'
+        $importScriptContent | Should -Not -Match `
+            'Import-Module\s+.*AutopilotImport\.Client'
+        $importScriptContent | Should -Match `
+            'Install-Module\s+`\s*-Name Az\.Accounts'
+        $importScriptContent | Should -Not -Match `
+            '(?m)^\s*-(Authentication|Token)\s'
+        $importScriptContent | Should -Not -Match `
+            'ConvertFrom-SecureString.*-AsPlainText'
+        $importScriptContent | Should -Match `
+            "CmdletBinding\(SupportsShouldProcess, ConfirmImpact = 'Low'\)"
+        $importScriptContent | Should -Not -Match `
+            '(?s)\[Parameter\(Mandatory\)\]\s*\[ValidateScript.*?\[string\] \$CsvPath'
+        $importScriptContent | Should -Match `
+            "else \{\s*Get-LocalAutoPilotDevice\s*\}"
+        $importScriptContent | Should -Match '\$pollIntervalSeconds = 10'
+        $importScriptContent | Should -Match 'Invoke-RestMethod'
+    }
+
+    It 'normalizes the application root and validates a CSV without authentication' {
+        $result = & $importScriptPath `
+            -ApplicationUrl 'https://import.example' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -ValidateOnly
+
+        $result.ApplicationUrl | Should -Be `
+            'https://import.example/api/ui/index.html'
+        $result.ImportUrl | Should -Be `
+            'https://import.example/api/devices/import'
+        $result.DeviceCount | Should -Be 1
+        $result.SerialNumbers | Should -Be 'SERIAL-REST-001'
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'Get' -and
+            [string] $Uri -eq 'https://import.example/api/ui/config'
+        }
+    }
+
+    It 'stops before authentication and import when WhatIf is used' {
+        & $importScriptPath `
+            -ApplicationUrl 'https://import.example/api/ui' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -WhatIf
+
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'Get'
+        }
+    }
+
+    It 'writes non-sensitive execution details with Verbose' {
+        $verboseOutput = & $importScriptPath `
+            -ApplicationUrl 'https://import.example' `
+            -CsvPath $csvPath `
+            -GroupTag 'PAW' `
+            -ValidateOnly `
+            -Verbose 4>&1
+        $verboseText = $verboseOutput | Out-String
+
+        $verboseText | Should -Match 'Reading runtime configuration'
+        $verboseText | Should -Match 'Validated 1 device record'
+        $verboseText | Should -Match 'authentication and import were skipped'
+        $verboseText | Should -Not -Match 'AQ=='
+    }
+
+    It 'explains a forbidden Group Tag and shows its correlation ID only with Verbose' {
+        function global:Get-AzContext {
+            [pscustomobject]@{
+                Tenant = [pscustomobject]@{
+                    Id = '22222222-2222-2222-2222-222222222222'
+                }
+            }
+        }
+        function global:Connect-AzAccount {}
+        function global:Get-AzAccessToken {
+            [pscustomobject]@{ Token = 'test-token' }
+        }
+        try {
+            Mock Invoke-RestMethod {
+                if ($Method -eq 'Post') {
+                    $exception = [InvalidOperationException]::new(
+                        'The remote server returned an error: (403) Forbidden.')
+                    $apiError = [Management.Automation.ErrorRecord]::new(
+                        $exception,
+                        'HttpResponseException',
+                        [Management.Automation.ErrorCategory]::PermissionDenied,
+                        $null)
+                    $apiError.ErrorDetails = `
+                        [Management.Automation.ErrorDetails]::new(
+                            '{"error":"groupTagNotAllowed","correlationId":"109ff31c-4392-415a-b39f-56d3d7776110"}')
+                    throw $apiError
+                }
+                [pscustomobject]@{
+                    authority = `
+                        'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                    scope = `
+                        'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                    importUrl = 'https://import.example/api/devices/import'
+                }
+            }
+
+            $global:LASTEXITCODE = 0
+            $standardOutput = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'paw/csm' 6>&1
+            $standardText = $standardOutput | Out-String
+
+            $standardText | Should -Match `
+                "Group Tag 'paw/csm' is not allowed for the signed-in user"
+            $standardText | Should -Not -Match 'Correlation ID'
+            $standardText | Should -Not -Match `
+                'CategoryInfo|FullyQualifiedErrorId|At .*Import-AutopilotDevice'
+            $global:LASTEXITCODE | Should -Be 1
+
+            $global:LASTEXITCODE = 0
+            $verboseOutput = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'paw/csm' `
+                -Verbose 4>&1 6>&1
+            $verboseText = $verboseOutput | Out-String
+
+            $verboseText | Should -Match `
+                'Correlation ID: 109ff31c-4392-415a-b39f-56d3d7776110'
+            $verboseText | Should -Not -Match `
+                'CategoryInfo|FullyQualifiedErrorId|At .*Import-AutopilotDevice'
+            $global:LASTEXITCODE | Should -Be 1
+        }
+        finally {
+            Remove-Item Function:\Get-AzContext -ErrorAction SilentlyContinue
+            Remove-Item Function:\Connect-AzAccount -ErrorAction SilentlyContinue
+            Remove-Item Function:\Get-AzAccessToken -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'posts the hash and polls every ten seconds until the workflow completes' {
+        function global:Get-AzContext {
+            [pscustomobject]@{
+                Tenant = [pscustomobject]@{
+                    Id = '22222222-2222-2222-2222-222222222222'
+                }
+            }
+        }
+        function global:Connect-AzAccount {}
+        function global:Get-AzAccessToken {
+            [pscustomobject]@{
+                Token = ConvertTo-SecureString `
+                    'test-token' `
+                    -AsPlainText `
+                    -Force
+            }
+        }
+        try {
+            Mock Start-Sleep
+            Mock Invoke-RestMethod {
+                if ($Method -eq 'Post') {
+                    return [pscustomobject]@{
+                        importId = '44444444-4444-4444-4444-444444444444'
+                        serialNumber = 'SERIAL-REST-001'
+                        status = 'pending'
+                    }
+                }
+                if ([string] $Uri -match '\?importId=') {
+                    return [pscustomobject]@{
+                        importId = '44444444-4444-4444-4444-444444444444'
+                        serialNumber = 'SERIAL-REST-001'
+                        status = 'complete'
+                        workflowStatus = 'complete'
+                        extensionAttributeStatus = 'complete'
+                    }
+                }
+                return [pscustomobject]@{
+                    authority = `
+                        'https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222'
+                    scope = `
+                        'api://33333333-3333-3333-3333-333333333333/DeviceHash.Import'
+                    importUrl = 'https://import.example/api/devices/import'
+                }
+            }
+
+            $result = & $importScriptPath `
+                -ApplicationUrl 'https://import.example' `
+                -CsvPath $csvPath `
+                -GroupTag 'PAW'
+
+            $result.workflowStatus | Should -Be 'complete'
+            Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+                $Method -eq 'Post' -and
+                [string] $Uri -eq 'https://import.example/api/devices/import' -and
+                $Headers.Authorization -eq 'Bearer test-token'
+            }
+            Should -Invoke Start-Sleep -Times 1 -ParameterFilter {
+                $Seconds -eq 10
+            }
+        }
+        finally {
+            Remove-Item Function:\Get-AzContext -ErrorAction SilentlyContinue
+            Remove-Item Function:\Connect-AzAccount -ErrorAction SilentlyContinue
+            Remove-Item Function:\Get-AzAccessToken -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -2207,12 +2440,14 @@ Describe 'Update script deployment discovery' {
             'Read-AutoPilotUpdateValue',
             'Get-AutoPilotUpdateConfigurationValue',
                 'Get-AutoPilotClientToolsPath',
-                'Assert-SystemWideClientModuleAccess',
+                'Test-SystemWideClientModuleAccess',
+                'Get-UserAutoPilotClientModuleRoots',
                 'Resolve-AutoPilotDeploymentResult',
                 'Install-SystemWideAutopilotClientModule',
                 'ConvertTo-UpdateTagAuthorizationRules',
                 'Assert-AutoPilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
+                'Get-UpdateWebRedirectUri',
                 'Get-UpdateApplicationInsightsWorkspaceResourceId',
                 'Write-UpdateLogAnalyticsWorkspaceMigrationNotice',
                 'Test-AzurePermissionPattern',
@@ -2252,8 +2487,8 @@ Describe 'Update script deployment discovery' {
             '(?s)Resolve-AutoPilotUpdateConfigPath\s+.*?-AllowMissing'
     }
 
-    It 'requires elevation immediately before deployment changes are made' {
-        $updateAst.Extent.Text | Should -Match `
+    It 'does not require elevation before deployment changes are made' {
+        $updateAst.Extent.Text | Should -Not -Match `
             '(?s)ShouldProcess.*?Assert-SystemWideClientModuleAccess\s+.*?\$installerOutput\s*='
     }
 
@@ -2480,9 +2715,28 @@ Describe 'Update script deployment discovery' {
         $oldVersionDirectory | Should -Not -Exist
     }
 
+    It 'defines PowerShell 7 and Windows PowerShell per-user module roots' {
+        $roots = @(Get-UserAutoPilotClientModuleRoots)
+
+        $roots.Count | Should -Be 2
+        $roots[0] | Should -BeLike `
+            '*\PowerShell\Modules\AutopilotImport.Client'
+        $roots[1] | Should -BeLike `
+            '*\WindowsPowerShell\Modules\AutopilotImport.Client'
+    }
+
+    It 'falls back to user modules and warns when system-wide access is unavailable' {
+        $updateAst.Extent.Text | Should -Match `
+            '(?s)if \(Test-SystemWideClientModuleAccess\).*?if \(-not \$systemWideClientSettingsPath\).*?Get-UserAutoPilotClientModuleRoots'
+        $updateAst.Extent.Text | Should -Match `
+            'The system-wide modules under Program Files were not updated\.'
+        $updateAst.Extent.Text | Should -Match `
+            'Run Update-AutopilotImport\.ps1 later from an elevated PowerShell 7 session'
+    }
+
     It 'synchronizes the system-wide module after the installer succeeds' {
         $updateAst.Extent.Text | Should -Match `
-            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?Install-SystemWideAutopilotClientModule.*?InstalledClientSettingsPath'
+            '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?\$sourceSettingsPath\s*=.*?InstalledClientSettingsPath.*?if \(Test-SystemWideClientModuleAccess\).*?Install-SystemWideAutopilotClientModule'
     }
 
     It 'converts the current policy into installer rules with individual RMAUs' {
@@ -2610,6 +2864,27 @@ Describe 'Update script deployment discovery' {
 
         Get-UpdateWebClientId -Properties $properties |
             Should -Be $expected
+    }
+
+    It 'builds redirect URIs only for custom Function App domains' {
+        $redirectUris = @(Get-UpdateWebRedirectUri -HostName @(
+            'func-example.azurewebsites.net'
+            'func-example.scm.azurewebsites.net'
+            'autopilot.example.com'
+            'autopilot.example.com'
+            ' imports.example.org '
+            $null
+        ))
+
+        $redirectUris | Should -Be @(
+            'https://autopilot.example.com/api/ui/index.html'
+            'https://imports.example.org/api/ui/index.html'
+        )
+    }
+
+    It 'passes discovered custom web redirects to the installer' {
+        $updateAst.Extent.Text | Should -Match `
+            'AdditionalWebRedirectUri\s*=\s*\$additionalWebRedirectUris'
     }
 
     It 'reads the workspace currently linked to Application Insights' {
@@ -2805,6 +3080,13 @@ Describe 'Entra web application Graph responses' {
         $scriptText | Should -Not -Match `
             '\$existingDelegatedPermissionIds\s*\+\s*\$apiScopeIdString'
     }
+
+    It 'adds custom-domain redirects without replacing existing SPA redirects' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should -Match `
+            '\$existingRedirectUris\s*\+\s*\$RedirectUri\s*\+\s*\$AdditionalRedirectUri'
+    }
 }
 
 Describe 'Installer optional web client application' {
@@ -2818,6 +3100,14 @@ Describe 'Installer optional web client application' {
             '\$webApplicationParameters\.ClientId = \$WebClientId'
         $installer | Should -Not -Match `
             '(?m)^\s*-ClientId \$WebClientId `\s*$'
+    }
+
+    It 'passes additional custom-domain redirect URIs to the web application script' {
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'AdditionalRedirectUri\s*=\s*@\(\$AdditionalWebRedirectUri\)'
     }
 }
 
@@ -2854,6 +3144,15 @@ Describe 'Installer packaged web frontend fallback' {
             -Value '<script src="/api/ui/assets/missing.js"></script>'
 
         Test-BuiltWebFrontend -ProjectRoot $TestDrive | Should -BeFalse
+    }
+
+    It 'prefers a complete prebuilt bundle even when npm is installed' {
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'if \(-not \$builtWebFrontendAvailable\) \{\s+Write-Host ''Building web frontend\.\.\.'''
+        $installer | Should -Not -Match `
+            'if \(\$npmCommand\) \{\s+Write-Host ''Building web frontend\.\.\.'''
     }
 
     It 'rebuilds the frontend in Azure CI only when its source changes' {

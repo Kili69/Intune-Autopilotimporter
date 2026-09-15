@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260913.16
+# Project-Version: 1.1.20260914.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -70,6 +70,10 @@ frontend. When omitted, the installer finds or creates it by display name.
 .PARAMETER EntraWebApplicationName
 Display name used to find or create the SPA registration. The default is
 Autopilot Import Web.
+
+.PARAMETER AdditionalWebRedirectUri
+Optional HTTPS redirect URIs for custom Function App domains. Existing SPA
+redirect URIs are preserved.
 
 .PARAMETER InstallerPrincipalId
 Entra object ID of the user or group that remains a permanent Group Tag
@@ -194,6 +198,9 @@ param(
     [guid] $WebClientId,
 
     [string] $EntraWebApplicationName = 'Autopilot Import Web',
+
+    [ValidatePattern('^https://')]
+    [string[]] $AdditionalWebRedirectUri,
 
     [guid] $InstallerPrincipalId,
 
@@ -1294,9 +1301,12 @@ if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)
 #region Azure context and confirmation
 
 $npmCommand = $null
+$builtWebFrontendAvailable = $false
 if (-not $SkipPublish) {
+    $builtWebFrontendAvailable = Test-BuiltWebFrontend `
+        -ProjectRoot $projectRoot
     $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
-    if (-not $npmCommand -and -not (Test-BuiltWebFrontend -ProjectRoot $projectRoot)) {
+    if (-not $npmCommand -and -not $builtWebFrontendAvailable) {
         throw 'Publishing requires Node.js and npm, or a deployment package containing a complete prebuilt WebFrontend\wwwroot bundle. Install Node.js 22 or download the release deployment package.'
     }
 }
@@ -1399,6 +1409,7 @@ if (-not $SkipEntraAppConfiguration) {
         ApiClientId            = $entraApplication.ClientId
         ApiScopeId             = $entraApplication.ScopeId
         RedirectUri            = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
+        AdditionalRedirectUri  = @($AdditionalWebRedirectUri)
         DisplayName            = $EntraWebApplicationName
         Confirm                = $false
     }
@@ -1586,7 +1597,7 @@ if (-not $SkipGraphPermission) {
 }
 
 if (-not $SkipPublish) {
-    if ($npmCommand) {
+    if (-not $builtWebFrontendAvailable) {
         Write-Host 'Building web frontend...'
         Push-Location $webProjectRoot
         try {
@@ -1604,7 +1615,7 @@ if (-not $SkipPublish) {
         }
     }
     else {
-        Write-Warning 'Node.js and npm are unavailable. Publishing the complete prebuilt web frontend included in this deployment package.'
+        Write-Host 'Publishing the complete prebuilt web frontend included in this deployment package.'
     }
 
     $packagePath = Join-Path ([IO.Path]::GetTempPath()) "autopilot-import-$([guid]::NewGuid()).zip"
