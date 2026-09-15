@@ -68,63 +68,56 @@ The hardware hashes are not stored by the frontend. They remain in browser
 memory and are sent only to the secured Function API after validation and user
 confirmation.
 
-#### Open the Frontend During Windows OOBE
+#### Import a Device During Windows OOBE
 
 During Windows Out-of-Box Experience, press **Shift + F10** to open Command
-Prompt. If PowerShell was started for collecting the hardware hash and the
-prompt begins with `PS`, open the page with:
+Prompt, then start Windows PowerShell:
 
-```powershell
-Start-Process `
-        -FilePath "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe" `
-        -ArgumentList '--inprivate', '<webUrl>'
+```cmd
+powershell.exe
 ```
 
-If Edge is installed in the 64-bit Program Files directory instead, use:
+Install the standalone importer from PowerShell Gallery:
 
 ```powershell
-Start-Process `
-        -FilePath "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" `
-        -ArgumentList '--inprivate', '<webUrl>'
+Install-Script -Name Import-AutopilotDevice
 ```
 
-Replace `<webUrl>` with the URL reported by the installer, for example
-`https://<function-app-name>.azurewebsites.net/api/ui/index.html`.
+On a computer where no script installation directory has been configured yet,
+PowerShellGet may ask to add its Scripts directory to `PATH`. Confirm the prompt
+to run the installed script by name. PowerShellGet may also ask whether the
+PSGallery repository should be used; confirm only after verifying that the
+repository name is `PSGallery`.
 
-In PowerShell, do not use the CMD command `start "" ...`: `start` is an alias
-for `Start-Process` there and interprets the arguments differently.
-
-The included `Start-IntuneAutopilotImporter.ps1` script automates this process.
-It reads the serial number and hardware hash directly from Windows, creates
-`AutopilotHWID.csv` in the current user's temporary directory, validates the
-public runtime configuration of the supplied frontend URL, copies the CSV path
-to the clipboard when possible, and opens Microsoft Edge in InPrivate mode:
+Run the importer with the complete HTTPS application URL and an authorized
+Group Tag:
 
 ```powershell
-.\scripts\Start-IntuneAutopilotImporter.ps1 `
-    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://<function-app-name>.azurewebsites.net' `
+    -GroupTag 'Autopilot-Standard'
 ```
 
-Omit `-WebUrl` to enter the URL interactively. The script accepts the Function
-App root URL, `/api/ui`, or the complete `/api/ui/index.html` URL. It does not
-upload the hardware hash automatically; paste the copied CSV path into the
-frontend's file picker, sign in, review the device, and start the import.
-
-After the script has been published to PowerShell Gallery, it can be installed
-and started during OOBE with:
+For a deployment with a custom domain, use that HTTPS origin instead:
 
 ```powershell
-Install-Script `
-    -Name Start-IntuneAutopilotImporter `
-    -Scope CurrentUser `
-    -Force
-
-Start-IntuneAutopilotImporter.ps1 `
-    -WebUrl 'https://<function-app-name>.azurewebsites.net/api/ui/index.html'
+Import-AutopilotDevice.ps1 `
+    -ApplicationUrl 'https://autopilot.contoso.com' `
+    -GroupTag 'Autopilot-Standard'
 ```
+
+`ApplicationUrl` must be an absolute URL including `https://`. The Function App
+root, `/api/ui`, and the complete `/api/ui/index.html` URL are accepted. When
+`-CsvPath` is omitted, the script reads the local BIOS serial number and
+Autopilot hardware hash, signs the user in through Azure PowerShell, submits the
+device, and monitors processing until the workflow completes or fails. Add
+`-Verbose` to display diagnostic details.
 
 The script requires an elevated Windows PowerShell 5.1 or PowerShell 7 session.
-It has no dependency on `Get-WindowsAutopilotInfo`.
+It installs `Az.Accounts` for the current user when the module is not already
+available and has no dependency on `Get-WindowsAutopilotInfo`. Do not change the
+execution policy to `Unrestricted`; use the execution policy approved by your
+organization.
 
 #### Import Workflow and Status Updates
 
