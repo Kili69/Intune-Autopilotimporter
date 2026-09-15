@@ -2,124 +2,42 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.1.20260915.7` - 2026-09-15
+
+- Changed Group Tag authorization to resolve current Entra group memberships through Microsoft Graph with the Function managed identity, including token group overage support and the least-privileged `GroupMember.Read.All` and `User.ReadBasic.All` application permissions.
+- Added the signed-in user's UPN below their display name in the web frontend.
+- Hardened Entra SPA redirect synchronization for fresh installations and updates by handling empty optional redirects, preserving URI arrays, discovering existing Function App Custom Domains under PowerShell strict mode, and reading Azure hostname bindings directly.
+- Removed obsolete standalone policy-management script references from the client tools documentation in favor of the PowerShell module commands.
+- Enforced one consolidated change-history section per version date in the commit validation workflow and documented the rule for repository automation.
+
 ## `1.1.20260914.3` - 2026-09-14
 
 - Added automatic synchronization of Function App custom domains with the Entra SPA redirect URIs during updates while preserving existing redirects.
-
-## `1.1.20260914.2` - 2026-09-14
-
 - Allowed updates without local administrator rights by installing the current client module in the current user's PowerShell module paths when the system-wide module cannot be updated, with a warning to update the system-wide installation later from an elevated session.
-
-## `1.1.20260914.1` - 2026-09-14
-
 - Prevented installation and update failures caused by running `npm ci` when a complete prebuilt web frontend is already included in the deployment package.
 
 ## `1.1.20260913.16` - 2026-09-13
 
-- Added the import GUID (`ImportId`) to the default table output of `Get-AutoPilotImportHistory` while retaining the complete structured record.
-
-## `1.1.20260913.15` - 2026-09-13
-
-- Added `Get-AutoPilotTagPolicyManager` to list the installing and additional Group Tag managers as structured PowerShell objects.
-- Standardized PowerShell command names and documentation on the `AutoPilot` spelling while retaining existing script file names for compatibility.
-
-## `1.1.20260913.14` - 2026-09-13
-
-- Clarified that adding or removing Group Tag managers requires an effective Azure Owner or Contributor assignment; Group Tag manager or Intune Role Administrator authorization alone does not permit manager-list changes.
-
-## `1.1.20260913.13` - 2026-09-13
-
-- Added automatic Azure Function App discovery for manager-policy commands by matching the configured hostname, including custom domains, across accessible subscriptions in the configured tenant.
-- Persisted uniquely discovered subscription, resource group, and Function App values in the existing client profile while retaining explicit-value support.
-
-## `1.1.20260913.12` - 2026-09-13
-
-- Added Azure subscription, resource group, and Function App parameters to the URL-based client bootstrap so custom-domain configurations can be used by manager-policy commands.
-- Preserved existing Azure deployment details during configuration refreshes and added actionable diagnostics when manager-policy values are missing.
-
-## `1.1.20260913.11` - 2026-09-13
-
-- Fixed Function publishing omitting the `GetImportHistory` endpoint, which caused `Get-AutoPilotImportHistory` to receive HTTP 404 after an update.
-- Added actionable import-history API errors and a concise default table view while continuing to return complete PowerShell objects for automation.
-
-## `1.1.20260913.10` - 2026-09-13
-
-- Fixed updates failing after installation when nested installer commands add unrelated objects to PowerShell's success stream by selecting and validating the structured deployment result explicitly.
-
-## `1.1.20260913.9` - 2026-09-13
-
-- Changed `Remove-AutoPilotTagPolicy` to return a concise human-readable success message with structured removal metadata instead of displaying the complete policy response.
-- Added the deployed Function version to Group Tag management responses and documented how to compare it with the active PowerShell module version.
-
-## `1.1.20260913.8` - 2026-09-13
-
-- Fixed updates failing after a successful installation because formatted installer status output was mixed with the structured deployment result.
-
-## `1.1.20260913.7` - 2026-09-13
-
-- Updated the system-wide `AutopilotImport.Client` PowerShell module and its configuration during updates, including cleanup of older installed versions and an early elevation check.
-- Removed all GitHub Actions workflows and moved the mandatory change-history and version check to Azure Pipelines.
-
-## `1.1.20260913.6` - 2026-09-13
-
-- Decoupled the prebuilt web frontend version from the central package version so documentation, PowerShell module, installer, and backend Function changes can reuse the existing frontend bundle.
-- Changed GitHub Actions and Azure Pipelines to test and rebuild the frontend only when files under `src/Web` change.
-
-## `1.1.20260913.5` - 2026-09-13
-
-- Prevented mutating client module commands from prompting automatically, regardless of the caller's confirmation preference, while retaining explicit `Confirm` and `WhatIf` support.
-- Added support for comma-separated Group Tag values when adding or removing tags, in addition to existing PowerShell array input.
-
-## `1.1.20260913.4` - 2026-09-13
-
-- Clarified that `Get-AutoPilotImportHistory` is provided by the installed client module and documented how to detect and replace an older loaded module version.
-- Added package coverage that verifies the import-history command is exported through PowerShell module autoloading.
-
-## `1.1.20260913.3` - 2026-09-13
-
-- Fixed Group Tag policy updates so a restricted management administrative unit applies only to the rule that explicitly declares it, rather than being used as a global fallback for other rules.
-
-## `1.1.20260913.2` - 2026-09-13
-
-- Added `WhatIf` support to device imports and retained it for all mutating client module commands while removing confirmation prompts from normal use.
-- Changed `Get-AutoPilotTagPolicy` and `Add-AutoPilotTagPolicy` to return reusable policy-rule objects with group IDs, names, tags, restricted management administrative units, and correlation IDs.
-
-## `1.1.20260913.1` - 2026-09-13
-
-- Fixed creation of the first Group Tag policy when Azure Functions supplies the JSON request body and nested policy rules as dictionaries.
-- Added a CI policy that requires every pushed commit to update both `History.md` and `VERSION`.
+- Expanded import history with reliable Function publishing, actionable API errors, module autoloading guidance, a concise default view including `ImportId`, and complete structured records for automation.
+- Improved Group Tag policy commands with reusable structured results, `WhatIf` support, noninteractive mutation defaults, comma-separated tag input, rule-specific restricted administrative units, concise removal output, deployed Function version reporting, and dictionary-based first-policy creation.
+- Added structured Group Tag manager discovery and management, including automatic Function App resolution across subscriptions and Custom Domains, persistent deployment metadata, URL-bootstrap parameters, and clearer Azure role requirements.
+- Hardened updates by validating the structured installer result, separating formatted status output, updating system-wide client modules and configuration, cleaning older versions, and checking elevation early.
+- Decoupled prebuilt frontend artifacts from the central package version and limited frontend rebuilds to source changes under `src/Web`.
+- Standardized `AutoPilot` command naming and moved mandatory change-history and version validation from GitHub Actions to Azure Pipelines.
 
 ## `1.1.20260912.2` - 2026-09-12
 
-- Simplified the installation prerequisites and moved frontend build requirements to the developer guide.
-- Added an Advanced Setup section with least-privilege role guidance and interactive and parameterized installer examples.
-- Changed the GitHub package workflow so every successful push still publishes a workflow artifact and successful `main` pushes additionally commit the current ZIP under `InstallationPackage`.
-- Removed the legacy `artifacts` directory during automated main-package publication and prevented recursive CI runs with a skip marker.
-
-## `1.1.20260912.1` - 2026-09-12
-
-- Standardized the project structure, developer documentation, and PowerShell source documentation.
-- Changed client configuration to persistent, user-specific settings and gave the related commands unambiguous names.
-- Configured Application Insights to use an explicitly provisioned Log Analytics workspace in the Function App resource group. After an actual migration, the updater identifies the previous managed workspace as potentially removable.
-- Added `Get-AutoPilotImportHistory`, allowing managers to retrieve import operations currently retained by Intune and their status. The new Function endpoint uses the existing manager authorization and does not return hardware hashes or product keys.
-- Added Function URL discovery to the update script so it can resolve the subscription, tenant, resource group, and Function App through Azure Resource Manager.
-- Improved Microsoft Graph authorization failures with concise remediation in the console while preserving complete diagnostics in the installer and update logs.
-- Added an appendix for publishing the web frontend under a company-owned DNS name, including DNS validation, TLS binding, Entra redirect configuration, and end-to-end verification.
-- Updated the deployment package, documentation, and tests for the new functionality.
+- Standardized the project structure, PowerShell source documentation, developer guidance, and persistent user-specific client configuration.
+- Added manager-authorized import history without exposing hardware hashes or product keys, plus Azure Resource Manager discovery of Function deployment details during updates.
+- Provisioned an explicit Log Analytics workspace for Application Insights and reported previous managed workspaces as potential cleanup candidates after migration.
+- Improved Microsoft Graph authorization diagnostics and documented least-privilege installation, interactive and parameterized setup, frontend build requirements, and company-owned Custom Domains.
+- Updated packaging so every successful push publishes an artifact, successful `main` pushes additionally store the current ZIP, legacy artifacts are removed, and recursive CI runs are prevented.
 
 ## `1.1.20260911.1` - 2026-09-11
 
-- Organized development sources in a consistent `src` structure while keeping package and runtime paths compatible with existing installations.
-- Promoted the validated development state from `dev` to `main`.
-- Normalized generated web index line endings for stable cross-platform builds and diffs.
-- Corrected the documented deployment package example path.
-- Added project version validation before package creation.
-- Rebuilt the distributed web UI artifacts for version 1.1.
-- Updated the central version declarations to `1.1.20260911.1`.
-
-## `1.0.20260911.1` - 2026-09-11
-
-- Extended the Azure deployment with private storage and an updated web interface.
+- Organized development sources under `src` while preserving package and runtime compatibility with existing installations.
+- Extended the Azure deployment with private storage, rebuilt the updated web interface, and normalized generated index line endings for stable cross-platform diffs.
+- Added package version validation, corrected the documented package path, synchronized central version declarations, and promoted the validated development state from `dev` to `main`.
 
 ## `1.0.20260902.1` - 2026-09-02
 

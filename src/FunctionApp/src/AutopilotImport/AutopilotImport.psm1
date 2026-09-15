@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -710,6 +710,98 @@ function Test-ClientPrincipalRole {
     }).Count -gt 0
 }
 
+function Get-CurrentPolicyPrincipal {
+    <#
+    .SYNOPSIS
+    Resolves the caller's current memberships in policy groups.
+
+    .PARAMETER Principal
+    Decoded Easy Auth principal containing the caller object ID.
+
+    .PARAMETER Policy
+    Collection of rules whose group IDs are checked through Microsoft Graph.
+
+    .PARAMETER AccessToken
+    Microsoft Graph token acquired by the Function managed identity.
+
+    .OUTPUTS
+    PSCustomObject containing the original non-group claims and current group
+    claims returned by Microsoft Graph.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Principal,
+
+        [Parameter(Mandatory)]
+        [object[]] $Policy,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $objectIdClaimTypes = @(
+        'oid',
+        'http://schemas.microsoft.com/identity/claims/objectidentifier'
+    )
+    $objectId = @($Principal.claims | Where-Object {
+        $_.typ -in $objectIdClaimTypes
+    } | Select-Object -First 1).val
+    $parsedObjectId = [guid]::Empty
+    if (-not [guid]::TryParse([string] $objectId, [ref] $parsedObjectId)) {
+        throw [System.ArgumentException]::new(
+            'The client principal does not contain a valid object ID.'
+        )
+    }
+
+    $policyGroupIds = @($Policy | ForEach-Object {
+        $parsedGroupId = [guid]::Empty
+        if (-not [guid]::TryParse([string] $_.groupId, [ref] $parsedGroupId)) {
+            throw [System.ArgumentException]::new(
+                "Policy group ID '$($_.groupId)' is invalid."
+            )
+        }
+        $parsedGroupId.ToString()
+    } | Select-Object -Unique)
+
+    $currentGroupIds = @()
+    for ($offset = 0; $offset -lt $policyGroupIds.Count; $offset += 20) {
+        $lastIndex = [Math]::Min($offset + 19, $policyGroupIds.Count - 1)
+        $groupIdBatch = @($policyGroupIds[$offset..$lastIndex])
+        $response = Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://graph.microsoft.com/v1.0/users/$($parsedObjectId.ToString())/checkMemberGroups" `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -ContentType 'application/json' `
+            -Body (@{ groupIds = $groupIdBatch } | ConvertTo-Json -Compress) `
+            -ErrorAction Stop
+        $currentGroupIds += @($response.value | Where-Object {
+            [string] $_ -in $groupIdBatch
+        })
+    }
+
+    $groupClaimTypes = @(
+        'groups',
+        'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+    )
+    $resolvedClaims = @($Principal.claims | Where-Object {
+        $_.typ -notin $groupClaimTypes
+    }) + @($currentGroupIds | Select-Object -Unique | ForEach-Object {
+        [pscustomobject]@{ typ = 'groups'; val = [string] $_ }
+    })
+    $resolvedPrincipal = [ordered]@{}
+    foreach ($property in $Principal.PSObject.Properties) {
+        $resolvedPrincipal[$property.Name] = if ($property.Name -eq 'claims') {
+            $resolvedClaims
+        }
+        else {
+            $property.Value
+        }
+    }
+    return [pscustomobject] $resolvedPrincipal
+}
+
 function Resolve-AuthorizedGroupTag {
     <#
     .SYNOPSIS
@@ -897,6 +989,7 @@ Export-ModuleMember -Function @(
     'Test-IntuneRoleAdministratorAssignment',
     'ConvertFrom-ClientPrincipalHeader',
     'Test-ClientPrincipalRole',
+    'Get-CurrentPolicyPrincipal',
     'Resolve-AuthorizedGroupTag',
     'Get-AuthorizedGroupTags',
     'ConvertTo-AutoPilotImportPayload'

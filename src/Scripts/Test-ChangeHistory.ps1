@@ -1,15 +1,17 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Verifies that every commit in a range updates History.md and VERSION.
+Verifies the change history and version in every commit in a range.
 
 .DESCRIPTION
 Checks every first-parent commit after BaseCommit through HeadCommit and fails
-when History.md or VERSION is not part of a commit. Automation commits whose
-message contains [skip ci] are ignored.
+when History.md or VERSION is not part of a commit, or when the version date
+has more than one history section. The section for that date must use the
+current VERSION as its heading. Automation commits whose message contains
+[skip ci] are ignored.
 
 .PARAMETER BaseCommit
 Commit before the range to validate. An all-zero Git SHA validates HeadCommit
@@ -86,17 +88,58 @@ $invalidCommits = @(
                 $changedPaths -notcontains $_
             }
         )
-        if ($missingFiles.Count -gt 0) {
+        $issues = @(
+            if ($missingFiles.Count -gt 0) {
+                "missing: $($missingFiles -join ', ')"
+            }
+            else {
+                $version = ((Invoke-GitCommand -ArgumentList @(
+                            'show', "${commit}:VERSION"
+                        )) -join [Environment]::NewLine).Trim()
+                $versionMatch = [regex]::Match(
+                    $version,
+                    '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
+                )
+                if (-not $versionMatch.Success) {
+                    "invalid VERSION: $version"
+                }
+                else {
+                    $versionDate = [datetime]::ParseExact(
+                        $versionMatch.Groups['date'].Value,
+                        'yyyyMMdd',
+                        [Globalization.CultureInfo]::InvariantCulture
+                    ).ToString('yyyy-MM-dd')
+                    $expectedHeading = "## ``$version`` - $versionDate"
+                    $historyHeadings = @(
+                        Invoke-GitCommand -ArgumentList @(
+                            'show', "${commit}:History.md"
+                        ) | Where-Object { $_.StartsWith('## ') }
+                    )
+                    $dateHeadings = @(
+                        $historyHeadings | Where-Object {
+                            $_.EndsWith(" - $versionDate")
+                        }
+                    )
+                    if ($dateHeadings.Count -ne 1) {
+                        "History.md must contain exactly one section for $versionDate"
+                    }
+                    elseif ($dateHeadings[0] -cne $expectedHeading) {
+                        "history heading must be: $expectedHeading"
+                    }
+                }
+            }
+        )
+        if ($issues.Count -gt 0) {
             $shortCommit = Invoke-GitCommand -ArgumentList @(
                 'show', '--no-patch', '--format=%h %s', $commit
             )
-            "$($shortCommit -join ' ') (missing: $($missingFiles -join ', '))"
+            "$($shortCommit -join ' ') ($($issues -join '; '))"
         }
     }
 )
 
 if ($invalidCommits.Count -gt 0) {
-    throw "Every commit must update History.md and VERSION. Invalid commits:$([Environment]::NewLine)$($invalidCommits -join [Environment]::NewLine)"
+    throw "Every commit must update History.md and VERSION and use one history section per version date. Invalid commits:$([Environment]::NewLine)$($invalidCommits -join [Environment]::NewLine)"
 }
 
-Write-Output "History.md and VERSION were updated by all $($commits.Count) checked commit(s)."
+Write-Output "History.md and VERSION were valid in all $($commits.Count) checked commit(s)."

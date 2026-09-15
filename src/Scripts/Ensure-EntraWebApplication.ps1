@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -82,6 +82,32 @@ function Get-GraphItems {
     return @($Response)
 }
 
+function Merge-WebRedirectUri {
+    param(
+        [AllowNull()]
+        [object[]] $ExistingRedirectUri,
+
+        [Parameter(Mandatory)]
+        [string] $PrimaryRedirectUri,
+
+        [AllowNull()]
+        [object[]] $AdditionalRedirectUri
+    )
+
+    return @(
+        foreach ($uri in @(
+            @($ExistingRedirectUri)
+            @($PrimaryRedirectUri)
+            @($AdditionalRedirectUri)
+        )) {
+            $normalizedUri = ([string] $uri).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($normalizedUri)) {
+                $normalizedUri
+            }
+        }
+    ) | Select-Object -Unique
+}
+
 function ConvertTo-ValidPermissionIds {
     param(
         [AllowNull()]
@@ -160,11 +186,10 @@ $existingRedirectUris = if ($application.PSObject.Properties['spa'] -and
 else {
     @()
 }
-$redirectUris = @(
-    $existingRedirectUris + $RedirectUri + $AdditionalRedirectUri |
-        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
-        Select-Object -Unique
-)
+$redirectUris = @(Merge-WebRedirectUri `
+    -ExistingRedirectUri $existingRedirectUris `
+    -PrimaryRedirectUri $RedirectUri `
+    -AdditionalRedirectUri $AdditionalRedirectUri)
 $requiredResourceAccess = if ($application.PSObject.Properties['requiredResourceAccess']) {
     @($application.requiredResourceAccess)
 }

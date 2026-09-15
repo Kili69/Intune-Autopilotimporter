@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -2000,6 +2000,83 @@ Describe 'Group-based tag authorization' {
             -Principal $unknownPrincipal `
             -Policy $policy).Count | Should -Be 0
     }
+
+    It 'uses a current Graph membership that is absent from the token' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{
+                value = @('22222222-2222-2222-2222-222222222222')
+            }
+        }
+        $principal.claims += @{
+            typ = 'oid'
+            val = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        }
+
+        $resolvedPrincipal = Get-CurrentPolicyPrincipal `
+            -Principal $principal `
+            -Policy $policy `
+            -AccessToken (ConvertTo-SecureString 'token' -AsPlainText -Force)
+
+        @(Get-AuthorizedGroupTags `
+            -Principal $resolvedPrincipal `
+            -Policy $policy) | Should -Be @('Autopilot-Privileged')
+    }
+
+    It 'removes stale token memberships that Graph no longer returns' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{ value = @() }
+        }
+        $principal.claims += @{
+            typ = 'oid'
+            val = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        }
+
+        $resolvedPrincipal = Get-CurrentPolicyPrincipal `
+            -Principal $principal `
+            -Policy $policy `
+            -AccessToken (ConvertTo-SecureString 'token' -AsPlainText -Force)
+
+        @(Get-AuthorizedGroupTags `
+            -Principal $resolvedPrincipal `
+            -Policy $policy).Count | Should -Be 0
+    }
+
+    It 'checks policy groups in batches of no more than twenty' {
+        $largePolicy = @(1..21 | ForEach-Object {
+            [pscustomobject]@{
+                groupId = ([guid]::NewGuid()).ToString()
+                tags    = @("Tag-$_")
+            }
+        })
+        $principal.claims += @{
+            typ = 'oid'
+            val = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        }
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{ value = @() }
+        }
+
+        Get-CurrentPolicyPrincipal `
+            -Principal $principal `
+            -Policy $largePolicy `
+            -AccessToken (ConvertTo-SecureString 'token' -AsPlainText -Force) |
+            Out-Null
+
+        Assert-MockCalled Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 2 `
+            -Exactly
+    }
+
+    It 'grants both application permissions required to check other users groups' {
+        $grantScript = Get-Content `
+            -LiteralPath (Join-Path $PSScriptRoot `
+                '..\Scripts\Grant-ManagedIdentityGraphPermission.ps1') `
+            -Raw
+
+        $grantScript | Should -Match "'GroupMember\.Read\.All'"
+        $grantScript | Should -Match "'User\.ReadBasic\.All'"
+    }
 }
 
 Describe 'Installer tag authorization rules' {
@@ -2448,6 +2525,8 @@ Describe 'Update script deployment discovery' {
                 'Assert-AutoPilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
                 'Get-UpdateWebRedirectUri',
+                'Get-UpdateWebAppHostName',
+                'Get-UpdateWebAppHostNameBinding',
                 'Get-UpdateApplicationInsightsWorkspaceResourceId',
                 'Write-UpdateLogAnalyticsWorkspaceMigrationNotice',
                 'Test-AzurePermissionPattern',
@@ -2882,6 +2961,51 @@ Describe 'Update script deployment discovery' {
         )
     }
 
+    It 'discovers update hostnames from all Azure response shapes' {
+        $site = [pscustomobject]@{
+            properties = [pscustomobject]@{
+                hostNames = @()
+                enabledHostNames = @(
+                    'func-example.azurewebsites.net'
+                    'enabled.example.com'
+                )
+                hostNameSslStates = @(
+                    [pscustomobject]@{ name = 'ssl.example.com' }
+                )
+            }
+        }
+
+        $hostNames = @(Get-UpdateWebAppHostName -WebApp $site)
+        $redirectUris = @(Get-UpdateWebRedirectUri -HostName $hostNames)
+
+        $redirectUris | Should -Be @(
+            'https://enabled.example.com/api/ui/index.html'
+            'https://ssl.example.com/api/ui/index.html'
+        )
+    }
+
+    It 'discovers update hostnames from Azure hostname bindings' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(
+                        @{ name = 'func-example/func-example.azurewebsites.net' }
+                        @{ name = 'func-example/autopilot.example.com' }
+                    )
+                } | ConvertTo-Json -Depth 4
+            }
+        }
+
+        $hostNames = @(Get-UpdateWebAppHostNameBinding `
+                -ResourceId '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Web/sites/func-example')
+
+        $hostNames | Should -Be @(
+            'func-example.azurewebsites.net'
+            'autopilot.example.com'
+        )
+    }
+
     It 'passes discovered custom web redirects to the installer' {
         $updateAst.Extent.Text | Should -Match `
             'AdditionalWebRedirectUri\s*=\s*\$additionalWebRedirectUris'
@@ -3032,6 +3156,12 @@ Describe 'Entra web application Graph responses' {
             $node.Name -eq 'Get-GraphItems'
         }, $true) | Select-Object -First 1
         Invoke-Expression $functionAst.Extent.Text
+        $redirectFunctionAst = $scriptAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Merge-WebRedirectUri'
+        }, $true) | Select-Object -First 1
+        Invoke-Expression $redirectFunctionAst.Extent.Text
         $permissionFunctionAst = $scriptAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -3052,6 +3182,18 @@ Describe 'Entra web application Graph responses' {
 
         $items.Count | Should -Be 1
         $items[0].displayName | Should -Be 'Autopilot Import Web'
+    }
+
+    It 'keeps a single existing and additional SPA redirect as separate URIs' {
+        $redirectUris = @(Merge-WebRedirectUri `
+            -ExistingRedirectUri 'https://func-example.azurewebsites.net/api/ui/index.html' `
+            -PrimaryRedirectUri 'https://func-example.azurewebsites.net/api/ui/index.html' `
+            -AdditionalRedirectUri 'https://autopilot.example.com/api/ui/index.html')
+
+        $redirectUris | Should -Be @(
+            'https://func-example.azurewebsites.net/api/ui/index.html'
+            'https://autopilot.example.com/api/ui/index.html'
+        )
     }
 
     It 'keeps only well-formed permission IDs exposed by the API' {
@@ -3085,11 +3227,34 @@ Describe 'Entra web application Graph responses' {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw
 
         $scriptText | Should -Match `
-            '\$existingRedirectUris\s*\+\s*\$RedirectUri\s*\+\s*\$AdditionalRedirectUri'
+            'Merge-WebRedirectUri\s+`\s*-ExistingRedirectUri\s+\$existingRedirectUris'
     }
 }
 
 Describe 'Installer optional web client application' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [Management.Automation.Language.Parser]::ParseFile(
+            $installerPath,
+            [ref] $tokens,
+            [ref] $parseErrors
+        )
+        $redirectFunctionAst = $installerAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -in @(
+                'Get-CustomWebRedirectUri',
+                'Get-WebAppHostName',
+                'Get-WebAppHostNameBinding'
+            )
+        }, $true)
+        $redirectFunctionAst | ForEach-Object {
+            Invoke-Expression $_.Extent.Text
+        }
+    }
+
     It 'does not pass a null client ID to the web application script' {
         $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $installer = Get-Content -LiteralPath $installerPath -Raw
@@ -3102,12 +3267,90 @@ Describe 'Installer optional web client application' {
             '(?m)^\s*-ClientId \$WebClientId `\s*$'
     }
 
-    It 'passes additional custom-domain redirect URIs to the web application script' {
-        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+    It 'passes only nonempty custom-domain redirect URIs to the web application script' {
         $installer = Get-Content -LiteralPath $installerPath -Raw
 
         $installer | Should -Match `
+            '@\(\$AdditionalWebRedirectUri\) \+ \$discoveredWebRedirectUris\s*\|\s*ForEach-Object[\s\S]*?\|\s*Where-Object'
+        $installer | Should -Match `
+            'if \(\$additionalRedirectUris\.Count -gt 0\)'
+        $installer | Should -Match `
+            '\$webApplicationParameters\.AdditionalRedirectUri = \$additionalRedirectUris'
+        $installer | Should -Not -Match `
             'AdditionalRedirectUri\s*=\s*@\(\$AdditionalWebRedirectUri\)'
+    }
+
+    It 'discovers custom-domain redirects from an existing Function App' {
+        $redirectUris = @(Get-CustomWebRedirectUri -HostName @(
+                'func-example.azurewebsites.net'
+                ' autopilot.example.com '
+                'autopilot.example.com'
+                ''
+            ))
+
+        $redirectUris | Should -Be @(
+            'https://autopilot.example.com/api/ui/index.html'
+        )
+    }
+
+    It 'handles missing and version-dependent Function App hostname properties' {
+        @(Get-WebAppHostName -WebApp $null).Count | Should -Be 0
+        @(Get-WebAppHostName -WebApp ([pscustomobject]@{
+                    HostNames = @('direct.example.com')
+                })) | Should -Be @('direct.example.com')
+        @(Get-WebAppHostName -WebApp ([pscustomobject]@{
+                    SiteConfig = [pscustomobject]@{
+                        HostNames = @('site-config.example.com')
+                    }
+                })) | Should -Be @('site-config.example.com')
+        @(Get-WebAppHostName -WebApp ([pscustomobject]@{
+                    Properties = [pscustomobject]@{
+                        HostNames = @('properties.example.com')
+                        EnabledHostNames = @('enabled.example.com')
+                        HostNameSslStates = @(
+                            [pscustomobject]@{ Name = 'ssl.example.com' }
+                        )
+                    }
+                })) | Should -Be @(
+                    'properties.example.com'
+                    'enabled.example.com'
+                    'ssl.example.com'
+                )
+    }
+
+    It 'discovers installer hostnames from Azure hostname bindings' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(
+                        @{ name = 'func-example/func-example.azurewebsites.net' }
+                        @{ name = 'func-example/autopilot.example.com' }
+                    )
+                } | ConvertTo-Json -Depth 4
+            }
+        }
+
+        $hostNames = @(Get-WebAppHostNameBinding `
+                -ResourceId '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Web/sites/func-example')
+
+        $hostNames | Should -Be @(
+            'func-example.azurewebsites.net'
+            'autopilot.example.com'
+        )
+    }
+
+    It 'combines discovered and explicit redirects before configuring the SPA' {
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+
+        $installer | Should -Match `
+            'Get-AzWebApp\s+`\s*-ResourceGroupName\s+\$ResourceGroupName'
+        $installer | Should -Match `
+            'Get-WebAppHostName -WebApp \$existingFunctionApp'
+        $installer | Should -Match `
+            'Get-CustomWebRedirectUri -HostName \$existingFunctionAppHostNames'
+        $installer | Should -Match `
+            '@\(\$AdditionalWebRedirectUri\) \+ \$discoveredWebRedirectUris'
     }
 }
 
@@ -4395,6 +4638,12 @@ Describe 'Deployment package' {
             "'History.md', 'VERSION'"
         $historyCheck | Should -Match `
             '\$changedPaths -notcontains \$_'
+        $historyCheck | Should -Match `
+            'History\.md must contain exactly one section for'
+        $historyCheck | Should -Match `
+            '\$_\.EndsWith\(" - \$versionDate"\)'
+        $historyCheck | Should -Match `
+            '\$dateHeadings\[0\] -cne \$expectedHeading'
         $historyCheck | Should -Match '\\\[skip ci\\\]'
     }
 

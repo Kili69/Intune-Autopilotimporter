@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -23,10 +23,10 @@ Grants the required Graph permissions to a managed identity.
 
 .DESCRIPTION
 Connects to Microsoft Graph, resolves the required Autopilot import, Entra
-device update, restricted management administrative unit, and Intune RBAC read
-application roles, and assigns them to the specified managed identity service
-principal. Existing assignments are detected, making the script safe to run
-repeatedly.
+device update, group membership read, restricted management administrative
+unit, and Intune RBAC read application roles, and assigns them to the specified
+managed identity service principal. Existing assignments are detected, making
+the script safe to run repeatedly.
 
 .PARAMETER ManagedIdentityObjectId
 Object ID of the Function App's system-assigned managed identity service
@@ -75,6 +75,8 @@ $permissionNames = @(
     'DeviceManagementServiceConfig.ReadWrite.All'
     'DeviceManagementRBAC.Read.All'
     'Device.ReadWrite.All'
+    'GroupMember.Read.All'
+    'User.ReadBasic.All'
 )
 
 if ($ForceGraphSignIn) {

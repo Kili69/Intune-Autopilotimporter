@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -123,8 +123,9 @@ Skips app registration and API scope management.
 EntraClientId must be supplied when this switch is used.
 
 .PARAMETER SkipGraphPermission
-Skips assignment of DeviceManagementServiceConfig.ReadWrite.All to the
-Function managed identity.
+Skips assignment of the required Microsoft Graph application permissions to
+the Function managed identity, including GroupMember.Read.All and
+User.ReadBasic.All.
 .PARAMETER SkipPublish
 Deploys infrastructure without publishing the Function source package.
 
@@ -1206,6 +1207,88 @@ function Initialize-AzureResourceGroup {
     return New-AzResourceGroup @newResourceGroupParameters
 }
 
+function Get-CustomWebRedirectUri {
+    param(
+        [AllowNull()]
+        [object[]] $HostName
+    )
+
+    return @(
+        @($HostName) |
+            ForEach-Object { ([string] $_).Trim() } |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                $_ -notlike '*.azurewebsites.net'
+            } |
+            ForEach-Object { "https://$_/api/ui/index.html" } |
+            Select-Object -Unique
+    )
+}
+
+function Get-WebAppHostName {
+    param(
+        [AllowNull()]
+        [object] $WebApp
+    )
+
+    if ($null -eq $WebApp) {
+        return @()
+    }
+
+    $containers = @($WebApp)
+    foreach ($containerName in @('SiteConfig', 'Properties')) {
+        $property = $WebApp.PSObject.Properties[$containerName]
+        if ($null -ne $property -and $null -ne $property.Value) {
+            $containers += $property.Value
+        }
+    }
+
+    return @(
+        foreach ($container in $containers) {
+            foreach ($propertyName in @('HostNames', 'EnabledHostNames')) {
+                $property = $container.PSObject.Properties[$propertyName]
+                if ($null -ne $property) {
+                    @($property.Value)
+                }
+            }
+
+            $sslStatesProperty = `
+                $container.PSObject.Properties['HostNameSslStates']
+            if ($null -ne $sslStatesProperty) {
+                foreach ($sslState in @($sslStatesProperty.Value)) {
+                    if ($null -ne $sslState) {
+                        $nameProperty = $sslState.PSObject.Properties['Name']
+                        if ($null -ne $nameProperty) {
+                            $nameProperty.Value
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+function Get-WebAppHostNameBinding {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ResourceId
+    )
+
+    $response = Invoke-AzRestMethod `
+        -Method GET `
+        -Path "$ResourceId/hostNameBindings?api-version=2023-12-01"
+    if ($response.StatusCode -ge 400) {
+        throw "Function App hostname binding lookup failed with status $($response.StatusCode)."
+    }
+
+    $content = $response.Content | ConvertFrom-Json
+    return @(
+        @($content.value) |
+            ForEach-Object { ([string] $_.name) -replace '^.*/', '' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
 #endregion Helper functions
 
 #region Prerequisites
@@ -1390,6 +1473,25 @@ $resourceGroup = Initialize-AzureResourceGroup `
     -Location $Location `
     -Tags $ResourceGroupTags
 
+$existingFunctionApp = Get-AzWebApp `
+    -ResourceGroupName $ResourceGroupName `
+    -Name $FunctionAppName `
+    -ErrorAction SilentlyContinue
+$existingFunctionAppHostNames = @(
+    Get-WebAppHostName -WebApp $existingFunctionApp
+)
+if ($null -ne $existingFunctionApp) {
+    $existingFunctionAppResourceId = `
+        "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
+    $existingFunctionAppHostNames += @(
+        Get-WebAppHostNameBinding `
+            -ResourceId $existingFunctionAppResourceId
+    )
+}
+$discoveredWebRedirectUris = @(
+    Get-CustomWebRedirectUri -HostName $existingFunctionAppHostNames
+)
+
 if (-not $SkipEntraAppConfiguration) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
     $entraApplication = & $ensureEntraAppScriptPath `
@@ -1409,9 +1511,17 @@ if (-not $SkipEntraAppConfiguration) {
         ApiClientId            = $entraApplication.ClientId
         ApiScopeId             = $entraApplication.ScopeId
         RedirectUri            = "https://$FunctionAppName.azurewebsites.net/api/ui/index.html"
-        AdditionalRedirectUri  = @($AdditionalWebRedirectUri)
         DisplayName            = $EntraWebApplicationName
         Confirm                = $false
+    }
+    $additionalRedirectUris = @(
+        @($AdditionalWebRedirectUri) + $discoveredWebRedirectUris |
+            ForEach-Object { ([string] $_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+    if ($additionalRedirectUris.Count -gt 0) {
+        $webApplicationParameters.AdditionalRedirectUri = $additionalRedirectUris
     }
     if ($null -ne $WebClientId -and $WebClientId -ne [guid]::Empty) {
         $webApplicationParameters.ClientId = $WebClientId

@@ -88,7 +88,10 @@ app.innerHTML = `
           <button type="button" data-language="de" aria-pressed="${language === 'de'}">DE</button>
           <button type="button" data-language="en" aria-pressed="${language === 'en'}">EN</button>
         </div>
-        <span id="account-name" class="account-name"></span>
+        <span class="account-identity">
+          <span id="account-name" class="account-name"></span>
+          <span id="account-upn" class="account-upn"></span>
+        </span>
         <button id="logout" class="button button-quiet hidden" type="button">${t('logout')}</button>
       </div>
     </header>
@@ -184,6 +187,7 @@ const workspace = element<HTMLElement>('workspace');
 const loginButton = element<HTMLButtonElement>('login');
 const logoutButton = element<HTMLButtonElement>('logout');
 const accountName = element<HTMLElement>('account-name');
+const accountUpn = element<HTMLElement>('account-upn');
 const fileInput = element<HTMLInputElement>('csv-file');
 const fileSummary = element<HTMLElement>('file-summary');
 const dropZone = element<HTMLElement>('drop-zone');
@@ -311,6 +315,8 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   account = selectedAccount;
   msal.setActiveAccount(account);
   accountName.textContent = account.name ?? account.username;
+  accountUpn.textContent = account.username;
+  accountUpn.title = account.username;
   logoutButton.classList.remove('hidden');
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');

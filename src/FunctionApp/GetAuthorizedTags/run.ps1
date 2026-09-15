@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -50,6 +50,19 @@ try {
     if ($policy.Count -eq 0) {
         throw 'Tag authorization policy is empty.'
     }
+    $tokenResult = Get-AzAccessToken `
+        -ResourceUrl 'https://graph.microsoft.com/' `
+        -ErrorAction Stop
+    $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
+        $tokenResult.Token
+    }
+    else {
+        ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
+    }
+    $principal = Get-CurrentPolicyPrincipal `
+        -Principal $principal `
+        -Policy $policy `
+        -AccessToken $graphToken
     $tags = @(Get-AuthorizedGroupTags -Principal $principal -Policy $policy)
 }
 catch [System.ArgumentException] {

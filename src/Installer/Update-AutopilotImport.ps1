@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -737,6 +737,70 @@ function Get-UpdateWebRedirectUri {
     )
 }
 
+function Get-UpdateWebAppHostName {
+    param(
+        [AllowNull()]
+        [object] $WebApp
+    )
+
+    if ($null -eq $WebApp) {
+        return @()
+    }
+
+    $containers = @($WebApp)
+    foreach ($containerName in @('SiteConfig', 'Properties')) {
+        $property = $WebApp.PSObject.Properties[$containerName]
+        if ($null -ne $property -and $null -ne $property.Value) {
+            $containers += $property.Value
+        }
+    }
+
+    return @(
+        foreach ($container in $containers) {
+            foreach ($propertyName in @('HostNames', 'EnabledHostNames')) {
+                $property = $container.PSObject.Properties[$propertyName]
+                if ($null -ne $property) {
+                    @($property.Value)
+                }
+            }
+
+            $sslStatesProperty = `
+                $container.PSObject.Properties['HostNameSslStates']
+            if ($null -ne $sslStatesProperty) {
+                foreach ($sslState in @($sslStatesProperty.Value)) {
+                    if ($null -ne $sslState) {
+                        $nameProperty = $sslState.PSObject.Properties['Name']
+                        if ($null -ne $nameProperty) {
+                            $nameProperty.Value
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+function Get-UpdateWebAppHostNameBinding {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ResourceId
+    )
+
+    $response = Invoke-AzRestMethod `
+        -Method GET `
+        -Path "$ResourceId/hostNameBindings?api-version=2023-12-01"
+    if ($response.StatusCode -ge 400) {
+        throw "Function App hostname binding lookup failed with status $($response.StatusCode)."
+    }
+
+    $content = $response.Content | ConvertFrom-Json
+    return @(
+        @($content.value) |
+            ForEach-Object { ([string] $_.name) -replace '^.*/', '' } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
 function Get-UpdateApplicationInsightsWorkspaceResourceId {
     <#
     .SYNOPSIS
@@ -1133,8 +1197,12 @@ $defaultHostName = [string] $site.properties.defaultHostName
 if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
     $defaultHostName = "$FunctionAppName.azurewebsites.net"
 }
+$siteHostNames = @(Get-UpdateWebAppHostName -WebApp $site)
+$siteHostNames += @(
+    Get-UpdateWebAppHostNameBinding -ResourceId $resourceId
+)
 $additionalWebRedirectUris = @(
-    Get-UpdateWebRedirectUri -HostName @($site.properties.hostNames)
+    Get-UpdateWebRedirectUri -HostName $siteHostNames
 )
 $resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
     $ManagementUrl

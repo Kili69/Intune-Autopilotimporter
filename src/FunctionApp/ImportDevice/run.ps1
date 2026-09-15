@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260914.3
+# Project-Version: 1.1.20260915.7
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -150,17 +150,21 @@ if ([string] $Request.Method -eq 'GET') {
         $tokenResult = Get-AzAccessToken `
             -ResourceUrl 'https://graph.microsoft.com/' `
             -ErrorAction Stop
-        $accessToken = if ($tokenResult.Token -is [Security.SecureString]) {
-            ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
+        $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
+            $tokenResult.Token
         }
         else {
-            [string] $tokenResult.Token
+            ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
         }
+        $principal = Get-CurrentPolicyPrincipal `
+            -Principal $principal `
+            -Policy $tagAuthorizationPolicy `
+            -AccessToken $graphToken
         $graphResponse = Invoke-RestMethod `
             -Method Get `
             -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$parsedImportId" `
             -Authentication Bearer `
-            -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+            -Token $graphToken `
             -ErrorAction Stop
         $authorizedGroupTag = Resolve-AuthorizedGroupTag `
             -Principal $principal `
@@ -192,7 +196,7 @@ if ([string] $Request.Method -eq 'GET') {
                     -Method Get `
                     -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registrationId" `
                     -Authentication Bearer `
-                    -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+                    -Token $graphToken `
                     -ErrorAction Stop
                 $parsedEntraDeviceId = [guid]::Empty
                 if (-not [guid]::TryParse(
@@ -205,7 +209,7 @@ if ([string] $Request.Method -eq 'GET') {
                     -Method Get `
                     -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=deviceId,extensionAttributes" `
                     -Authentication Bearer `
-                    -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+                    -Token $graphToken `
                     -ErrorAction Stop
                 $extensionProperty = $entraDevice.extensionAttributes.PSObject.Properties[
                     $extensionAttribute
@@ -266,6 +270,30 @@ if ([string] $Request.Method -eq 'GET') {
 }
 
 try {
+    $tokenResult = Get-AzAccessToken `
+        -ResourceUrl 'https://graph.microsoft.com/' `
+        -ErrorAction Stop
+    $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
+        $tokenResult.Token
+    }
+    else {
+        ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
+    }
+    $principal = Get-CurrentPolicyPrincipal `
+        -Principal $principal `
+        -Policy $tagAuthorizationPolicy `
+        -AccessToken $graphToken
+}
+catch {
+    Write-Error "[$correlationId] Current group membership lookup failed: $($_.Exception.Message)"
+    Send-JsonResponse -StatusCode BadGateway -Body @{
+        error         = 'groupMembershipLookupFailed'
+        correlationId = $correlationId
+    }
+    return
+}
+
+try {
     $requestBody = if ($Request.Body -is [string]) {
         $Request.Body | ConvertFrom-Json
     }
@@ -318,19 +346,11 @@ $actorId = @($principal.claims | Where-Object {
 } | Select-Object -First 1).val
 
 try {
-    $tokenResult = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com/' -ErrorAction Stop
-    $accessToken = if ($tokenResult.Token -is [Security.SecureString]) {
-        ConvertFrom-SecureString -SecureString $tokenResult.Token -AsPlainText
-    }
-    else {
-        [string] $tokenResult.Token
-    }
-
     $graphResponse = Invoke-RestMethod `
         -Method Post `
         -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities' `
         -Authentication Bearer `
-        -Token (ConvertTo-SecureString $accessToken -AsPlainText -Force) `
+        -Token $graphToken `
         -ContentType 'application/json' `
         -Body ($graphPayload | ConvertTo-Json -Depth 8 -Compress) `
         -ErrorAction Stop

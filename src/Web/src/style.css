@@ -28,7 +28,10 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 .brand strong { font-size: 15px; letter-spacing: .01em; }
 .brand small { color: #6c7890; font-size: 11px; margin-top: 1px; text-transform: uppercase; letter-spacing: .12em; }
 .account-area { display: flex; gap: 16px; align-items: center; }
-.account-name { color: #56647d; font-size: 14px; }
+.account-identity { display: flex; flex-direction: column; min-width: 0; max-width: 280px; text-align: right; }
+.account-name, .account-upn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-name { color: #56647d; font-size: 14px; font-weight: 700; }
+.account-upn { color: #8792a5; font-size: 11px; margin-top: 3px; }
 .language-switch { display: flex; padding: 3px; gap: 2px; background: #eef4fb; border-radius: 9px; }
 .language-switch button {
   border: 0; border-radius: 6px; padding: 6px 8px; color: #607089; background: transparent;
@@ -114,11 +117,15 @@ footer { color: #8792a5; text-align: center; padding: 24px; font-size: 12px; }
   .hero, .step-grid { grid-template-columns: 1fr; }
   .hero { gap: 42px; padding: 50px 0; }
   .topbar { padding: 0 20px; }
-  .account-name { display: none; }
+  .account-area { gap: 8px; }
+  .account-identity { max-width: 160px; }
+  .account-name { font-size: 12px; }
+  .account-upn { font-size: 10px; }
 }
 
 @media (max-width: 520px) {
   .hero, .workspace { width: min(100% - 24px, 1180px); }
+  .account-identity { display: none; }
   .panel { padding: 22px; border-radius: 16px; }
   .results-header { align-items: start; flex-direction: column; gap: 8px; }
 }

@@ -557,6 +557,7 @@ For a standard installation, one installing administrator performs the complete 
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Microsoft Graph, application | `GroupMember.Read.All`, `User.ReadBasic.All` | Checks the importing user's current membership in the Entra groups configured by the Group Tag policy. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
 | Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |
 | Function App managed identity | Deployed Storage Account | `Storage Blob Data Owner` | Provides keyless host storage access and reads or updates the Group Tag authorization policy. Assigned automatically by the installer. |
@@ -622,7 +623,7 @@ By default, the installer searches the selected tenant for an app registration n
 The installer compares the existing application with the desired configuration before writing. A user with read access can therefore reuse an already compliant application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All` permission.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, and `User.ReadBasic.All` permissions.
 
 The installer configures:
 
@@ -691,10 +692,8 @@ After the Azure resources are deployed, the installer creates a portable client 
 - `Modules\AutopilotImport.Client\<version>\AutopilotImport.psm1`
 - `Modules\AutopilotImport.Client\<version>\client.settings.json`
 - `scripts\Import-AutopilotDevice.ps1`
-- `scripts\Set-TagAuthorizationPolicy.ps1`
-- `scripts\Set-TagPolicyManagers.ps1`
 
-The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module and policy-management scripts load these values automatically, while explicitly supplied parameters take precedence. The standalone import script instead reads its public configuration directly from the supplied application URL.
+The settings file contains the import and management URLs, API Application ID URI, Tenant ID, Subscription ID, resource group, and Function App name. It contains no credentials. The module loads these values automatically, while explicitly supplied parameters take precedence. The standalone import script instead reads its public configuration directly from the supplied application URL.
 
 During installation and update, the installer creates `Intune-Autopilotimport-psmodule-<version>.zip` in the current user's Documents directory. An existing archive with the same version is replaced. The ZIP contains the current versioned PowerShell modules and `client.settings.json`, with the folder layout required by PowerShell module autoloading. Transfer the archive to another computer and extract it into the current user's PowerShell module directory:
 
@@ -1053,7 +1052,7 @@ exposed through these paths.
 
 #### 3. Assign the Graph Permission
 
-This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
+This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
@@ -1176,8 +1175,8 @@ contain `Device Serial Number` and `Hardware Hash`. The selected Group Tag is
 applied to every row.
 
 The standalone import script supports Windows PowerShell 5.1 and later and
-installs `Az.Accounts` on demand. The `AutopilotImport.Client` module and the
-policy-management scripts retain their PowerShell 7.2 requirement. Managing the
+installs `Az.Accounts` on demand. The `AutopilotImport.Client` module retains
+its PowerShell 7.2 requirement. Managing the
 explicit manager list additionally requires `Az.Resources` and `Az.Websites`.
 The project module dependency is included in the installed package.
 
