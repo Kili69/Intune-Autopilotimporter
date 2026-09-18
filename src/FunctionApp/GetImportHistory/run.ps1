@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.3
+# Project-Version: 1.1.20260918.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -139,6 +139,19 @@ try {
         $parsedImportId
     } | Select-Object -Unique)
 
+    $serialNumberValues = @()
+    if ($requestBody -and $requestBody.PSObject.Properties['serialNumbers']) {
+        $serialNumberValues += @($requestBody.serialNumbers)
+    }
+    $requestedSerialNumbers = @($serialNumberValues | ForEach-Object {
+        $serialNumber = ([string] $_).Trim()
+        if ([string]::IsNullOrWhiteSpace($serialNumber)) {
+            throw [ArgumentException]::new(
+                'serialNumbers must not contain empty values.')
+        }
+        $serialNumber
+    } | Select-Object -Unique)
+
     $deviceHashSha256Values = @()
     if ($requestBody -and
         $requestBody.PSObject.Properties['deviceHashSha256']) {
@@ -153,15 +166,17 @@ try {
             }
             $normalizedHash
         } | Select-Object -Unique)
-    if ($requestedImportIds.Count + $requestedDeviceHashSha256.Count -gt 50) {
+    if ($requestedImportIds.Count + $requestedSerialNumbers.Count +
+        $requestedDeviceHashSha256.Count -gt 50) {
         throw [ArgumentException]::new(
-            'At most 50 ImportId and DeviceHash values may be requested.')
+            'At most 50 ImportId, SerialNumber, and DeviceHash values may be requested.')
     }
     $hasExplicitFilter = $requestedImportIds.Count -gt 0 -or
+        $requestedSerialNumbers.Count -gt 0 -or
         $requestedDeviceHashSha256.Count -gt 0
     if ($showAll -and $hasExplicitFilter) {
         throw [ArgumentException]::new(
-            'showAll cannot be combined with ImportId or DeviceHash filters.')
+            'showAll cannot be combined with ImportId, SerialNumber, or DeviceHash filters.')
     }
 }
 catch [ArgumentException] {
@@ -220,6 +235,9 @@ try {
     }
     if ($requestedImportIds.Count -gt 0) {
         $auditParameters.ImportId = $requestedImportIds
+    }
+    if ($requestedSerialNumbers.Count -gt 0) {
+        $auditParameters.SerialNumber = $requestedSerialNumbers
     }
     if ($requestedDeviceHashSha256.Count -gt 0) {
         $auditParameters.DeviceHashSha256 = $requestedDeviceHashSha256

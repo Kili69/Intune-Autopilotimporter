@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.3
+# Project-Version: 1.1.20260918.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -333,6 +333,8 @@ function Get-ImportAuditHistory {
     param(
         [guid[]] $ImportId = @(),
 
+        [string[]] $SerialNumber = @(),
+
         [string[]] $DeviceHashSha256 = @(),
 
         [string] $ActorObjectId,
@@ -358,6 +360,11 @@ function Get-ImportAuditHistory {
     $identifierFilters = @(
         @($ImportId | Select-Object -Unique | ForEach-Object {
             "RowKey eq '$($_.ToString())'"
+        })
+        @($SerialNumber | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Select-Object -Unique | ForEach-Object {
+            "serialNumber eq '$($_.Replace("'", "''"))'"
         })
         @($DeviceHashSha256 | Where-Object {
             -not [string]::IsNullOrWhiteSpace($_)

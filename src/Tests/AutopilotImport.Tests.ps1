@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.3
+# Project-Version: 1.1.20260918.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1156,7 +1156,28 @@ Describe 'Client import history' {
                 $payload = $Body | ConvertFrom-Json
                 $Method -eq 'Post' -and
                 @($payload.importIds).Count -eq 2 -and
+                @($payload.serialNumbers).Count -eq 0 -and
                 @($payload.deviceHashSha256).Count -eq 0
+            }
+    }
+
+    It 'posts serial numbers as an explicit history filter' {
+        Get-AutoPilotImportHistory `
+            -SerialNumber '7892-5288-2670-2860-4823-9507-73' `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $payload = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                $payload.serialNumbers -eq `
+                    '7892-5288-2670-2860-4823-9507-73'
             }
     }
 
@@ -2147,6 +2168,25 @@ Describe 'Import audit table storage' {
             -RetentionDays 60 `
             -ReferenceUtc $referenceUtc |
             Should -Be ([datetimeoffset] '2026-07-20T12:00:00Z')
+    }
+
+    It 'filters import audit history by serial number' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{ value = @() }
+        }
+
+        Get-ImportAuditHistory `
+            -SerialNumber "SERIAL-'001" `
+            -SinceUtc ([datetimeoffset] '2026-08-19T00:00:00Z') `
+            -AccessToken $auditToken | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -ParameterFilter {
+                $decodedUri = [uri]::UnescapeDataString($Uri)
+                $Method -eq 'Get' -and
+                $decodedUri.Contains("serialNumber eq 'SERIAL-''001'")
+            }
     }
 
     It 'deletes audit records older than the retention cutoff' {

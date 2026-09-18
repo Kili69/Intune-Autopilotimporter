@@ -2,11 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.1.20260918.3` - 2026-09-18
+## `1.1.20260918.4` - 2026-09-18
 
 - Extended Group Tag policies and queued device processing to assign imported Entra devices to both management and restricted management administrative units, with exact and unique Microsoft Graph validation before policy storage or deployment.
 - Standardized the policy, queue, installer, client, and documentation contract on `administrativeUnitName` and `AdministrativeUnitName`, removing the previous restricted-only compatibility schema.
-- Added attributable import audit history with the requesting user, timestamps for each processing milestone, owner-scoped default results, targeted Import ID or device-hash lookup, and manager-authorized access to all retained records.
+- Added attributable import audit history with the requesting user, timestamps for each processing milestone, owner-scoped default results, targeted Import ID, serial-number, or device-hash lookup, and manager-authorized access to all retained records.
 - Added hourly cleanup of import audit records and centralized the 30-day visibility and deletion period as an overridable runtime default.
 
 ## `1.1.20260915.7` - 2026-09-15

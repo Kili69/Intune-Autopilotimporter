@@ -301,9 +301,10 @@ Then retrieve the import history:
 Get-AutoPilotImportHistory
 ```
 
-Retrieve one or more specific records by their displayed import ID or by the
-Base64 DeviceHash used for the import. These targeted lookups also show who
-requested the import, even when it was requested by another user:
+Retrieve one or more specific records by their displayed import ID, Autopilot
+serial number, or the Base64 DeviceHash used for the import. These targeted
+lookups also show who requested the import, even when it was requested by
+another user:
 
 ```powershell
 Get-AutoPilotImportHistory -ImportId @(
@@ -311,6 +312,10 @@ Get-AutoPilotImportHistory -ImportId @(
     '22222222-2222-2222-2222-222222222222'
 )
 
+Get-AutoPilotImportHistory `
+    -SerialNumber '7892-5288-2670-2860-4823-9507-73'
+
+$deviceHash = (Import-Csv '.\AutopilotHWID.csv')[0].'Hardware Hash'
 Get-AutoPilotImportHistory -DeviceHash $deviceHash
 ```
 
@@ -1333,8 +1338,8 @@ GET /api/management/imports?top=100
 
 Without additional filters, the endpoint returns only imports requested by the
 authenticated caller. `showAll=true` requires importer-manager authorization.
-Targeted lookups use `POST` with up to 50 import IDs and SHA-256 DeviceHash
-indexes:
+Targeted lookups use `POST` with up to 50 import IDs, serial numbers, and
+SHA-256 DeviceHash indexes:
 
 ```http
 POST /api/management/imports?top=100
@@ -1342,6 +1347,7 @@ Content-Type: application/json
 
 {
     "importIds": ["00000000-0000-0000-0000-000000000000"],
+    "serialNumbers": ["7892-5288-2670-2860-4823-9507-73"],
     "deviceHashSha256": ["9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"]
 }
 ```

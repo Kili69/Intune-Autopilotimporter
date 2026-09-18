@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260918.3
+# Project-Version: 1.1.20260918.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1308,7 +1308,7 @@ function Get-ClientDeviceHashSha256 {
         $deviceHashBytes = [Convert]::FromBase64String($DeviceHash)
     }
     catch {
-        throw 'DeviceHash must be valid Base64.'
+        throw 'DeviceHash must be the Base64 Hardware Hash from the Autopilot CSV. To search by the displayed device serial number, use -SerialNumber.'
     }
     if ($deviceHashBytes.Length -eq 0) {
         throw 'DeviceHash must not be empty.'
@@ -1325,8 +1325,8 @@ function Get-AutoPilotImportHistory {
 
     .DESCRIPTION
     Returns imports requested by the signed-in user during the last 30 days.
-    ImportId and DeviceHash can retrieve specific records, including who
-    requested them. ShowAll returns all retained records and requires the
+    ImportId, SerialNumber, and DeviceHash can retrieve specific records,
+    including who requested them. ShowAll returns all retained records and requires the
     caller to be allowed by the manager policy or have an enabled Intune Role
     Administrator assignment.
 
@@ -1340,13 +1340,17 @@ function Get-AutoPilotImportHistory {
     .PARAMETER ImportId
     One or more import IDs to retrieve regardless of who requested them.
 
+    .PARAMETER SerialNumber
+    One or more Autopilot device serial numbers to retrieve regardless of who
+    requested them.
+
     .PARAMETER DeviceHash
     One or more Base64 Autopilot device hashes to retrieve. The command sends
     only locally computed SHA-256 indexes to the history endpoint.
 
     .PARAMETER ShowAll
     Returns all retained imports. This switch is restricted to importer
-    managers and cannot be combined with ImportId or DeviceHash.
+    managers and cannot be combined with ImportId, SerialNumber, or DeviceHash.
 
     .PARAMETER ImportHistoryUrl
     HTTPS URL of the import history management endpoint. Overrides the URL
@@ -1382,6 +1386,12 @@ function Get-AutoPilotImportHistory {
     Returns the specified import and the user who requested it.
 
     .EXAMPLE
+    Get-AutoPilotImportHistory `
+        -SerialNumber '7892-5288-2670-2860-4823-9507-73'
+
+    Returns imports for the specified Autopilot device serial number.
+
+    .EXAMPLE
     Get-AutoPilotImportHistory -ShowAll
 
     Returns all imports retained for 30 days when the caller is an importer
@@ -1397,6 +1407,9 @@ function Get-AutoPilotImportHistory {
 
         [ValidateCount(1, 50)]
         [guid[]] $ImportId,
+
+        [ValidateCount(1, 50)]
+        [string[]] $SerialNumber,
 
         [ValidateCount(1, 50)]
         [string[]] $DeviceHash,
@@ -1449,17 +1462,29 @@ function Get-AutoPilotImportHistory {
     if ($PSBoundParameters.ContainsKey('ImportId')) {
         $requestedImportIds = @($ImportId)
     }
+    [string[]] $requestedSerialNumbers = @()
+    if ($PSBoundParameters.ContainsKey('SerialNumber')) {
+        $requestedSerialNumbers = @($SerialNumber | ForEach-Object {
+            ([string] $_).Trim()
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        if ($requestedSerialNumbers.Count -ne $SerialNumber.Count) {
+            throw 'SerialNumber values must not be empty.'
+        }
+    }
     [string[]] $requestedDeviceHashes = @()
     if ($PSBoundParameters.ContainsKey('DeviceHash')) {
         $requestedDeviceHashes = @($DeviceHash)
     }
     $hasExplicitFilter = $requestedImportIds.Count -gt 0 -or
+        $requestedSerialNumbers.Count -gt 0 -or
         $requestedDeviceHashes.Count -gt 0
     if ($ShowAll -and $hasExplicitFilter) {
-        throw 'ShowAll cannot be combined with ImportId or DeviceHash.'
+        throw 'ShowAll cannot be combined with ImportId, SerialNumber, or DeviceHash.'
     }
-    if ($requestedImportIds.Count + $requestedDeviceHashes.Count -gt 50) {
-        throw 'At most 50 ImportId and DeviceHash values may be requested.'
+    if ($requestedImportIds.Count + $requestedSerialNumbers.Count +
+        $requestedDeviceHashes.Count -gt 50) {
+        throw 'At most 50 ImportId, SerialNumber, and DeviceHash values may be requested.'
     }
     $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
     if ($ShowAll) {
@@ -1476,6 +1501,7 @@ function Get-AutoPilotImportHistory {
         $requestParameters.ContentType = 'application/json'
         $requestParameters.Body = @{
             importIds = @($requestedImportIds | ForEach-Object { $_.ToString() })
+            serialNumbers = @($requestedSerialNumbers)
             deviceHashSha256 = @($requestedDeviceHashes | ForEach-Object {
                 Get-ClientDeviceHashSha256 -DeviceHash $_
             })
