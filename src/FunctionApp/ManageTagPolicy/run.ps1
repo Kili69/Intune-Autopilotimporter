@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -76,6 +76,31 @@ function ConvertTo-SubmittedTagPolicy {
     $policy = ConvertTo-TagAuthorizationPolicy -Rules $Rules
     foreach ($rule in $policy) {
         $rule
+    }
+}
+
+function Assert-SubmittedAdministrativeUnitsExist {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Policy,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $administrativeUnitNames = @($Policy | ForEach-Object {
+        if ($_.PSObject.Properties[
+                'administrativeUnitName'] -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string] $_.administrativeUnitName)) {
+            ([string] $_.administrativeUnitName).Trim()
+        }
+    } | Sort-Object -Unique)
+
+    foreach ($administrativeUnitName in $administrativeUnitNames) {
+        Resolve-EntraAdministrativeUnit `
+            -AdministrativeUnitName $administrativeUnitName `
+            -AccessToken $AccessToken | Out-Null
     }
 }
 
@@ -168,6 +193,28 @@ try {
     }
     $submittedRules = @(Get-SubmittedTagPolicyRules -Body $requestBody)
     $updatedPolicy = @(ConvertTo-SubmittedTagPolicy -Rules $submittedRules)
+    $configuredAdministrativeUnits = @($updatedPolicy | Where-Object {
+        $_.PSObject.Properties[
+            'administrativeUnitName'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.administrativeUnitName)
+    })
+    if ($configuredAdministrativeUnits.Count -gt 0) {
+        $tokenResult = Get-AzAccessToken `
+            -ResourceUrl 'https://graph.microsoft.com/' `
+            -ErrorAction Stop
+        $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
+            $tokenResult.Token
+        }
+        else {
+            ConvertTo-SecureString ([string] $tokenResult.Token) `
+                -AsPlainText `
+                -Force
+        }
+        Assert-SubmittedAdministrativeUnitsExist `
+            -Policy $updatedPolicy `
+            -AccessToken $graphToken
+    }
     $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
 }
 catch {

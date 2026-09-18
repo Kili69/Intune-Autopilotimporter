@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -8,18 +8,22 @@ Completes the Entra configuration of an imported Autopilot device.
 .DESCRIPTION
 Processes queued Autopilot imports after Intune has created the Entra device.
 It writes the authorized Group Tag to an extension attribute and optionally
-adds the device to a restricted management administrative unit. An incomplete
+adds the device to a regular or restricted management administrative unit. An incomplete
 import throws so the Storage Queue trigger retries it according to host.json.
 Successful updates are idempotent.
 
 .PARAMETER QueueItem
 Message supplied by the Azure Storage Queue trigger. The value may be a JSON
 string or a deserialized object and must contain importId and groupTag. It may
-also contain restrictedManagementAdministrativeUnitName.
+also contain administrativeUnitName.
 
 .PARAMETER TriggerMetadata
 Metadata supplied by the Azure Functions PowerShell worker for the queue
 invocation. The current implementation does not read this value directly.
+
+.PARAMETER TagPolicyBlob
+Current Group Tag authorization policy from the private configuration blob.
+The queued administrative unit name remains a fallback for older messages.
 
 .INPUTS
 None. Azure Functions binds QueueItem and TriggerMetadata at runtime.
@@ -40,7 +44,7 @@ order. Missing downstream IDs are treated as transient failures so the queue
 trigger can retry the message.
 #>
 
-param($QueueItem, $TriggerMetadata)
+param($QueueItem, $TriggerMetadata, $TagPolicyBlob)
 
 # Load the shared validation and Microsoft Graph payload helpers used by the
 # HTTP and queue-triggered Functions.
@@ -66,6 +70,25 @@ $groupTag = [string] $message.groupTag
 if ([string]::IsNullOrWhiteSpace($groupTag)) {
     throw "Queued Group Tag is missing for import '$importId'."
 }
+
+$tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent `
+    -Value $TagPolicyBlob
+if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
+    $tagAuthorizationPolicyJson = $env:TAG_AUTHORIZATION_POLICY
+}
+$tagAuthorizationPolicy = if (
+    [string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
+    @()
+}
+else {
+    @($tagAuthorizationPolicyJson | ConvertFrom-Json)
+}
+$administrativeUnitName = `
+    Resolve-EffectiveAdministrativeUnitName `
+        -Policy $tagAuthorizationPolicy `
+        -GroupTag $groupTag `
+        -QueuedAdministrativeUnitName `
+            ([string] $message.administrativeUnitName)
 
 # Build the PATCH body with the deployment-selected extension attribute. The
 # helper also enforces the supported extensionAttribute1..15 range.
@@ -118,11 +141,9 @@ if (-not [guid]::TryParse(
 
 # Administrative-unit membership requires the Entra object ID, which differs
 # from the deviceId (azureActiveDirectoryDeviceId) resolved above.
-$restrictedManagementAdministrativeUnitName = [string] `
-    $message.restrictedManagementAdministrativeUnitName
 $deviceObjectId = [guid]::Empty
 if (-not [string]::IsNullOrWhiteSpace(
-        $restrictedManagementAdministrativeUnitName)) {
+        $administrativeUnitName)) {
     $entraDevice = Invoke-RestMethod `
         -Method Get `
         -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
@@ -133,22 +154,22 @@ if (-not [string]::IsNullOrWhiteSpace(
         throw "Entra device object ID is unavailable for device '$entraDeviceId'."
     }
 
-    # Membership is the completion marker for the optional RMAU workflow. An
+    # Membership is the completion marker for the optional AU workflow. An
     # existing membership means a prior delivery already completed both writes.
     $existingMembership = `
-        Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+        Add-EntraDeviceToAdministrativeUnit `
             -AdministrativeUnitName `
-                $restrictedManagementAdministrativeUnitName `
+                $administrativeUnitName `
             -DeviceObjectId $deviceObjectId `
             -AccessToken $secureToken `
             -TestOnly
     if ($existingMembership.IsMember) {
-        Write-Information "Entra device '$entraDeviceId' is already a member of restricted management administrative unit '$restrictedManagementAdministrativeUnitName'."
+        Write-Information "Entra device '$entraDeviceId' is already a member of administrative unit '$administrativeUnitName'."
         return
     }
 }
 
-# Write the authorized Group Tag before adding optional RMAU membership. This
+# Write the authorized Group Tag before adding optional AU membership. This
 # ordering ensures membership only marks a workflow whose attribute PATCH has
 # already succeeded; repeating the PATCH after a transient failure is harmless.
 Invoke-RestMethod `
@@ -163,13 +184,13 @@ Invoke-RestMethod `
 Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
 
 if (-not [string]::IsNullOrWhiteSpace(
-        $restrictedManagementAdministrativeUnitName)) {
+        $administrativeUnitName)) {
     # The helper rechecks membership and performs the add only when necessary,
     # keeping retries and duplicate queue deliveries idempotent.
     $membershipResult = `
-        Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+        Add-EntraDeviceToAdministrativeUnit `
             -AdministrativeUnitName `
-                $restrictedManagementAdministrativeUnitName `
+                $administrativeUnitName `
             -DeviceObjectId $deviceObjectId `
             -AccessToken $secureToken
     $membershipAction = if ($membershipResult.MembershipAdded) {
@@ -178,5 +199,5 @@ if (-not [string]::IsNullOrWhiteSpace(
     else {
         'already a member of'
     }
-    Write-Information "Entra device '$entraDeviceId' $membershipAction restricted management administrative unit '$restrictedManagementAdministrativeUnitName'."
+    Write-Information "Entra device '$entraDeviceId' $membershipAction administrative unit '$administrativeUnitName'."
 }

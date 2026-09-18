@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -305,8 +305,8 @@ try {
         -Principal $principal `
         -Policy $tagAuthorizationPolicy `
         -RequestedGroupTag ([string] $requestBody.groupTag)
-    $restrictedManagementAdministrativeUnitName = `
-        Resolve-RestrictedManagementAdministrativeUnitName `
+    $administrativeUnitName = `
+        Resolve-AdministrativeUnitName `
             -Policy $tagAuthorizationPolicy `
             -GroupTag $groupTag `
             -Principal $principal
@@ -368,8 +368,8 @@ Write-Information "[$correlationId] Autopilot import '$($graphResponse.id)' crea
 Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
     importId = [string] $graphResponse.id
     groupTag = $groupTag
-    restrictedManagementAdministrativeUnitName = `
-        $restrictedManagementAdministrativeUnitName
+    administrativeUnitName = `
+        $administrativeUnitName
 } | ConvertTo-Json -Compress)
 Send-JsonResponse -StatusCode Accepted -Body @{
     importId      = $graphResponse.id

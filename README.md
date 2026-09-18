@@ -353,11 +353,11 @@ Parameters:
 - `-GroupId` accepts the Entra group object ID. `-Group` remains available as
     an alias for compatibility.
 - `-GroupTag` accepts one or more Autopilot Group Tags. `-Tag` is an alias.
-- `-Mau` optionally sets the restricted management administrative unit for the
-    added or updated rule. The full parameter name is
-    `-RestrictedManagementAdministrativeUnitName`. If omitted, an existing
-    RMAU for that rule is preserved; a new rule has no RMAU. Supply an empty
-    string to remove the RMAU from that rule.
+- `-Mau` optionally sets a regular or restricted management administrative
+    unit for the added or updated rule. The full parameter name is
+    `-AdministrativeUnitName`. If omitted, an existing unit for that rule is
+    preserved; a new rule has no administrative unit. Supply an empty string
+    to remove the assignment.
 - `-WhatIf` previews the update without writing it to the Azure Function.
 
 Add a group by its object ID and set the MAU:
@@ -433,7 +433,8 @@ automation.
 
 #### Replace the Complete Group Tag Policy
 
-Each rule can specify its own restricted management administrative unit.
+Each rule can specify its own regular or restricted management administrative
+unit through `administrativeUnitName`.
 Preview the complete desired policy before applying it:
 
 ```powershell
@@ -442,27 +443,27 @@ Set-AutoPilotTagPolicy `
         [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
             tags = @('Autopilot-Standard', 'Autopilot-Kiosk')
-            restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+            administrativeUnitName = 'RMAU-Standard'
         }
         [pscustomobject]@{
             groupId = '33333333-3333-3333-3333-333333333333'
             tags = @('Autopilot-Privileged')
-            restrictedManagementAdministrativeUnitName = 'RMAU-Privileged'
+            administrativeUnitName = 'RMAU-Privileged'
         }
     ) `
     -WhatIf
 ```
 
 Run the same command without `-WhatIf` to apply it. Omit a previous rule to
-remove that group. Omit `restrictedManagementAdministrativeUnitName` from a
-rule to disable automatic RMAU membership for that rule. Legacy string rules
-remain supported; `-RestrictedManagementAdministrativeUnitName` acts as their
-shared fallback.
+remove that group. Omit `administrativeUnitName` from a
+rule to disable automatic administrative-unit membership for that rule.
+`-AdministrativeUnitName` or `-Mau` applies a shared fallback to string rules.
 
-Every configured RMAU must already exist, have
-`isMemberManagementRestricted` enabled, and have a unique display name.
-Without a configured RMAU on the matching rule, imports continue without
-automatic administrative-unit membership.
+Every configured administrative unit must already exist and have a unique
+display name. This is validated through Microsoft Graph before a new or
+updated policy is saved. Both units with and without
+`isMemberManagementRestricted` enabled are supported. Without a configured
+unit on the matching rule, imports continue without automatic membership.
 
 ### Change Group Tag Managers
 
@@ -785,7 +786,7 @@ The installer prompts for:
 - Globally unique Function App name, with a generated name proposed by default
 - Destination directory for the operational PowerShell scripts
 - Entra device extension attribute for the authorized Group Tag; the default is `extensionAttribute1`
-- Optional display name of an Entra restricted management administrative unit
+- Optional display name of an Entra administrative unit (MAU or RMAU)
 - Entra group object IDs
 - Allowed Device Tags for each group
 
@@ -809,7 +810,7 @@ pwsh .\Install-AutopilotImport.ps1 `
     -TagAuthorizationRule `
         '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
         '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
-    -RestrictedManagementAdministrativeUnitName 'MAU-Autopilot-Devices' `
+    -AdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -1332,7 +1333,7 @@ GET /api/management/tag-policy
 ```
 
 The response uses the normalized policy format. Every rule can have its own
-optional RMAU:
+optional MAU or RMAU through `administrativeUnitName`:
 
 ```json
 {
@@ -1340,12 +1341,12 @@ optional RMAU:
         {
             "groupId": "11111111-1111-1111-1111-111111111111",
             "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
-            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+            "administrativeUnitName": "RMAU-Standard"
         },
         {
             "groupId": "22222222-2222-2222-2222-222222222222",
             "tags": ["Autopilot-Privileged"],
-            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+            "administrativeUnitName": "RMAU-Privileged"
         }
     ],
     "correlationId": "00000000-0000-0000-0000-000000000000"
@@ -1368,31 +1369,31 @@ structured `policy` format to configure an individual RMAU for each rule:
         {
             "groupId": "11111111-1111-1111-1111-111111111111",
             "tags": ["Autopilot-Standard", "Autopilot-Kiosk"],
-            "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+            "administrativeUnitName": "RMAU-Standard"
         },
         {
             "groupId": "22222222-2222-2222-2222-222222222222",
             "tags": ["Autopilot-Privileged"],
-            "restrictedManagementAdministrativeUnitName": "RMAU-Privileged"
+            "administrativeUnitName": "RMAU-Privileged"
         }
     ]
 }
 ```
 
-Omit `restrictedManagementAdministrativeUnitName` from a rule when imports
+Omit `administrativeUnitName` from a rule when imports
 matching that rule must not add the device to an RMAU. Each `groupId` must be a
 GUID, each rule must contain at least one tag, tags must not exceed 128
 characters or contain commas, and an RMAU name must not exceed 256 characters.
 
-The legacy request format remains accepted for compatibility. Its single RMAU
-is applied to every supplied string rule:
+The `rules` request format accepts string rules. Its single administrative
+unit is applied to every supplied rule:
 
 ```json
 {
     "rules": [
         "11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk"
     ],
-    "restrictedManagementAdministrativeUnitName": "RMAU-Standard"
+    "administrativeUnitName": "RMAU-Standard"
 }
 ```
 

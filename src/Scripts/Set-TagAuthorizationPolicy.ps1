@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -24,10 +24,10 @@ group display names without changing it.
 .PARAMETER TagAuthorizationRule
 Complete set of authorization rules as <group-object-id>=<tag1>,<tag2> strings
 or objects with groupId, tags, and an optional
-restrictedManagementAdministrativeUnitName. This parameter replaces the
+administrativeUnitName. This parameter replaces the
 existing policy and is required unless List is specified.
 
-.PARAMETER RestrictedManagementAdministrativeUnitName
+.PARAMETER AdministrativeUnitName
 Optional fallback RMAU to associate with legacy string rules. Rule objects can
 specify an individual RMAU. Imported devices using a matching Group Tag are
 added to the rule's unit after their Entra device becomes available.
@@ -66,12 +66,12 @@ Returns the current Group Tag authorization policy with Entra group names.
         [pscustomobject]@{
             groupId = '11111111-1111-1111-1111-111111111111'
             tags = @('Sales', 'Shared')
-            restrictedManagementAdministrativeUnitName = 'RMAU-Sales'
+            administrativeUnitName = 'RMAU-Sales'
         }
         [pscustomobject]@{
             groupId = '22222222-2222-2222-2222-222222222222'
             tags = @('Engineering')
-            restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+            administrativeUnitName = 'RMAU-Engineering'
         }
     ) `
     -ConfigPath '.\client.settings.json'
@@ -89,7 +89,7 @@ param(
     [object[]] $TagAuthorizationRule,
 
     [Parameter(ParameterSetName = 'Set')]
-    [string] $RestrictedManagementAdministrativeUnitName,
+    [string] $AdministrativeUnitName,
 
     [string] $ManagementUrl,
 
@@ -129,9 +129,9 @@ if ($List) {
 else {
     $parameters.TagAuthorizationRule = $TagAuthorizationRule
     if ($PSBoundParameters.ContainsKey(
-            'RestrictedManagementAdministrativeUnitName')) {
-        $parameters.RestrictedManagementAdministrativeUnitName = `
-            $RestrictedManagementAdministrativeUnitName
+            'AdministrativeUnitName')) {
+        $parameters.AdministrativeUnitName = `
+            $AdministrativeUnitName
     }
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true

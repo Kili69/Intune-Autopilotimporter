@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -87,13 +87,14 @@ by the Entra application Client ID.
 .PARAMETER TagAuthorizationRule
 One or more group-to-tag rules as <Entra-group-object-ID>=<tag1>,<tag2>
 strings or objects with groupId, tags, and an optional
-restrictedManagementAdministrativeUnitName. Missing rules are requested
+administrativeUnitName. Missing rules are requested
 interactively.
 
-.PARAMETER RestrictedManagementAdministrativeUnitName
-Optional fallback RMAU applied to string rules. Rule objects can specify an
-individual RMAU. Imported devices are added to the matching rule's unit after
-Intune creates their Entra device.
+.PARAMETER AdministrativeUnitName
+Optional fallback administrative unit applied to string rules. Rule objects
+can specify an individual regular or restricted management administrative
+unit. Imported devices are added to the matching rule's unit after Intune
+creates their Entra device.
 
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
@@ -209,7 +210,8 @@ param(
 
     [object[]] $TagAuthorizationRule,
 
-    [string] $RestrictedManagementAdministrativeUnitName,
+    [Alias('Mau')]
+    [string] $AdministrativeUnitName,
 
     [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
     [string] $DeviceTagExtensionAttribute,
@@ -521,7 +523,7 @@ function ConvertTo-TagAuthorizationPolicy {
     .PARAMETER Rules
     Optional authorization rules in the format
     <Entra-group-object-ID>=<tag1>,<tag2>, or rule objects with an optional
-    restrictedManagementAdministrativeUnitName. Multiple entries for the same
+    administrativeUnitName. Multiple entries for the same
     group are consolidated by the AutopilotImport module.
 
     .OUTPUTS
@@ -531,7 +533,7 @@ function ConvertTo-TagAuthorizationPolicy {
     param(
         [object[]] $Rules,
 
-        [string] $RestrictedManagementAdministrativeUnitName
+        [string] $AdministrativeUnitName
     )
 
     $enteredRules = @($Rules | Where-Object {
@@ -559,8 +561,8 @@ function ConvertTo-TagAuthorizationPolicy {
 
     return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy `
         -Rules $enteredRules `
-        -RestrictedManagementAdministrativeUnitName `
-            $RestrictedManagementAdministrativeUnitName)
+        -AdministrativeUnitName `
+            $AdministrativeUnitName)
 }
 
 function ConvertTo-AdditionalManagerPrincipalIds {
@@ -1356,22 +1358,22 @@ if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$
     throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
 }
 if (-not $PSBoundParameters.ContainsKey(
-        'RestrictedManagementAdministrativeUnitName')) {
-    $RestrictedManagementAdministrativeUnitName = Read-Host `
-        'Restricted management administrative unit display name (optional)'
+        'AdministrativeUnitName')) {
+    $AdministrativeUnitName = Read-Host `
+        'Administrative unit display name (optional, MAU or RMAU)'
 }
-$RestrictedManagementAdministrativeUnitName = if (
+$AdministrativeUnitName = if (
     [string]::IsNullOrWhiteSpace(
-        $RestrictedManagementAdministrativeUnitName)) {
+        $AdministrativeUnitName)) {
     ''
 }
 else {
-    $RestrictedManagementAdministrativeUnitName.Trim()
+    $AdministrativeUnitName.Trim()
 }
 $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy `
     -Rules $TagAuthorizationRule `
-    -RestrictedManagementAdministrativeUnitName `
-        $RestrictedManagementAdministrativeUnitName
+    -AdministrativeUnitName `
+        $AdministrativeUnitName
 $tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
 
 $parsedGuid = [guid]::Empty
@@ -1422,6 +1424,34 @@ catch {
         -TenantId $TenantId
 }
 
+$administrativeUnitNames = @($tagAuthorizationPolicy | ForEach-Object {
+    if ($_.PSObject.Properties[
+            'administrativeUnitName'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.administrativeUnitName)) {
+        ([string] $_.administrativeUnitName).Trim()
+    }
+} | Sort-Object -Unique)
+if ($administrativeUnitNames.Count -gt 0) {
+    Write-Host 'Validating configured Entra administrative units...'
+    $tokenResult = Get-AzAccessToken `
+        -ResourceUrl 'https://graph.microsoft.com/' `
+        -ErrorAction Stop
+    $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
+        $tokenResult.Token
+    }
+    else {
+        ConvertTo-SecureString ([string] $tokenResult.Token) `
+            -AsPlainText `
+            -Force
+    }
+    foreach ($administrativeUnitName in $administrativeUnitNames) {
+        AutopilotImport\Resolve-EntraAdministrativeUnit `
+            -AdministrativeUnitName $administrativeUnitName `
+            -AccessToken $graphToken | Out-Null
+    }
+}
+
 Write-Host 'Validating Azure deployment permissions...'
 $existingResourceGroup = Get-AzResourceGroup `
     -Name $ResourceGroupName `
@@ -1448,7 +1478,7 @@ Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Entra web app: $EntraWebApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
-Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
+Write-Host "  Administrative unit: $AdministrativeUnitName"
 Write-Host '  Group to Device Tag rules:'
 foreach ($rule in $tagAuthorizationPolicy) {
     Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
@@ -1560,7 +1590,7 @@ Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Web client ID: $WebClientId"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
-Write-Host "  Restricted management AU: $RestrictedManagementAdministrativeUnitName"
+Write-Host "  Administrative unit: $AdministrativeUnitName"
 Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
 $additionalManagerPrincipalIds = @(ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
@@ -1799,8 +1829,8 @@ $result = [pscustomobject]@{
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
     TagAuthorizationPolicy  = $tagAuthorizationPolicy
-    RestrictedManagementAdministrativeUnitName = `
-        $RestrictedManagementAdministrativeUnitName
+    AdministrativeUnitName = `
+        $AdministrativeUnitName
     DeviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath

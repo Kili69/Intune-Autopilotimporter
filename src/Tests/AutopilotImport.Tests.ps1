@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1235,7 +1235,7 @@ Describe 'Client Group Tag policy display' {
         $result[0].GroupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $result[0].Tags | Should -Be @('Standard', 'Kiosk')
-        $result[0].RestrictedManagementAdministrativeUnitName |
+        $result[0].AdministrativeUnitName |
             Should -BeNullOrEmpty
         $result[0].CorrelationId | Should -Be `
             '22222222-2222-2222-2222-222222222222'
@@ -1246,7 +1246,7 @@ Describe 'Client Group Tag policy display' {
                 'GroupId'
                 'GroupName'
                 'Tags'
-                'RestrictedManagementAdministrativeUnitName'
+                'AdministrativeUnitName'
             )
     }
 
@@ -1284,7 +1284,7 @@ Describe 'Adding a Client Group Tag policy rule' {
                     policy = @([pscustomobject]@{
                         groupId = '11111111-1111-1111-1111-111111111111'
                         tags = @('Standard')
-                        restrictedManagementAdministrativeUnitName = `
+                        administrativeUnitName = `
                             'Autopilot Devices'
                     })
                 }
@@ -1308,7 +1308,7 @@ Describe 'Adding a Client Group Tag policy rule' {
             '22222222-2222-2222-2222-222222222222'
         $result.GroupName | Should -BeNullOrEmpty
         $result.Tags | Should -Be @('Kiosk')
-        $result.RestrictedManagementAdministrativeUnitName |
+        $result.AdministrativeUnitName |
             Should -Be 'Kiosk Devices'
         $result.CorrelationId | Should -Be `
             '55555555-5555-5555-5555-555555555555'
@@ -1439,12 +1439,12 @@ Describe 'Adding a Client Group Tag policy rule' {
                 $submittedPolicy = @(($Body | ConvertFrom-Json).policy)
                 $rulesWithMau = @($submittedPolicy | Where-Object {
                     $_.PSObject.Properties[
-                        'restrictedManagementAdministrativeUnitName']
+                        'administrativeUnitName']
                 })
                 $rulesWithMau.Count -eq 1 -and
                     $rulesWithMau[0].groupId -eq `
                         '33333333-3333-3333-3333-333333333333' -and
-                    $rulesWithMau[0].restrictedManagementAdministrativeUnitName -eq `
+                    $rulesWithMau[0].administrativeUnitName -eq `
                         'BG-Devices'
             } `
             -Times 1
@@ -1492,7 +1492,7 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
+                $Body -notmatch 'administrativeUnitName'
             } `
             -Times 1
     }
@@ -1511,7 +1511,7 @@ Describe 'Adding a Client Group Tag policy rule' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter {
                 $Method -eq 'Put' -and
-                $Body -notmatch 'restrictedManagementAdministrativeUnitName'
+                $Body -notmatch 'administrativeUnitName'
             } `
             -Times 1
     }
@@ -1543,13 +1543,13 @@ Describe 'Removing a Client Group Tag policy rule' {
                         [pscustomobject]@{
                             groupId = '11111111-1111-1111-1111-111111111111'
                             tags = @('Standard')
-                            restrictedManagementAdministrativeUnitName = `
+                            administrativeUnitName = `
                                 'Autopilot Devices'
                         }
                         [pscustomobject]@{
                             groupId = '22222222-2222-2222-2222-222222222222'
                             tags = @('Legacy')
-                            restrictedManagementAdministrativeUnitName = `
+                            administrativeUnitName = `
                                 'Autopilot Devices'
                         }
                     )
@@ -1611,13 +1611,13 @@ Describe 'Removing a Client Group Tag policy rule' {
                         [pscustomobject]@{
                             groupId = '11111111-1111-1111-1111-111111111111'
                             tags = @('Standard', 'Kiosk', 'Shared')
-                            restrictedManagementAdministrativeUnitName = `
+                            administrativeUnitName = `
                                 'Autopilot Devices'
                         }
                         [pscustomobject]@{
                             groupId = '22222222-2222-2222-2222-222222222222'
                             tags = @('Legacy')
-                            restrictedManagementAdministrativeUnitName = `
+                            administrativeUnitName = `
                                 'Autopilot Devices'
                         }
                     )
@@ -2120,52 +2120,65 @@ Describe 'Installer tag authorization rules' {
             Should -Throw
     }
 
-    It 'preserves an optional restricted management administrative unit name' {
+    It 'preserves an optional administrative unit name' {
         $policy = ConvertTo-TagAuthorizationPolicy `
             -Rules @('11111111-1111-1111-1111-111111111111=Standard') `
-            -RestrictedManagementAdministrativeUnitName ' RMAU-Autopilot '
+            -AdministrativeUnitName ' RMAU-Autopilot '
 
-        $policy.restrictedManagementAdministrativeUnitName |
+        $policy.administrativeUnitName |
             Should -Be 'RMAU-Autopilot'
-        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+        AutopilotImport\Resolve-AdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Standard' | Should -Be 'RMAU-Autopilot'
     }
 
-    It 'preserves a different restricted administrative unit for each rule' {
+    It 'preserves a different administrative unit for each rule' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags = @('Standard')
-                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+                administrativeUnitName = 'RMAU-Standard'
             }
             [pscustomobject]@{
                 groupId = '22222222-2222-2222-2222-222222222222'
                 tags = @('Kiosk')
-                restrictedManagementAdministrativeUnitName = 'RMAU-Kiosk'
+                administrativeUnitName = 'RMAU-Kiosk'
             }
         )
 
-        $policy[0].restrictedManagementAdministrativeUnitName |
+        $policy[0].administrativeUnitName |
             Should -Be 'RMAU-Standard'
-        $policy[1].restrictedManagementAdministrativeUnitName |
+        $policy[1].administrativeUnitName |
             Should -Be 'RMAU-Kiosk'
-        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+        AutopilotImport\Resolve-AdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Kiosk' | Should -Be 'RMAU-Kiosk'
     }
 
-    It 'resolves the RMAU from the caller group when rules share a tag' {
+    It 'accepts the administrative unit property name' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Standard')
+                administrativeUnitName = 'MAU-Standard'
+            }
+        )
+
+        $policy.administrativeUnitName |
+            Should -Be 'MAU-Standard'
+    }
+
+    It 'resolves the administrative unit from the caller group when rules share a tag' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags = @('Shared')
-                restrictedManagementAdministrativeUnitName = 'RMAU-One'
+                administrativeUnitName = 'RMAU-One'
             }
             [pscustomobject]@{
                 groupId = '22222222-2222-2222-2222-222222222222'
                 tags = @('Shared')
-                restrictedManagementAdministrativeUnitName = 'RMAU-Two'
+                administrativeUnitName = 'RMAU-Two'
             }
         )
         $principal = [pscustomobject]@{
@@ -2175,7 +2188,7 @@ Describe 'Installer tag authorization rules' {
             })
         }
 
-        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+        AutopilotImport\Resolve-AdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Shared' `
             -Principal $principal | Should -Be 'RMAU-Two'
@@ -2186,14 +2199,94 @@ Describe 'Installer tag authorization rules' {
             -Rules @('11111111-1111-1111-1111-111111111111=Standard')
 
         $policy.PSObject.Properties.Name |
-            Should -Not -Contain 'restrictedManagementAdministrativeUnitName'
-        AutopilotImport\Resolve-RestrictedManagementAdministrativeUnitName `
+            Should -Not -Contain 'administrativeUnitName'
+        AutopilotImport\Resolve-AdministrativeUnitName `
             -Policy $policy `
             -GroupTag 'Standard' | Should -BeNullOrEmpty
     }
 }
 
-Describe 'Restricted management administrative unit membership' {
+Describe 'Effective administrative unit resolution' {
+    It 'binds the current tag policy to the queue worker' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $functionRoot = Join-Path `
+            $projectRoot `
+            'src\FunctionApp\ProcessDeviceAttribute'
+        $configuration = Get-Content `
+            -LiteralPath (Join-Path $functionRoot 'function.json') `
+            -Raw |
+            ConvertFrom-Json
+        $policyBinding = @($configuration.bindings | Where-Object {
+            $_.name -eq 'TagPolicyBlob'
+        }) | Select-Object -First 1
+        $worker = Get-Content `
+            -LiteralPath (Join-Path $functionRoot 'run.ps1') `
+            -Raw
+
+        $policyBinding.type | Should -Be 'blob'
+        $policyBinding.direction | Should -Be 'in'
+        $policyBinding.path | Should -Be `
+            'configuration/tag-authorization-policy.json'
+        $worker | Should -Match `
+            'Resolve-EffectiveAdministrativeUnitName'
+    }
+
+    It 'uses a current policy mapping when the queued value is empty' {
+        $policy = @([pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('PAW-CSM')
+            administrativeUnitName = 'PAW'
+        })
+
+        Resolve-EffectiveAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'PAW-CSM' | Should -Be 'PAW'
+    }
+
+    It 'prefers a changed current policy mapping over the queued value' {
+        $policy = @([pscustomobject]@{
+            groupId = '11111111-1111-1111-1111-111111111111'
+            tags = @('PAW-CSM')
+            administrativeUnitName = 'PAW-Current'
+        })
+
+        Resolve-EffectiveAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'PAW-CSM' `
+            -QueuedAdministrativeUnitName 'PAW-Old' |
+            Should -Be 'PAW-Current'
+    }
+
+    It 'retains the queued value when the current policy has no mapping' {
+        Resolve-EffectiveAdministrativeUnitName `
+            -Policy @() `
+            -GroupTag 'PAW-CSM' `
+            -QueuedAdministrativeUnitName 'PAW' | Should -Be 'PAW'
+    }
+
+    It 'uses the queued value to disambiguate shared tag mappings' {
+        $policy = @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Shared')
+                administrativeUnitName = 'RMAU-One'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Shared')
+                administrativeUnitName = 'RMAU-Two'
+            }
+        )
+
+        Resolve-EffectiveAdministrativeUnitName `
+            -Policy $policy `
+            -GroupTag 'Shared' `
+            -QueuedAdministrativeUnitName 'RMAU-Two' |
+            Should -Be 'RMAU-Two'
+    }
+}
+
+Describe 'Administrative unit membership' {
     InModuleScope AutopilotImport {
         BeforeEach {
             $script:administrativeUnit = [pscustomobject]@{
@@ -2201,13 +2294,14 @@ Describe 'Restricted management administrative unit membership' {
                 displayName                  = 'RMAU-Autopilot'
                 isMemberManagementRestricted = $true
             }
+            $script:administrativeUnits = @($script:administrativeUnit)
             $script:existingMembers = @()
             Mock Invoke-RestMethod {
                 if ($Uri -match '/members\?') {
                     return @{ value = @($script:existingMembers) }
                 }
                 if ($Method -eq 'Get') {
-                    return @{ value = @($script:administrativeUnit) }
+                    return @{ value = @($script:administrativeUnits) }
                 }
                 return $null
             }
@@ -2217,7 +2311,7 @@ Describe 'Restricted management administrative unit membership' {
             $deviceObjectId = [guid] `
                 '11111111-1111-1111-1111-111111111111'
             $result = `
-                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                Add-EntraDeviceToAdministrativeUnit `
                     -AdministrativeUnitName 'RMAU-Autopilot' `
                     -DeviceObjectId $deviceObjectId `
                     -AccessToken (ConvertTo-SecureString 'token' `
@@ -2240,7 +2334,7 @@ Describe 'Restricted management administrative unit membership' {
             )
 
             $result = `
-                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                Add-EntraDeviceToAdministrativeUnit `
                     -AdministrativeUnitName 'RMAU-Autopilot' `
                     -DeviceObjectId $deviceObjectId `
                     -AccessToken (ConvertTo-SecureString 'token' `
@@ -2253,7 +2347,7 @@ Describe 'Restricted management administrative unit membership' {
 
         It 'checks membership without adding a missing device' {
             $result = `
-                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+                Add-EntraDeviceToAdministrativeUnit `
                     -AdministrativeUnitName 'RMAU-Autopilot' `
                     -DeviceObjectId `
                         '11111111-1111-1111-1111-111111111111' `
@@ -2267,16 +2361,48 @@ Describe 'Restricted management administrative unit membership' {
                 -ParameterFilter { $Method -eq 'Post' }
         }
 
-        It 'rejects an administrative unit that is not restricted' {
+        It 'adds a device to a regular administrative unit' {
             $script:administrativeUnit.isMemberManagementRestricted = $false
 
-            {
-                Add-EntraDeviceToRestrictedManagementAdministrativeUnit `
+            $result = `
+                Add-EntraDeviceToAdministrativeUnit `
                     -AdministrativeUnitName 'RMAU-Autopilot' `
                     -DeviceObjectId '11111111-1111-1111-1111-111111111111' `
                     -AccessToken (ConvertTo-SecureString 'token' `
                         -AsPlainText -Force)
-            } | Should -Throw '*is not a restricted management administrative unit*'
+
+            $result.MembershipAdded | Should -BeTrue
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter { $Method -eq 'Post' }
+        }
+
+        It 'rejects a missing administrative unit' {
+            $script:administrativeUnits = @()
+
+            {
+                Resolve-EntraAdministrativeUnit `
+                    -AdministrativeUnitName 'Missing' `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force)
+            } | Should -Throw "*Administrative unit 'Missing' was not found*"
+        }
+
+        It 'rejects a non-unique administrative unit display name' {
+            $script:administrativeUnits = @(
+                $script:administrativeUnit
+                [pscustomobject]@{
+                    id = '33333333-3333-3333-3333-333333333333'
+                    displayName = 'RMAU-Autopilot'
+                    isMemberManagementRestricted = $false
+                }
+            )
+
+            {
+                Resolve-EntraAdministrativeUnit `
+                    -AdministrativeUnitName 'RMAU-Autopilot' `
+                    -AccessToken (ConvertTo-SecureString 'token' `
+                        -AsPlainText -Force)
+            } | Should -Throw '*Administrative unit name*is not unique*'
         }
     }
 }
@@ -2823,14 +2949,14 @@ Describe 'Update script deployment discovery' {
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags    = @('PAW-CSM', 'BG-Default')
-                restrictedManagementAdministrativeUnitName = 'RMAU-PAW'
+                administrativeUnitName = 'RMAU-PAW'
             }
         ))
 
         $rules[0].groupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $rules[0].tags | Should -Be @('PAW-CSM', 'BG-Default')
-        $rules[0].restrictedManagementAdministrativeUnitName |
+        $rules[0].administrativeUnitName |
             Should -Be 'RMAU-PAW'
     }
 
@@ -4242,6 +4368,7 @@ Describe 'Web frontend response types' {
         foreach ($functionName in @(
                 'Get-SubmittedTagPolicyRules'
                 'ConvertTo-SubmittedTagPolicy'
+            'Assert-SubmittedAdministrativeUnitsExist'
             )) {
             $functionAst = $managementFunctionAst.FindAll({
                 param($node)
@@ -4379,17 +4506,63 @@ Describe 'Web frontend response types' {
             [ordered]@{
                 groupId = '33333333-3333-3333-3333-333333333333'
                 tags = @('BG-Default')
-                restrictedManagementAdministrativeUnitName = 'BG-Devices'
+                administrativeUnitName = 'BG-Devices'
             }
         ))
 
         $policy.Count | Should -Be 3
         @($policy | Where-Object {
             $_.PSObject.Properties[
-                'restrictedManagementAdministrativeUnitName']
+                'administrativeUnitName']
         }).Count | Should -Be 1
-        $policy[2].restrictedManagementAdministrativeUnitName |
+        $policy[2].administrativeUnitName |
             Should -Be 'BG-Devices'
+    }
+
+    It 'validates each configured administrative unit once' {
+        Mock Resolve-EntraAdministrativeUnit {
+            [pscustomobject]@{ id = [guid]::NewGuid().ToString() }
+        }
+        $policy = @(ConvertTo-SubmittedTagPolicy -Rules @(
+            [ordered]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('BG-Default')
+                administrativeUnitName = 'Devices'
+            }
+            [ordered]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('Kiosk')
+                administrativeUnitName = 'Devices'
+            }
+        ))
+
+        Assert-SubmittedAdministrativeUnitsExist `
+            -Policy $policy `
+            -AccessToken (ConvertTo-SecureString 'token' -AsPlainText -Force)
+
+        Should -Invoke Resolve-EntraAdministrativeUnit `
+            -ParameterFilter { $AdministrativeUnitName -eq 'Devices' } `
+            -Times 1
+    }
+
+    It 'rejects a policy when its administrative unit does not exist' {
+        Mock Resolve-EntraAdministrativeUnit {
+            throw "Administrative unit 'Missing' was not found."
+        }
+        $policy = @(ConvertTo-SubmittedTagPolicy -Rules @(
+            [ordered]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('BG-Default')
+                administrativeUnitName = 'Missing'
+            }
+        ))
+
+        {
+            Assert-SubmittedAdministrativeUnitsExist `
+                -Policy $policy `
+                -AccessToken (ConvertTo-SecureString 'token' `
+                    -AsPlainText -Force)
+        } | Should -Throw "*Administrative unit 'Missing' was not found*"
     }
 
     It 'retains the legacy rules property for object request bodies' {

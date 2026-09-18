@@ -2,6 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.1.20260918.2` - 2026-09-18
+
+- Extended Group Tag policies and queued device processing to assign imported Entra devices to both management and restricted management administrative units, with exact and unique Microsoft Graph validation before policy storage or deployment.
+- Standardized the policy, queue, installer, client, and documentation contract on `administrativeUnitName` and `AdministrativeUnitName`, removing the previous restricted-only compatibility schema.
+
 ## `1.1.20260915.7` - 2026-09-15
 
 - Changed Group Tag authorization to resolve current Entra group memberships through Microsoft Graph with the Function managed identity, including token group overage support and the least-privileged `GroupMember.Read.All` and `User.ReadBasic.All` application permissions.

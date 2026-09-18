@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -660,11 +660,11 @@ function ConvertTo-UpdateTagAuthorizationRules {
             tags = $tags
         }
         if ($_.PSObject.Properties[
-                'restrictedManagementAdministrativeUnitName'] -and
+                'administrativeUnitName'] -and
             -not [string]::IsNullOrWhiteSpace(
-                [string] $_.restrictedManagementAdministrativeUnitName)) {
-            $rule.restrictedManagementAdministrativeUnitName =
-                ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+                [string] $_.administrativeUnitName)) {
+            $rule.administrativeUnitName =
+                ([string] $_.administrativeUnitName).Trim()
         }
         [pscustomobject] $rule
     })
@@ -1229,7 +1229,7 @@ $tagAuthorizationRules = @(
     ConvertTo-UpdateTagAuthorizationRules `
         -Policy @($policyResponse.policy)
 )
-$restrictedManagementAdministrativeUnitName = ''
+$administrativeUnitName = ''
 
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
@@ -1272,7 +1272,7 @@ Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host '  Restricted management AU: preserved per policy rule'
+Write-Host '  Administrative unit: preserved per policy rule'
 Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 Write-Host "  Custom web redirects: $($additionalWebRedirectUris.Count)"
@@ -1289,8 +1289,8 @@ $installerParameters = @{
     InstallerPrincipalId        = $installerPrincipalId
     ApiAudience                 = $resolvedApiAudience
     TagAuthorizationRule        = $tagAuthorizationRules
-    RestrictedManagementAdministrativeUnitName = `
-        [string] $restrictedManagementAdministrativeUnitName
+    AdministrativeUnitName = `
+        [string] $administrativeUnitName
     DeviceTagExtensionAttribute = $extensionAttribute
     TagManagerPrincipalId       = @($managerPrincipalIds)
     ClientToolsPath             = $resolvedClientToolsPath

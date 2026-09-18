@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260915.7
+# Project-Version: 1.1.20260918.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1515,10 +1515,10 @@ function ConvertTo-ClientTagPolicyResult {
         GroupId = [string] $Rule.groupId
         GroupName = $GroupName
         Tags = @($Rule.tags)
-        RestrictedManagementAdministrativeUnitName = if (
+        AdministrativeUnitName = if (
             $Rule.PSObject.Properties[
-                'restrictedManagementAdministrativeUnitName']) {
-            [string] $Rule.restrictedManagementAdministrativeUnitName
+                'administrativeUnitName']) {
+            [string] $Rule.administrativeUnitName
         }
         else {
             $null
@@ -1531,7 +1531,7 @@ function ConvertTo-ClientTagPolicyResult {
             'GroupId'
             'GroupName'
             'Tags'
-            'RestrictedManagementAdministrativeUnitName'
+            'AdministrativeUnitName'
         )
     )
     $result | Add-Member `
@@ -1549,7 +1549,7 @@ function Get-AutoPilotTagPolicy {
     .DESCRIPTION
     Retrieves the current policy and resolves each group object ID through
     Microsoft Graph. Each rule is returned as a PowerShell object with stable
-    GroupId, GroupName, Tags, RestrictedManagementAdministrativeUnitName, and
+    GroupId, GroupName, Tags, AdministrativeUnitName, and
     CorrelationId properties.
 
     .PARAMETER Raw
@@ -1656,8 +1656,8 @@ function Add-AutoPilotTagPolicy {
 
     .DESCRIPTION
     Accepts an Entra group object ID. Existing rules are preserved and tags
-    for an existing group are merged. When no restricted management
-    administrative unit is specified, that rule's current RMAU is preserved.
+    for an existing group are merged. When no administrative unit is
+    specified, that rule's current MAU or RMAU is preserved.
 
     .PARAMETER GroupId
     Entra group object ID. Group is retained as an alias for compatibility.
@@ -1666,11 +1666,12 @@ function Add-AutoPilotTagPolicy {
     One or more allowed Autopilot Group Tags for the group. Supply multiple
     values as an array or as a comma-separated string.
 
-    .PARAMETER RestrictedManagementAdministrativeUnitName
-    Optional display name of the restricted management administrative unit.
-    The value applies only to the added or updated group rule. If omitted, an
-    existing value for that rule is retained; a new rule has no RMAU. Supply
-    an empty string to remove the RMAU from this rule.
+    .PARAMETER AdministrativeUnitName
+    Optional display name of a regular or restricted management administrative
+    unit. The value applies only to the added or updated group rule. If
+    omitted, an existing value for that rule is retained; a new rule has no
+    administrative unit. Supply an empty string to remove the unit assignment.
+    Mau is a short alias for AdministrativeUnitName.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -1702,7 +1703,7 @@ function Add-AutoPilotTagPolicy {
     Add-AutoPilotTagPolicy `
         -GroupId '11111111-1111-1111-1111-111111111111' `
         -GroupTag 'Shared' `
-        -RestrictedManagementAdministrativeUnitName 'Autopilot Devices' `
+        -AdministrativeUnitName 'Autopilot Devices' `
         -WhatIf
 
     Previews a policy update by group object ID and an associated restricted MAU.
@@ -1727,7 +1728,7 @@ function Add-AutoPilotTagPolicy {
         [Alias('Mau')]
         [AllowEmptyString()]
         [ValidateLength(0, 256)]
-        [string] $RestrictedManagementAdministrativeUnitName,
+        [string] $AdministrativeUnitName,
 
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
@@ -1775,8 +1776,8 @@ function Add-AutoPilotTagPolicy {
         $currentGroupId = ([guid] $rule.groupId).ToString()
         $rulesByGroup[$currentGroupId] = @($rule.tags)
         $mauByGroup[$currentGroupId] = if ($rule.PSObject.Properties[
-                'restrictedManagementAdministrativeUnitName']) {
-            [string] $rule.restrictedManagementAdministrativeUnitName
+                'administrativeUnitName']) {
+            [string] $rule.administrativeUnitName
         }
         else {
             ''
@@ -1789,9 +1790,9 @@ function Add-AutoPilotTagPolicy {
     )
 
     if ($PSBoundParameters.ContainsKey(
-            'RestrictedManagementAdministrativeUnitName')) {
+            'AdministrativeUnitName')) {
         $mauByGroup[$resolvedGroupId] =
-            $RestrictedManagementAdministrativeUnitName.Trim()
+            $AdministrativeUnitName.Trim()
     }
     $updatedPolicy = @($rulesByGroup.Keys | ForEach-Object {
         $policyEntry = [ordered]@{
@@ -1799,7 +1800,7 @@ function Add-AutoPilotTagPolicy {
             tags = @($rulesByGroup[$_])
         }
         if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
-            $policyEntry.restrictedManagementAdministrativeUnitName =
+            $policyEntry.administrativeUnitName =
                 $mauByGroup[$_].Trim()
         }
         [pscustomobject] $policyEntry
@@ -2006,11 +2007,11 @@ function Remove-AutoPilotTagPolicy {
                 tags = @($ruleTags)
             }
             if ($_.PSObject.Properties[
-                    'restrictedManagementAdministrativeUnitName'] -and
+                    'administrativeUnitName'] -and
                 -not [string]::IsNullOrWhiteSpace(
-                    [string] $_.restrictedManagementAdministrativeUnitName)) {
-                $policyEntry.restrictedManagementAdministrativeUnitName =
-                    ([string] $_.restrictedManagementAdministrativeUnitName).Trim()
+                    [string] $_.administrativeUnitName)) {
+                $policyEntry.administrativeUnitName =
+                    ([string] $_.administrativeUnitName).Trim()
             }
             [pscustomobject] $policyEntry
         })
@@ -2104,13 +2105,14 @@ function Set-AutoPilotTagPolicy {
     .PARAMETER TagAuthorizationRule
     Complete policy as <group-object-id>=<tag1>,<tag2> strings or rule objects
     with groupId, tags, and an optional
-    restrictedManagementAdministrativeUnitName. Each group object ID must be a
+    administrativeUnitName. Each group object ID must be a
     GUID and each rule must contain at least one Group Tag.
 
-    .PARAMETER RestrictedManagementAdministrativeUnitName
-    Optional fallback RMAU applied to legacy string rules. Rule objects can
-    specify their own RMAU. Supply an empty string to disable automatic
-    administrative-unit membership for legacy string rules.
+    .PARAMETER AdministrativeUnitName
+    Optional fallback administrative unit applied to string rules. Rule
+    objects can specify their own MAU or RMAU. Supply an empty string to
+    disable automatic administrative-unit membership for string rules. Mau is
+    a short alias for AdministrativeUnitName.
 
     .PARAMETER ManagementUrl
     HTTPS URL of the Group Tag policy management endpoint.
@@ -2131,12 +2133,12 @@ function Set-AutoPilotTagPolicy {
             [pscustomobject]@{
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags = @('Standard', 'Kiosk')
-                restrictedManagementAdministrativeUnitName = 'RMAU-Standard'
+                administrativeUnitName = 'RMAU-Standard'
             }
             [pscustomobject]@{
                 groupId = '22222222-2222-2222-2222-222222222222'
                 tags = @('Engineering')
-                restrictedManagementAdministrativeUnitName = 'RMAU-Engineering'
+                administrativeUnitName = 'RMAU-Engineering'
             }
         ) `
         -WhatIf
@@ -2152,7 +2154,8 @@ function Set-AutoPilotTagPolicy {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
         [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
-        [string] $RestrictedManagementAdministrativeUnitName,
+        [Alias('Mau')]
+        [string] $AdministrativeUnitName,
         [ValidatePattern('^https://')][string] $ManagementUrl,
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
         [string] $TenantId,
@@ -2169,8 +2172,8 @@ function Set-AutoPilotTagPolicy {
     Import-Module $coreModulePath -Force
     $policy = @(ConvertTo-TagAuthorizationPolicy `
         -Rules $TagAuthorizationRule `
-        -RestrictedManagementAdministrativeUnitName `
-            $RestrictedManagementAdministrativeUnitName)
+        -AdministrativeUnitName `
+            $AdministrativeUnitName)
     if (-not $PSCmdlet.ShouldProcess($url, "Replace tag authorization policy with $($policy.Count) group rule(s)")) {
         return
     }
