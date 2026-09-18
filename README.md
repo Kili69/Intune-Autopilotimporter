@@ -265,12 +265,11 @@ separate operations, so their versions can temporarily differ.
 
 ### Read Import History
 
-The installing user, configured manager users or groups, and current members
-of the Intune RBAC role `Intune Role Administrator` can read recent import
-operations and their current Intune status. The command is exported by the
-`AutopilotImport.Client` module. It is not a standalone script in the extracted
-deployment package. Install the generated client module package as described
-under [Distribute the Import Client to Additional PCs](#5-distribute-the-import-client-to-additional-pcs),
+Every authenticated importer can read the imports they requested during the
+last 30 days. The command is exported by the `AutopilotImport.Client` module.
+It is not a standalone script in the extracted deployment package. Install the
+generated client module package as described under
+[Distribute the Import Client to Additional PCs](#5-distribute-the-import-client-to-additional-pcs),
 then open a new PowerShell 7 session.
 
 Verify which installed module version provides the command:
@@ -302,10 +301,30 @@ Then retrieve the import history:
 Get-AutoPilotImportHistory
 ```
 
+Retrieve one or more specific records by their displayed import ID or by the
+Base64 DeviceHash used for the import. These targeted lookups also show who
+requested the import, even when it was requested by another user:
+
+```powershell
+Get-AutoPilotImportHistory -ImportId @(
+    '11111111-1111-1111-1111-111111111111'
+    '22222222-2222-2222-2222-222222222222'
+)
+
+Get-AutoPilotImportHistory -DeviceHash $deviceHash
+```
+
+Configured importer managers and, when enabled, Intune Role Administrators can
+request every retained record:
+
+```powershell
+Get-AutoPilotImportHistory -ShowAll
+```
+
 The command displays a compact table with import GUID (`ImportId`), serial
-number, Group Tag, status, and Intune error name. Every row remains a
-PowerShell object that can be filtered, exported, or inspected with all
-available properties:
+number, Group Tag, status, requesting user, request time, completion time, and
+Intune error name. Every row remains a PowerShell object that can be filtered,
+exported, or inspected with all available properties:
 
 ```powershell
 Get-AutoPilotImportHistory | Format-List *
@@ -320,11 +339,18 @@ Get-AutoPilotImportHistory -Top 1000 |
 ```
 
 Each result contains the import ID, batch import ID, serial number, Group Tag,
-status, and Intune error details. Hardware hashes and product keys are never
-returned. The data comes from imported Windows Autopilot device identities
-currently retained by Microsoft Intune. It is operational history, not a
-permanent audit archive; use an external store when long-term retention is
-required.
+status, Intune error details, and the requesting user's display name, user
+principal name, and Entra object ID. UTC timestamps record when the request was
+received, the Graph import was created, processing was queued and started, the
+Entra device was resolved, its extension attribute was updated, optional
+administrative-unit membership was confirmed, and processing completed.
+Audit metadata is stored for 30 days in the deployment's private Azure Table
+Storage. The raw DeviceHash and its SHA-256 search index are stored with the
+audit record; product keys are not stored. Neither value is returned in history
+results, and the client sends only the SHA-256 index when `-DeviceHash` is used.
+A timer removes expired records hourly. Imports created before this audit
+feature was deployed cannot be found by DeviceHash because no hash was recorded
+for them.
 
 If the command reports that the history endpoint was not found, update the
 Function App with `Update-AutopilotImport.ps1` without `-SkipPublish`. A 404
@@ -1305,8 +1331,24 @@ and the configured Entra post-processing.
 GET /api/management/imports?top=100
 ```
 
-`top` is optional, defaults to `100`, and must be between `1` and `1000`. The
-response intentionally excludes hardware hashes and product keys:
+Without additional filters, the endpoint returns only imports requested by the
+authenticated caller. `showAll=true` requires importer-manager authorization.
+Targeted lookups use `POST` with up to 50 import IDs and SHA-256 DeviceHash
+indexes:
+
+```http
+POST /api/management/imports?top=100
+Content-Type: application/json
+
+{
+    "importIds": ["00000000-0000-0000-0000-000000000000"],
+    "deviceHashSha256": ["9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"]
+}
+```
+
+`top` is optional, defaults to `100`, and must be between `1` and `1000`. Only
+records from the last 30 days are returned. The response intentionally excludes
+raw DeviceHashes, their indexes, and product keys:
 
 ```json
 {
@@ -1318,7 +1360,19 @@ response intentionally excludes hardware hashes and product keys:
             "groupTag": "Autopilot-Standard",
             "status": "complete",
             "deviceErrorCode": 0,
-            "deviceErrorName": null
+            "deviceErrorName": null,
+            "requestedBy": "ada@example.com",
+            "requestedByObjectId": "11111111-1111-1111-1111-111111111111",
+            "requestedByUserPrincipalName": "ada@example.com",
+            "requestedByDisplayName": "Ada Lovelace",
+            "requestReceivedAtUtc": "2026-09-18T10:00:00.0000000Z",
+            "graphImportCreatedAtUtc": "2026-09-18T10:00:01.0000000Z",
+            "queuedAtUtc": "2026-09-18T10:00:02.0000000Z",
+            "processingStartedAtUtc": "2026-09-18T10:01:00.0000000Z",
+            "entraDeviceResolvedAtUtc": "2026-09-18T10:02:00.0000000Z",
+            "extensionAttributeUpdatedAtUtc": "2026-09-18T10:02:01.0000000Z",
+            "administrativeUnitAssignedAtUtc": "2026-09-18T10:02:02.0000000Z",
+            "processingCompletedAtUtc": "2026-09-18T10:02:03.0000000Z"
         }
     ],
     "count": 1,

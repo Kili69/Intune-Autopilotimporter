@@ -54,6 +54,7 @@ var azurePowerShellClientId = '1950a258-227b-4e31-a9cf-717495945fc2'
 var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   #disable-next-line BCP334 // uniqueString guarantees 13 characters after replacement.
@@ -82,6 +83,16 @@ resource configurationContainer 'Microsoft.Storage/storageAccounts/blobServices/
   properties: {
     publicAccess: 'None'
   }
+}
+
+resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource importAuditTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: 'importaudit'
 }
 
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -136,6 +147,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'AzureWebJobsStorage__credential'
           value: 'managedidentity'
+        }
+        {
+          name: 'IMPORT_AUDIT_TABLE_NAME'
+          value: importAuditTable.name
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -209,6 +224,16 @@ resource functionStorageQueueDataContributor 'Microsoft.Authorization/roleAssign
   scope: storageAccount
   properties: {
     roleDefinitionId: storageQueueDataContributorRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageTableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.id, storageTableDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: storageTableDataContributorRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }

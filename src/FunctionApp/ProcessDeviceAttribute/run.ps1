@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260918.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -71,6 +71,26 @@ if ([string]::IsNullOrWhiteSpace($groupTag)) {
     throw "Queued Group Tag is missing for import '$importId'."
 }
 
+$auditToken = Get-ImportAuditAccessToken
+$initialAuditProperties = [ordered]@{}
+if ($message.PSObject.Properties['audit'] -and $message.audit) {
+    foreach ($property in $message.audit.PSObject.Properties) {
+        $initialAuditProperties[$property.Name] = $property.Value
+    }
+}
+$existingAuditRecord = (Get-ImportAuditRecords `
+        -ImportId $importId `
+        -AccessToken $auditToken)[[string] $importId]
+if (-not $existingAuditRecord -or [string]::IsNullOrWhiteSpace(
+        [string] $existingAuditRecord.processingStartedAtUtc)) {
+    $initialAuditProperties['processingStartedAtUtc'] = `
+        [datetime]::UtcNow.ToString('o')
+}
+Set-ImportAuditRecord `
+    -ImportId $importId `
+    -Properties $initialAuditProperties `
+    -AccessToken $auditToken
+
 $tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent `
     -Value $TagPolicyBlob
 if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
@@ -138,6 +158,13 @@ if (-not [guid]::TryParse(
         [ref] $entraDeviceId)) {
     throw "Entra device is not available yet for Autopilot import '$importId'."
 }
+Set-ImportAuditRecord `
+    -ImportId $importId `
+    -Properties @{
+        entraDeviceResolvedAtUtc = [datetime]::UtcNow.ToString('o')
+        entraDeviceId = $entraDeviceId.ToString()
+    } `
+    -AccessToken $auditToken
 
 # Administrative-unit membership requires the Entra object ID, which differs
 # from the deviceId (azureActiveDirectoryDeviceId) resolved above.
@@ -164,6 +191,14 @@ if (-not [string]::IsNullOrWhiteSpace(
             -AccessToken $secureToken `
             -TestOnly
     if ($existingMembership.IsMember) {
+        $completedAtUtc = [datetime]::UtcNow.ToString('o')
+        Set-ImportAuditRecord `
+            -ImportId $importId `
+            -Properties @{
+                administrativeUnitAssignedAtUtc = $completedAtUtc
+                processingCompletedAtUtc = $completedAtUtc
+            } `
+            -AccessToken $auditToken
         Write-Information "Entra device '$entraDeviceId' is already a member of administrative unit '$administrativeUnitName'."
         return
     }
@@ -180,6 +215,13 @@ Invoke-RestMethod `
     -ContentType 'application/json' `
     -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
     -ErrorAction Stop | Out-Null
+
+Set-ImportAuditRecord `
+    -ImportId $importId `
+    -Properties @{
+        extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+    } `
+    -AccessToken $auditToken
 
 Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
 
@@ -200,4 +242,18 @@ if (-not [string]::IsNullOrWhiteSpace(
         'already a member of'
     }
     Write-Information "Entra device '$entraDeviceId' $membershipAction administrative unit '$administrativeUnitName'."
+
+    Set-ImportAuditRecord `
+        -ImportId $importId `
+        -Properties @{
+            administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
+        } `
+        -AccessToken $auditToken
 }
+
+Set-ImportAuditRecord `
+    -ImportId $importId `
+    -Properties @{
+        processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+    } `
+    -AccessToken $auditToken

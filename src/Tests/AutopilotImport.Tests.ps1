@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260918.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1049,6 +1049,19 @@ Describe 'Client import history' {
                         serialNumber = 'SERIAL-001'
                         groupTag     = 'Standard'
                         status       = 'complete'
+                        requestedBy  = 'ada@example.com'
+                        requestedByObjectId = `
+                            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                        requestedByUserPrincipalName = 'ada@example.com'
+                        requestedByDisplayName = 'Ada Lovelace'
+                        requestReceivedAtUtc = '2026-09-18T10:00:00.0000000Z'
+                        graphImportCreatedAtUtc = '2026-09-18T10:00:01.0000000Z'
+                        queuedAtUtc = '2026-09-18T10:00:02.0000000Z'
+                        processingStartedAtUtc = '2026-09-18T10:01:00.0000000Z'
+                        entraDeviceResolvedAtUtc = '2026-09-18T10:02:00.0000000Z'
+                        extensionAttributeUpdatedAtUtc = '2026-09-18T10:02:01.0000000Z'
+                        administrativeUnitAssignedAtUtc = '2026-09-18T10:02:02.0000000Z'
+                        processingCompletedAtUtc = '2026-09-18T10:02:03.0000000Z'
                     }
                     [pscustomobject]@{
                         importId     = '22222222-2222-2222-2222-222222222222'
@@ -1076,6 +1089,12 @@ Describe 'Client import history' {
         $result[0].ImportId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $result[1].status | Should -Be 'error'
+        $result[0].RequestedBy | Should -Be 'ada@example.com'
+        $result[0].RequestedByDisplayName | Should -Be 'Ada Lovelace'
+        $result[0].RequestReceivedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].ProcessingCompletedAtUtc.ToString('o') |
+            Should -Be '2026-09-18T10:02:03.0000000+00:00'
+        $result[1].RequestReceivedAtUtc | Should -BeNullOrEmpty
         $result[0].PSTypeNames | Should -Contain `
             'AutopilotImport.ImportHistoryRecord'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
@@ -1084,6 +1103,9 @@ Describe 'Client import history' {
                 'SerialNumber'
                 'GroupTag'
                 'Status'
+                'RequestedBy'
+                'RequestReceivedAtUtc'
+                'ProcessingCompletedAtUtc'
                 'DeviceErrorName'
             )
         Should -Invoke Invoke-RestMethod `
@@ -1093,6 +1115,71 @@ Describe 'Client import history' {
                 $Method -eq 'Get' -and
                 $Uri -eq `
                     'https://func.example/api/management/imports?top=250'
+            }
+    }
+
+    It 'requests all retained records only when ShowAll is specified' {
+        Get-AutoPilotImportHistory `
+            -ShowAll `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Get' -and
+                $Uri -eq `
+                    'https://func.example/api/management/imports?top=100&showAll=true'
+            }
+    }
+
+    It 'posts multiple import IDs as an explicit history filter' {
+        Get-AutoPilotImportHistory `
+            -ImportId @(
+                '11111111-1111-1111-1111-111111111111'
+                '22222222-2222-2222-2222-222222222222'
+            ) `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $payload = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                @($payload.importIds).Count -eq 2 -and
+                @($payload.deviceHashSha256).Count -eq 0
+            }
+    }
+
+    It 'posts only a SHA-256 index for a DeviceHash filter' {
+        $deviceHash = [Convert]::ToBase64String([byte[]](1, 2, 3, 4))
+
+        Get-AutoPilotImportHistory `
+            -DeviceHash $deviceHash `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $payload = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                $Body -notlike "*$deviceHash*" -and
+                $payload.deviceHashSha256 -eq `
+                    '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a'
             }
     }
 
@@ -1149,7 +1236,7 @@ Describe 'Client import history' {
     }
 }
 
-Describe 'Manager import history endpoint' {
+Describe 'Import history endpoint' {
     BeforeAll {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $historyFunction = Get-Content `
@@ -1162,27 +1249,38 @@ Describe 'Manager import history endpoint' {
                 $projectRoot `
                 'src\Installer\Install-AutopilotImport.ps1') `
             -Raw
+        $historyBinding = Get-Content `
+            -LiteralPath (Join-Path `
+                $projectRoot `
+                'src\FunctionApp\GetImportHistory\function.json') `
+            -Raw | ConvertFrom-Json
     }
 
     It 'includes the import history Function in the Azure publish archive' {
         $installer.Contains(
             "Join-Path `$functionAppRoot 'GetImportHistory'") |
             Should -BeTrue
+        $installer.Contains(
+            "Join-Path `$functionAppRoot 'RemoveExpiredImportHistory'") |
+            Should -BeTrue
+        @($historyBinding.bindings[0].methods) | Should -Contain 'post'
     }
 
-    It 'uses the same explicit and Intune manager authorization as tag policy management' {
+    It 'defaults to the caller and reserves ShowAll for importer managers' {
+        $historyFunction | Should -Match 'ActorObjectId = \$actorObjectId'
+        $historyFunction | Should -Match '\$showAll'
         $historyFunction | Should -Match 'Test-TagPolicyManagerPrincipal'
         $historyFunction | Should -Match 'allowIntuneRoleAdministrators'
         $historyFunction | Should -Match 'Test-IntuneRoleAdministrator'
-        $historyFunction | Should -Match "'importHistoryForbidden'"
+        $historyFunction | Should -Match "'showAllForbidden'"
     }
 
-    It 'validates the result limit and stops Graph pagination at that limit' {
+    It 'validates the result limit and stops Graph pagination after matching audit records' {
         $historyFunction | Should -Match '\$parsedTop -lt 1'
         $historyFunction | Should -Match '\$parsedTop -gt 1000'
         $historyFunction | Should -Match "'@odata\.nextLink'"
-        $historyFunction | Should -Match '\$imports\.Count -lt \$top'
-        $historyFunction | Should -Match '\$imports\.Count -ge \$top'
+        $historyFunction | Should -Match '\$remainingIds\.Count -gt 0'
+        $historyFunction | Should -Match '\$remainingIds\.Remove'
     }
 
     It 'queries and returns operational fields without sensitive import payloads' {
@@ -1190,8 +1288,68 @@ Describe 'Manager import history endpoint' {
             '\?\$select=id,importId,serialNumber,groupTag,state&\$top=100'
         $historyFunction | Should -Match 'deviceImportStatus'
         $historyFunction | Should -Match 'deviceErrorCode'
+        $historyFunction | Should -Match 'Get-ImportAuditHistory'
+        $historyFunction | Should -Match 'Get-ImportAuditRetentionCutoffUtc'
+        $historyFunction | Should -Match 'requestedByUserPrincipalName'
+        $historyFunction | Should -Match 'extensionAttributeUpdatedAtUtc'
+        $historyFunction | Should -Match 'processingCompletedAtUtc'
         $historyFunction | Should -Not -Match '\.hardwareIdentifier'
         $historyFunction | Should -Not -Match '\.productKey'
+    }
+}
+
+Describe 'Import audit workflow integration' {
+    BeforeAll {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $importFunction = Get-Content -LiteralPath (Join-Path `
+                $projectRoot 'src\FunctionApp\ImportDevice\run.ps1') -Raw
+        $processorFunction = Get-Content -LiteralPath (Join-Path `
+                $projectRoot 'src\FunctionApp\ProcessDeviceAttribute\run.ps1') -Raw
+        $retentionFunction = Get-Content -LiteralPath (Join-Path `
+            $projectRoot 'src\FunctionApp\RemoveExpiredImportHistory\run.ps1') -Raw
+        $retentionBinding = Get-Content -LiteralPath (Join-Path `
+            $projectRoot 'src\FunctionApp\RemoveExpiredImportHistory\function.json') `
+            -Raw | ConvertFrom-Json
+        $infrastructure = Get-Content -LiteralPath (Join-Path `
+                $projectRoot 'src\Infrastructure\main.bicep') -Raw
+    }
+
+    It 'queues the authenticated actor and initial UTC milestones' {
+        $importFunction | Should -Match 'actorUserPrincipalName'
+        $importFunction | Should -Match 'actorDisplayName'
+        $importFunction | Should -Match 'requestReceivedAtUtc'
+        $importFunction | Should -Match 'graphImportCreatedAtUtc'
+        $importFunction | Should -Match 'queuedAtUtc'
+        $importFunction | Should -Match 'deviceHashSha256'
+        $importFunction | Should -Match 'deviceHash\s*='
+        $importFunction | Should -Match 'audit\s*=\s*\$auditProperties'
+    }
+
+    It 'records each successful post-processing milestone' {
+        $processorFunction | Should -Match 'Get-ImportAuditRecords'
+        $processorFunction | Should -Match `
+            'existingAuditRecord\.processingStartedAtUtc'
+        $processorFunction | Should -Match 'processingStartedAtUtc'
+        $processorFunction | Should -Match 'entraDeviceResolvedAtUtc'
+        $processorFunction | Should -Match 'extensionAttributeUpdatedAtUtc'
+        $processorFunction | Should -Match 'administrativeUnitAssignedAtUtc'
+        $processorFunction | Should -Match 'processingCompletedAtUtc'
+    }
+
+    It 'provisions the audit table and managed identity data role' {
+        $infrastructure | Should -Match `
+            "Microsoft\.Storage/storageAccounts/tableServices/tables@"
+        $infrastructure | Should -Match "name:\s*'importaudit'"
+        $infrastructure | Should -Match 'storageTableDataContributorRoleId'
+        $infrastructure | Should -Match "name:\s*'IMPORT_AUDIT_TABLE_NAME'"
+    }
+
+    It 'removes audit records after the 30-day retention period' {
+        $retentionFunction | Should -Match `
+            'Get-ImportAuditRetentionCutoffUtc'
+        $retentionFunction | Should -Match 'Remove-ExpiredImportAuditRecords'
+        $retentionBinding.bindings[0].type | Should -Be 'timerTrigger'
+        $retentionBinding.bindings[0].schedule | Should -Be '0 17 * * * *'
     }
 }
 
@@ -1789,7 +1947,6 @@ Describe 'Removing a Client Group Tag policy rule' {
 Describe 'Blob binding content conversion' {
     It 'decodes text and byte content' {
         $json = '{"groupId":"11111111-1111-1111-1111-111111111111"}'
-
         ConvertFrom-BlobBindingContent -Value $json | Should -Be $json
         ConvertFrom-BlobBindingContent `
             -Value ([Text.Encoding]::UTF8.GetBytes($json)) |
@@ -1828,6 +1985,194 @@ Describe 'Blob binding content conversion' {
 
         $decodedPolicy.Count | Should -Be 2
         $decodedPolicy[0].tags | Should -Be 'BG-Client'
+    }
+}
+
+Describe 'Import audit table storage' {
+    BeforeAll {
+        $auditToken = ConvertTo-SecureString 'storage-token' `
+            -AsPlainText `
+            -Force
+    }
+
+    BeforeEach {
+        $env:AzureWebJobsStorage__accountName = 'staudit'
+        $env:IMPORT_AUDIT_TABLE_NAME = 'importaudit'
+    }
+
+    AfterEach {
+        Remove-Item Env:AzureWebJobsStorage__accountName `
+            -ErrorAction SilentlyContinue
+        Remove-Item Env:IMPORT_AUDIT_TABLE_NAME `
+            -ErrorAction SilentlyContinue
+    }
+
+    It 'resolves and validates the configured table endpoint' {
+        Get-ImportAuditTableUri |
+            Should -Be 'https://staudit.table.core.windows.net/importaudit'
+
+        $env:IMPORT_AUDIT_TABLE_NAME = 'invalid-name'
+        { Get-ImportAuditTableUri } | Should -Throw '*is invalid*'
+    }
+
+    It 'merges audit properties into an existing import record' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {}
+        $importId = [guid] '11111111-1111-1111-1111-111111111111'
+
+        Set-ImportAuditRecord `
+            -ImportId $importId `
+            -Properties @{
+                actorUserPrincipalName = 'user@example.com'
+                processingCompletedAtUtc = '2026-09-18T12:00:00.0000000Z'
+            } `
+            -AccessToken $auditToken
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Merge' -and
+                $Uri -eq "https://staudit.table.core.windows.net/importaudit(PartitionKey='imports',RowKey='$importId')" -and
+                $Body -match 'user@example\.com' -and
+                $Headers['If-Match'] -eq '*'
+            }
+    }
+
+    It 'inserts an audit record when the merge target does not exist' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            if ($Method -eq 'Merge') {
+                $exception = [InvalidOperationException]::new('Not found')
+                $exception.Data['StatusCode'] = 404
+                throw $exception
+            }
+        }
+
+        Set-ImportAuditRecord `
+            -ImportId ([guid] '22222222-2222-2222-2222-222222222222') `
+            -Properties @{ actorObjectId = 'actor-id' } `
+            -AccessToken $auditToken
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter { $Method -eq 'Merge' }
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Post' -and
+                $Uri -eq 'https://staudit.table.core.windows.net/importaudit' -and
+                -not $Headers.ContainsKey('If-Match')
+            }
+    }
+
+    It 'returns audit records indexed by import ID' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{
+                value = @(
+                    [pscustomobject]@{
+                        PartitionKey = 'imports'
+                        RowKey = '33333333-3333-3333-3333-333333333333'
+                        actorDisplayName = 'Ada Lovelace'
+                    }
+                )
+            }
+        }
+
+        $records = Get-ImportAuditRecords `
+            -ImportId @(
+                [guid] '33333333-3333-3333-3333-333333333333'
+                [guid] '44444444-4444-4444-4444-444444444444'
+            ) `
+            -AccessToken $auditToken
+
+        $records['33333333-3333-3333-3333-333333333333'].actorDisplayName |
+            Should -Be 'Ada Lovelace'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Get' -and $Uri -match '\$filter='
+            }
+    }
+
+    It 'creates the same SHA-256 index for equivalent Base64 device hashes' {
+        $deviceHash = [Convert]::ToBase64String([byte[]](1, 2, 3, 4))
+
+        Get-DeviceHashSha256 -DeviceHash $deviceHash |
+            Should -Be '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a'
+    }
+
+    It 'returns recent owner records in newest-first order' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{
+                value = @(
+                    [pscustomobject]@{
+                        RowKey = '55555555-5555-5555-5555-555555555555'
+                        requestReceivedAtUtc = '2026-09-17T10:00:00Z'
+                    }
+                    [pscustomobject]@{
+                        RowKey = '66666666-6666-6666-6666-666666666666'
+                        requestReceivedAtUtc = '2026-09-18T10:00:00Z'
+                    }
+                )
+            }
+        }
+
+        $records = @(Get-ImportAuditHistory `
+            -ActorObjectId 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' `
+            -SinceUtc ([datetimeoffset] '2026-08-19T00:00:00Z') `
+            -Top 1 `
+            -AccessToken $auditToken)
+
+        $records.Count | Should -Be 1
+        $records[0].RowKey | Should -Be `
+            '66666666-6666-6666-6666-666666666666'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -ParameterFilter {
+                $decodedUri = [uri]::UnescapeDataString($Uri)
+                $Method -eq 'Get' -and
+                $decodedUri.Contains("requestReceivedAtUtc ge '2026-08-19T00:00:00.0000000Z'") -and
+                $decodedUri.Contains("actorObjectId eq 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'")
+            }
+    }
+
+    It 'defaults import audit retention to 30 days' {
+        $referenceUtc = [datetimeoffset] '2026-09-18T12:00:00Z'
+
+        Get-ImportAuditRetentionCutoffUtc -ReferenceUtc $referenceUtc |
+            Should -Be ([datetimeoffset] '2026-08-19T12:00:00Z')
+        Get-ImportAuditRetentionCutoffUtc `
+            -RetentionDays 60 `
+            -ReferenceUtc $referenceUtc |
+            Should -Be ([datetimeoffset] '2026-07-20T12:00:00Z')
+    }
+
+    It 'deletes audit records older than the retention cutoff' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        RowKey = '77777777-7777-7777-7777-777777777777'
+                    })
+                }
+            }
+        }
+
+        $removedCount = Remove-ExpiredImportAuditRecords `
+            -BeforeUtc ([datetimeoffset] '2026-08-19T00:00:00Z') `
+            -AccessToken $auditToken
+
+        $removedCount | Should -Be 1
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Delete' -and
+                ([string] $Uri).Contains(
+                    "RowKey='77777777-7777-7777-7777-777777777777'")
+            }
     }
 }
 
@@ -2405,6 +2750,7 @@ Describe 'Administrative unit membership' {
             } | Should -Throw '*Administrative unit name*is not unique*'
         }
     }
+
 }
 
 Describe 'Installer Function App naming' {
@@ -3228,7 +3574,7 @@ Describe 'Update script deployment discovery' {
         } | Should -Throw -PassThru
 
         $errorRecord.Exception.Message | Should -Be `
-            'Missing Azure permissions for: Storage accounts, Blob services, Blob containers, Log Analytics workspaces, Application Insights, App Service plans, Function Apps, Function App configuration.'
+            'Missing Azure permissions for: Storage accounts, Blob services, Blob containers, Table services, Storage tables, Log Analytics workspaces, Application Insights, App Service plans, Function Apps, Function App configuration.'
         $errorRecord.Exception.Message | Should -Not -Match `
             'subscriptions|Microsoft\.|Assign|Connect-AzAccount'
         $errorRecord.Exception.Data['AutopilotUpdatePermissionError'] |
@@ -4877,6 +5223,8 @@ Describe 'Deployment package' {
                     'GetAuthorizedTags/function.json'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
+                    'RemoveExpiredImportHistory/function.json'
+                    'RemoveExpiredImportHistory/run.ps1'
                     'proxies.json'
                     'WebFrontend/function.json'
                     'WebFrontend/wwwroot/index.html'

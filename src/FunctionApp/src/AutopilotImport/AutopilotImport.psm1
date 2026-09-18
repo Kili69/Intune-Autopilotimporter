@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260918.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -82,6 +82,405 @@ function ConvertFrom-BlobBindingContent {
     }
 
     return $Value.ToString()
+}
+
+function Get-ImportAuditTableUri {
+    <#
+    .SYNOPSIS
+    Resolves the Azure Table endpoint used for import audit records.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $storageAccountName = $env:AzureWebJobsStorage__accountName
+    if ([string]::IsNullOrWhiteSpace($storageAccountName)) {
+        throw 'AzureWebJobsStorage__accountName is required for import audit history.'
+    }
+
+    $tableName = if ([string]::IsNullOrWhiteSpace(
+            $env:IMPORT_AUDIT_TABLE_NAME)) {
+        'importaudit'
+    }
+    else {
+        $env:IMPORT_AUDIT_TABLE_NAME.Trim()
+    }
+    if ($tableName -notmatch '^[A-Za-z][A-Za-z0-9]{2,62}$') {
+        throw "Import audit table name '$tableName' is invalid."
+    }
+
+    return "https://$storageAccountName.table.core.windows.net/$tableName"
+}
+
+function Get-ImportAuditAccessToken {
+    <#
+    .SYNOPSIS
+    Acquires an Azure Storage token through the current managed identity.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $tokenResult = Get-AzAccessToken `
+        -ResourceUrl 'https://storage.azure.com/' `
+        -ErrorAction Stop
+    if ($tokenResult.Token -is [Security.SecureString]) {
+        return $tokenResult.Token
+    }
+    return ConvertTo-SecureString `
+        ([string] $tokenResult.Token) `
+        -AsPlainText `
+        -Force
+}
+
+function Get-DeviceHashSha256 {
+    <#
+    .SYNOPSIS
+    Returns a stable SHA-256 index for a Base64 Autopilot device hash.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 65536)]
+        [string] $DeviceHash
+    )
+
+    try {
+        $deviceHashBytes = [Convert]::FromBase64String($DeviceHash)
+    }
+    catch {
+        throw [ArgumentException]::new('DeviceHash must be valid Base64.')
+    }
+    if ($deviceHashBytes.Length -eq 0) {
+        throw [ArgumentException]::new('DeviceHash must not be empty.')
+    }
+
+    return [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($deviceHashBytes)
+    ).ToLowerInvariant()
+}
+
+function Test-ImportAuditHttpStatus {
+    param(
+        [Parameter(Mandatory)]
+        [Management.Automation.ErrorRecord] $ErrorRecord,
+
+        [Parameter(Mandatory)]
+        [int] $StatusCode
+    )
+
+    if ($ErrorRecord.Exception.PSObject.Properties['Response'] -and
+        $ErrorRecord.Exception.Response -and
+        $ErrorRecord.Exception.Response.PSObject.Properties['StatusCode']) {
+        return [int] $ErrorRecord.Exception.Response.StatusCode -eq $StatusCode
+    }
+    return $ErrorRecord.Exception.Data.Contains('StatusCode') -and
+        [int] $ErrorRecord.Exception.Data['StatusCode'] -eq $StatusCode
+}
+
+function Set-ImportAuditRecord {
+    <#
+    .SYNOPSIS
+    Merges audit properties into the record for an Autopilot import.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [guid] $ImportId,
+
+        [Parameter(Mandatory)]
+        [Collections.IDictionary] $Properties,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $tableUri = Get-ImportAuditTableUri
+    $rowKey = $ImportId.ToString()
+    $entity = [ordered]@{
+        PartitionKey = 'imports'
+        RowKey = $rowKey
+    }
+    foreach ($propertyName in $Properties.Keys) {
+        if ($propertyName -in @('PartitionKey', 'RowKey') -or
+            $null -eq $Properties[$propertyName]) {
+            continue
+        }
+        $entity[[string] $propertyName] = $Properties[$propertyName]
+    }
+    $headers = @{
+        Accept         = 'application/json;odata=nometadata'
+        'If-Match'     = '*'
+        'x-ms-date'    = [datetime]::UtcNow.ToString(
+            'R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $body = $entity | ConvertTo-Json -Depth 6 -Compress
+    $entityUri = "$tableUri(PartitionKey='imports',RowKey='$rowKey')"
+
+    try {
+        Invoke-RestMethod `
+            -Method Merge `
+            -Uri $entityUri `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -Headers $headers `
+            -ContentType 'application/json' `
+            -Body $body `
+            -ErrorAction Stop | Out-Null
+    }
+    catch {
+        if (-not (Test-ImportAuditHttpStatus `
+                -ErrorRecord $_ `
+                -StatusCode 404)) {
+            throw
+        }
+        $headers.Remove('If-Match')
+        try {
+            Invoke-RestMethod `
+                -Method Post `
+                -Uri $tableUri `
+                -Authentication Bearer `
+                -Token $AccessToken `
+                -Headers $headers `
+                -ContentType 'application/json' `
+                -Body $body `
+                -ErrorAction Stop | Out-Null
+        }
+        catch {
+            if (-not (Test-ImportAuditHttpStatus `
+                    -ErrorRecord $_ `
+                    -StatusCode 409)) {
+                throw
+            }
+            Set-ImportAuditRecord `
+                -ImportId $ImportId `
+                -Properties $Properties `
+                -AccessToken $AccessToken
+        }
+    }
+}
+
+function Get-ImportAuditRecords {
+    <#
+    .SYNOPSIS
+    Returns audit records indexed by Autopilot import ID.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [guid[]] $ImportId,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $records = @{}
+    $ids = @($ImportId | Select-Object -Unique)
+    if ($ids.Count -eq 0) {
+        return $records
+    }
+
+    $tableUri = Get-ImportAuditTableUri
+    $headers = @{
+        Accept         = 'application/json;odata=nometadata'
+        'x-ms-date'    = [datetime]::UtcNow.ToString(
+            'R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    for ($offset = 0; $offset -lt $ids.Count; $offset += 20) {
+        $lastIndex = [Math]::Min($offset + 19, $ids.Count - 1)
+        $rowFilters = @($ids[$offset..$lastIndex] | ForEach-Object {
+            "RowKey eq '$($_.ToString())'"
+        })
+        $filter = "PartitionKey eq 'imports' and ($($rowFilters -join ' or '))"
+        $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))"
+        $response = Invoke-RestMethod `
+            -Method Get `
+            -Uri $requestUri `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -Headers $headers `
+            -ErrorAction Stop
+        foreach ($record in @($response.value)) {
+            $records[[string] $record.RowKey] = $record
+        }
+    }
+
+    return $records
+}
+
+function Get-ImportAuditRetentionCutoffUtc {
+    <#
+    .SYNOPSIS
+    Returns the UTC cutoff for the import audit retention period.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateRange(1, 3650)]
+        [int] $RetentionDays = 30,
+
+        [datetimeoffset] $ReferenceUtc = [datetimeoffset]::UtcNow
+    )
+
+    return $ReferenceUtc.AddDays(-$RetentionDays)
+}
+
+function Get-ImportAuditHistory {
+    <#
+    .SYNOPSIS
+    Returns recent audit records filtered by owner or explicit identifiers.
+    #>
+    [CmdletBinding()]
+    param(
+        [guid[]] $ImportId = @(),
+
+        [string[]] $DeviceHashSha256 = @(),
+
+        [string] $ActorObjectId,
+
+        [Parameter(Mandatory)]
+        [datetimeoffset] $SinceUtc,
+
+        [ValidateRange(1, 1000)]
+        [int] $Top = 100,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $tableUri = Get-ImportAuditTableUri
+    $sinceValue = $SinceUtc.UtcDateTime.ToString(
+        'yyyy-MM-ddTHH:mm:ss.fffffffZ',
+        [Globalization.CultureInfo]::InvariantCulture)
+    $filters = @(
+        "PartitionKey eq 'imports'"
+        "requestReceivedAtUtc ge '$sinceValue'"
+    )
+    $identifierFilters = @(
+        @($ImportId | Select-Object -Unique | ForEach-Object {
+            "RowKey eq '$($_.ToString())'"
+        })
+        @($DeviceHashSha256 | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Select-Object -Unique | ForEach-Object {
+            "deviceHashSha256 eq '$($_.Replace("'", "''"))'"
+        })
+    )
+    if ($identifierFilters.Count -gt 0) {
+        $filters += "($($identifierFilters -join ' or '))"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ActorObjectId)) {
+        $escapedActorObjectId = $ActorObjectId.Replace("'", "''")
+        $filters += "actorObjectId eq '$escapedActorObjectId'"
+    }
+    $filter = $filters -join ' and '
+    $headers = @{
+        Accept         = 'application/json;odata=nometadata'
+        'x-ms-date'    = [datetime]::UtcNow.ToString(
+            'R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $records = [Collections.Generic.List[object]]::new()
+    $nextPartitionKey = $null
+    $nextRowKey = $null
+
+    do {
+        $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))&`$top=1000"
+        if (-not [string]::IsNullOrWhiteSpace($nextPartitionKey)) {
+            $requestUri += "&NextPartitionKey=$([uri]::EscapeDataString($nextPartitionKey))"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($nextRowKey)) {
+            $requestUri += "&NextRowKey=$([uri]::EscapeDataString($nextRowKey))"
+        }
+        $responseHeaders = $null
+        $response = Invoke-RestMethod `
+            -Method Get `
+            -Uri $requestUri `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -Headers $headers `
+            -ResponseHeadersVariable responseHeaders `
+            -ErrorAction Stop
+        foreach ($record in @($response.value)) {
+            $records.Add($record)
+        }
+        $nextPartitionKey = if ($responseHeaders) {
+            [string] $responseHeaders['x-ms-continuation-NextPartitionKey']
+        }
+        else {
+            $null
+        }
+        $nextRowKey = if ($responseHeaders) {
+            [string] $responseHeaders['x-ms-continuation-NextRowKey']
+        }
+        else {
+            $null
+        }
+    } while (-not [string]::IsNullOrWhiteSpace($nextPartitionKey))
+
+    return @($records | Sort-Object {
+        $recordedAt = if (-not [string]::IsNullOrWhiteSpace(
+                [string] $_.requestReceivedAtUtc)) {
+            [datetimeoffset] $_.requestReceivedAtUtc
+        }
+        else {
+            [datetimeoffset] $_.Timestamp
+        }
+        $recordedAt
+    } -Descending | Select-Object -First $Top)
+}
+
+function Remove-ExpiredImportAuditRecords {
+    <#
+    .SYNOPSIS
+    Deletes import audit records older than the supplied UTC cutoff.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [datetimeoffset] $BeforeUtc,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $tableUri = Get-ImportAuditTableUri
+    $beforeValue = $BeforeUtc.UtcDateTime.ToString(
+        'yyyy-MM-ddTHH:mm:ss.fffffffZ',
+        [Globalization.CultureInfo]::InvariantCulture)
+    $filter = "PartitionKey eq 'imports' and requestReceivedAtUtc lt '$beforeValue'"
+    $headers = @{
+        Accept         = 'application/json;odata=nometadata'
+        'If-Match'     = '*'
+        'x-ms-date'    = [datetime]::UtcNow.ToString(
+            'R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $removedCount = 0
+
+    do {
+        $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))&`$top=1000"
+        $response = Invoke-RestMethod `
+            -Method Get `
+            -Uri $requestUri `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -Headers $headers `
+            -ErrorAction Stop
+        $expiredRecords = @($response.value)
+        foreach ($record in $expiredRecords) {
+            $rowKey = [uri]::EscapeDataString([string] $record.RowKey)
+            Invoke-RestMethod `
+                -Method Delete `
+                -Uri "$tableUri(PartitionKey='imports',RowKey='$rowKey')" `
+                -Authentication Bearer `
+                -Token $AccessToken `
+                -Headers $headers `
+                -ErrorAction Stop | Out-Null
+            $removedCount++
+        }
+    } while ($expiredRecords.Count -eq 1000)
+
+    return $removedCount
 }
 
 function ConvertTo-TagAuthorizationPolicy {
@@ -1060,6 +1459,14 @@ function ConvertTo-AutoPilotImportPayload {
 
 Export-ModuleMember -Function @(
     'ConvertFrom-BlobBindingContent',
+    'Get-ImportAuditTableUri',
+    'Get-ImportAuditAccessToken',
+    'Get-DeviceHashSha256',
+    'Set-ImportAuditRecord',
+    'Get-ImportAuditRecords',
+    'Get-ImportAuditRetentionCutoffUtc',
+    'Get-ImportAuditHistory',
+    'Remove-ExpiredImportAuditRecords',
     'ConvertTo-TagAuthorizationPolicy',
     'ConvertTo-EntraDeviceExtensionAttributes',
     'Resolve-AdministrativeUnitName',

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260918.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -895,6 +895,8 @@ function Assert-AzureUpdatePermissions {
         'Microsoft.Storage/storageAccounts/write'
         'Microsoft.Storage/storageAccounts/blobServices/write'
         'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.Storage/storageAccounts/tableServices/write'
+        'Microsoft.Storage/storageAccounts/tableServices/tables/write'
         'Microsoft.OperationalInsights/workspaces/write'
         'Microsoft.Insights/components/write'
         'Microsoft.Web/serverfarms/write'
@@ -941,6 +943,8 @@ function Assert-AzureUpdatePermissions {
                 'Microsoft.Storage/storageAccounts/write' { 'Storage accounts' }
                 'Microsoft.Storage/storageAccounts/blobServices/write' { 'Blob services' }
                 'Microsoft.Storage/storageAccounts/blobServices/containers/write' { 'Blob containers' }
+                'Microsoft.Storage/storageAccounts/tableServices/write' { 'Table services' }
+                'Microsoft.Storage/storageAccounts/tableServices/tables/write' { 'Storage tables' }
                 'Microsoft.OperationalInsights/workspaces/write' { 'Log Analytics workspaces' }
                 'Microsoft.Insights/components/write' { 'Application Insights' }
                 'Microsoft.Web/serverfarms/write' { 'App Service plans' }
