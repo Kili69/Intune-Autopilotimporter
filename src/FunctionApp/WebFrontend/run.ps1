@@ -1,9 +1,20 @@
-# Project-Version: 1.1.20260918.4
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
 
 param($Request, $TriggerMetadata)
+
+$versionMatch = [regex]::Match(
+    ((Get-Content -LiteralPath $PSCommandPath -TotalCount 2) -join "`n"),
+    '(?m)^# Project-Version:\s*(\S+)\s*$'
+)
+$functionVersion = if ($versionMatch.Success) {
+    $versionMatch.Groups[1].Value
+}
+else {
+    'unknown'
+}
 
 $requestedPath = [string] $Request.Params.path
 $securityHeaders = @{
@@ -69,12 +80,13 @@ if ($requestedPath -ieq 'config') {
         -ContentType 'application/json' `
         -CacheControl 'no-store' `
         -Body (@{
-            clientId    = $env:WEB_CLIENT_ID
-            authority   = "https://login.microsoftonline.com/$($env:TENANT_ID)"
-            scope       = "$($env:API_AUDIENCE)/DeviceHash.Import"
-            redirectUri = "$origin/api/ui/index.html"
-            importUrl   = "$origin/api/devices/import"
-            tagsUrl     = "$origin/api/devices/tags"
+            clientId       = $env:WEB_CLIENT_ID
+            authority      = "https://login.microsoftonline.com/$($env:TENANT_ID)"
+            scope          = "$($env:API_AUDIENCE)/DeviceHash.Import"
+            redirectUri    = "$origin/api/ui/index.html"
+            importUrl      = "$origin/api/devices/import"
+            tagsUrl        = "$origin/api/devices/tags"
+            functionVersion = $functionVersion
         } | ConvertTo-Json -Compress)
     return
 }

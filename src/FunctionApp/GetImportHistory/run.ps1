@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.4
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -6,11 +6,11 @@
 Returns retained Autopilot import operations visible to the caller.
 
 .DESCRIPTION
-Returns the caller's own 30-day audit history by default. Explicit import IDs
-or DeviceHash indexes can retrieve matching records from any importer, while
-ShowAll requires importer-manager authorization. Current Intune state is added
-from Microsoft Graph when available. DeviceHashes and product keys are not
-returned.
+Returns the caller's own 30-day audit history by default. Explicit import IDs,
+serial numbers, or DeviceHash indexes can retrieve matching records from any
+importer. ShowAll and user-principal-name filters require importer-manager
+authorization. Current Intune state is added from Microsoft Graph when
+available. DeviceHashes and product keys are not returned.
 #>
 
 using namespace System.Net
@@ -152,6 +152,19 @@ try {
         $serialNumber
     } | Select-Object -Unique)
 
+    $userValues = @()
+    if ($requestBody -and $requestBody.PSObject.Properties['users']) {
+        $userValues += @($requestBody.users)
+    }
+    $requestedUsers = @($userValues | ForEach-Object {
+        $user = ([string] $_).Trim()
+        if ([string]::IsNullOrWhiteSpace($user)) {
+            throw [ArgumentException]::new(
+                'users must not contain empty values.')
+        }
+        $user
+    } | Select-Object -Unique)
+
     $deviceHashSha256Values = @()
     if ($requestBody -and
         $requestBody.PSObject.Properties['deviceHashSha256']) {
@@ -167,16 +180,17 @@ try {
             $normalizedHash
         } | Select-Object -Unique)
     if ($requestedImportIds.Count + $requestedSerialNumbers.Count +
-        $requestedDeviceHashSha256.Count -gt 50) {
+        $requestedDeviceHashSha256.Count + $requestedUsers.Count -gt 50) {
         throw [ArgumentException]::new(
-            'At most 50 ImportId, SerialNumber, and DeviceHash values may be requested.')
+            'At most 50 ImportId, SerialNumber, DeviceHash, and User values may be requested.')
     }
     $hasExplicitFilter = $requestedImportIds.Count -gt 0 -or
         $requestedSerialNumbers.Count -gt 0 -or
+        $requestedUsers.Count -gt 0 -or
         $requestedDeviceHashSha256.Count -gt 0
     if ($showAll -and $hasExplicitFilter) {
         throw [ArgumentException]::new(
-            'showAll cannot be combined with ImportId, SerialNumber, or DeviceHash filters.')
+            'showAll cannot be combined with ImportId, SerialNumber, DeviceHash, or User filters.')
     }
 }
 catch [ArgumentException] {
@@ -195,7 +209,7 @@ catch {
     return
 }
 
-if ($showAll) {
+if ($showAll -or $requestedUsers.Count -gt 0) {
     try {
         $managerPolicyJson = $env:MANAGER_AUTHORIZATION_POLICY
         if ([string]::IsNullOrWhiteSpace($managerPolicyJson)) {
@@ -220,7 +234,7 @@ if ($showAll) {
     }
     if (-not $isManager) {
         Send-JsonResponse -StatusCode Forbidden -Body @{
-            error         = 'showAllForbidden'
+            error         = 'historyAccessForbidden'
             correlationId = $correlationId
         }
         return
@@ -238,6 +252,9 @@ try {
     }
     if ($requestedSerialNumbers.Count -gt 0) {
         $auditParameters.SerialNumber = $requestedSerialNumbers
+    }
+    if ($requestedUsers.Count -gt 0) {
+        $auditParameters.ActorUserPrincipalName = $requestedUsers
     }
     if ($requestedDeviceHashSha256.Count -gt 0) {
         $auditParameters.DeviceHashSha256 = $requestedDeviceHashSha256

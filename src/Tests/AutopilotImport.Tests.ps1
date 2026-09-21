@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.4
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -572,6 +572,7 @@ Describe 'Client configuration display' {
                 redirectUri = 'https://func-example.azurewebsites.net/api/ui/index.html'
                 importUrl = 'https://func-example.azurewebsites.net/api/devices/import'
                 tagsUrl = 'https://func-example.azurewebsites.net/api/devices/tags'
+                functionVersion = '1.1.20260921.1'
             }
         }
 
@@ -594,6 +595,8 @@ Describe 'Client configuration display' {
         $persistedConfiguration.FunctionAppName | Should -Be 'func-example'
         $persistedConfiguration.WebClientId | Should -Be `
             '44444444-4444-4444-4444-444444444444'
+        $persistedConfiguration.FunctionVersion | Should -Be `
+            '1.1.20260921.1'
         $persistedConfiguration.SubscriptionId | Should -BeNullOrEmpty
         $persistedConfiguration.ResourceGroupName | Should -BeNullOrEmpty
         Should -Invoke Invoke-RestMethod `
@@ -692,6 +695,7 @@ Describe 'Client configuration display' {
             functionAppName = 'func-example'
             webUrl = 'https://func-example.azurewebsites.net/api/ui/index.html'
             webClientId = '44444444-4444-4444-4444-444444444444'
+            functionVersion = '1.1.20260921.1'
         } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath
 
         $configuration = Get-AutoPilotImporterClientConfiguration `
@@ -713,6 +717,7 @@ Describe 'Client configuration display' {
             'https://func-example.azurewebsites.net/api/ui/index.html'
         $configuration.WebClientId | Should -Be `
             '44444444-4444-4444-4444-444444444444'
+        $configuration.FunctionVersion | Should -Be '1.1.20260921.1'
         $configuration.ConfigPath | Should -Be `
             ([IO.Path]::GetFullPath($settingsPath))
     }
@@ -1163,7 +1168,7 @@ Describe 'Client import history' {
 
     It 'posts serial numbers as an explicit history filter' {
         Get-AutoPilotImportHistory `
-            -SerialNumber '7892-5288-2670-2860-4823-9507-73' `
+            '7892-5288-2670-2860-4823-9507-73' `
             -ImportHistoryUrl 'https://func.example/api/management/imports' `
             -ApiApplicationIdUri `
                 'api://44444444-4444-4444-4444-444444444444' `
@@ -1178,6 +1183,25 @@ Describe 'Client import history' {
                 $Method -eq 'Post' -and
                 $payload.serialNumbers -eq `
                     '7892-5288-2670-2860-4823-9507-73'
+            }
+    }
+
+    It 'posts users as an explicit history filter' {
+        Get-AutoPilotImportHistory `
+            -User 'aa@bloedgelaber.de' `
+            -ImportHistoryUrl 'https://func.example/api/management/imports' `
+            -ApiApplicationIdUri `
+                'api://44444444-4444-4444-4444-444444444444' `
+            -TenantId '55555555-5555-5555-5555-555555555555' |
+            Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $payload = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                $payload.users -eq 'aa@bloedgelaber.de'
             }
     }
 
@@ -1237,6 +1261,39 @@ Describe 'Client import history' {
             '33333333-3333-3333-3333-333333333333'
     }
 
+    It 'reports how to authenticate when token acquisition fails' {
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            throw [InvalidOperationException]::new(
+                'No active Azure account was found.')
+        }
+
+        {
+            Get-AutoPilotImportHistory `
+                -ImportHistoryUrl `
+                    'https://func.example/api/management/imports' `
+                -ApiApplicationIdUri `
+                    'api://44444444-4444-4444-4444-444444444444' `
+                -TenantId '55555555-5555-5555-5555-555555555555'
+        } | Should -Throw `
+            '*Authentication for the Autopilot import history failed*Connect-AzAccount*'
+    }
+
+    It 'preserves the original message for an unclassified API failure' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            throw [InvalidOperationException]::new('Connection was closed.')
+        }
+
+        {
+            Get-AutoPilotImportHistory `
+                -ImportHistoryUrl `
+                    'https://func.example/api/management/imports' `
+                -ApiApplicationIdUri `
+                    'api://44444444-4444-4444-4444-444444444444' `
+                -TenantId '55555555-5555-5555-5555-555555555555'
+        } | Should -Throw `
+            '*Could not retrieve the Autopilot import history*Connection was closed*'
+    }
+
     It 'explains that a missing history endpoint requires a Function update' {
         Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
             $exception = [InvalidOperationException]::new(
@@ -1287,13 +1344,15 @@ Describe 'Import history endpoint' {
         @($historyBinding.bindings[0].methods) | Should -Contain 'post'
     }
 
-    It 'defaults to the caller and reserves ShowAll for importer managers' {
+    It 'defaults to the caller and reserves broad history access for importer managers' {
         $historyFunction | Should -Match 'ActorObjectId = \$actorObjectId'
         $historyFunction | Should -Match '\$showAll'
+        $historyFunction | Should -Match `
+            'if \(\$showAll -or \$requestedUsers\.Count -gt 0\)'
         $historyFunction | Should -Match 'Test-TagPolicyManagerPrincipal'
         $historyFunction | Should -Match 'allowIntuneRoleAdministrators'
         $historyFunction | Should -Match 'Test-IntuneRoleAdministrator'
-        $historyFunction | Should -Match "'showAllForbidden'"
+        $historyFunction | Should -Match "'historyAccessForbidden'"
     }
 
     It 'validates the result limit and stops Graph pagination after matching audit records' {
@@ -2186,6 +2245,26 @@ Describe 'Import audit table storage' {
                 $decodedUri = [uri]::UnescapeDataString($Uri)
                 $Method -eq 'Get' -and
                 $decodedUri.Contains("serialNumber eq 'SERIAL-''001'")
+            }
+    }
+
+    It 'filters import audit history by user principal name' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            [pscustomobject]@{ value = @() }
+        }
+
+        Get-ImportAuditHistory `
+            -ActorUserPrincipalName "user'o@example.com" `
+            -SinceUtc ([datetimeoffset] '2026-08-19T00:00:00Z') `
+            -AccessToken $auditToken | Out-Null
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -ParameterFilter {
+                $decodedUri = [uri]::UnescapeDataString($Uri)
+                $Method -eq 'Get' -and
+                $decodedUri.Contains(
+                    "actorUserPrincipalName eq 'user''o@example.com'")
             }
     }
 

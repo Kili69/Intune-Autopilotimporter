@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.1.20260921.2` - 2026-09-21
+
+- Added a runtime API version field to the client configuration output so installers and support staff can confirm the Function App version they are actually calling, which helps diagnose mismatches between the deployed REST API and the loaded PowerShell client.
+- Kept the serial-number import history filter and documentation aligned with the live client and backend behavior, and refreshed the shipped package metadata so the current module version is visible through `Get-Module`.
+- Rebuilt the deployment package after the version bump so the generated installation artifact matches the current PowerShell module manifest and Function App metadata.
+
 ## `1.1.20260918.4` - 2026-09-18
 
 - Extended Group Tag policies and queued device processing to assign imported Entra devices to both management and restricted management administrative units, with exact and unique Microsoft Graph validation before policy storage or deployment.
