@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -261,6 +261,7 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
+    @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
     @{ Source = 'src\Infrastructure'; Destination = 'infra' }
     @{ Source = 'src\Scripts\Ensure-EntraApiApplication.ps1'; Destination = 'scripts\Ensure-EntraApiApplication.ps1' }

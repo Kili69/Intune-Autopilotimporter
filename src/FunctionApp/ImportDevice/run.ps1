@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -56,6 +56,7 @@ param($Request, $TriggerMetadata, $TagPolicyBlob)
 $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $modulePath -Force
 
+$requestReceivedAtUtc = [datetime]::UtcNow.ToString('o')
 $correlationId = [guid]::NewGuid().ToString()
 $responseHeaders = @{
     'Content-Type'     = 'application/json'
@@ -344,6 +345,19 @@ catch {
 $actorId = @($principal.claims | Where-Object {
     $_.typ -in @('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier')
 } | Select-Object -First 1).val
+$actorUserPrincipalName = @($principal.claims | Where-Object {
+    $_.typ -in @(
+        'preferred_username'
+        'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn'
+        'email'
+    )
+} | Select-Object -First 1).val
+$actorDisplayName = @($principal.claims | Where-Object {
+    $_.typ -in @(
+        'name'
+        'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+    )
+} | Select-Object -First 1).val
 
 try {
     $graphResponse = Invoke-RestMethod `
@@ -364,12 +378,41 @@ catch {
     return
 }
 
+$graphImportCreatedAtUtc = [datetime]::UtcNow.ToString('o')
+$queuedAtUtc = [datetime]::UtcNow.ToString('o')
+$auditProperties = [ordered]@{
+    actorObjectId             = [string] $actorId
+    actorUserPrincipalName    = [string] $actorUserPrincipalName
+    actorDisplayName          = [string] $actorDisplayName
+    requestReceivedAtUtc      = $requestReceivedAtUtc
+    graphImportCreatedAtUtc   = $graphImportCreatedAtUtc
+    queuedAtUtc               = $queuedAtUtc
+    correlationId             = $correlationId
+    batchImportId             = [string] $graphResponse.importId
+    serialNumber              = [string] $graphPayload.serialNumber
+    groupTag                  = [string] $groupTag
+    administrativeUnitName    = [string] $administrativeUnitName
+    deviceHash                = [string] $graphPayload.hardwareIdentifier
+    deviceHashSha256          = Get-DeviceHashSha256 `
+        -DeviceHash ([string] $graphPayload.hardwareIdentifier)
+}
+try {
+    Set-ImportAuditRecord `
+        -ImportId ([guid] $graphResponse.id) `
+        -Properties $auditProperties `
+        -AccessToken (Get-ImportAuditAccessToken)
+}
+catch {
+    Write-Warning "[$correlationId] Initial audit record for import '$($graphResponse.id)' could not be written and will be retried by queued processing: $($_.Exception.Message)"
+}
+
 Write-Information "[$correlationId] Autopilot import '$($graphResponse.id)' created for serial '$($graphPayload.serialNumber)' by '$actorId'."
 Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
     importId = [string] $graphResponse.id
     groupTag = $groupTag
     administrativeUnitName = `
         $administrativeUnitName
+    audit = $auditProperties
 } | ConvertTo-Json -Compress)
 Send-JsonResponse -StatusCode Accepted -Body @{
     importId      = $graphResponse.id

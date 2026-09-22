@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.1.20260918.2
+.VERSION 1.1.20260921.2
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
@@ -33,7 +33,7 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#

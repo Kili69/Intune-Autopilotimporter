@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -670,6 +670,7 @@ function Get-AutoPilotImporterClientConfiguration {
         $authority = [string] $runtimeSettings['authority']
         $scope = [string] $runtimeSettings['scope']
         $importUrl = [string] $runtimeSettings['importUrl']
+        $functionVersion = [string] $runtimeSettings['functionVersion']
         $scopeSuffix = '/DeviceHash.Import'
         if ([string]::IsNullOrWhiteSpace($clientId) -or
             [string]::IsNullOrWhiteSpace($authority) -or
@@ -767,6 +768,7 @@ function Get-AutoPilotImporterClientConfiguration {
             functionAppName     = $resolvedFunctionAppName
             webUrl              = "$origin/api/ui/index.html"
             webClientId         = $parsedClientId.ToString()
+            functionVersion     = $functionVersion
         }
         # Write completely before replacing the profile file so interrupted
         # writes cannot leave a partially serialized configuration behind.
@@ -835,6 +837,7 @@ function Get-AutoPilotImporterClientConfiguration {
         ApiApplicationIdUri = $resolvedSettings.apiApplicationIdUri
         WebUrl              = $resolvedSettings.webUrl
         WebClientId         = [string] $configuration['webClientId']
+        FunctionVersion     = [string] $configuration['functionVersion']
         ConfigPath          = $resolvedConfigPath
     }
 }
@@ -1297,16 +1300,38 @@ function Get-AutoPilotImportStatus {
     } while ($true)
 }
 
+function Get-ClientDeviceHashSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 65536)]
+        [string] $DeviceHash
+    )
+
+    try {
+        $deviceHashBytes = [Convert]::FromBase64String($DeviceHash)
+    }
+    catch {
+        throw 'DeviceHash must be the Base64 Hardware Hash from the Autopilot CSV. To search by the displayed device serial number, use -SerialNumber.'
+    }
+    if ($deviceHashBytes.Length -eq 0) {
+        throw 'DeviceHash must not be empty.'
+    }
+    return [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($deviceHashBytes)
+    ).ToLowerInvariant()
+}
+
 function Get-AutoPilotImportHistory {
     <#
     .SYNOPSIS
-    Returns Autopilot import operations for an application manager.
+    Returns Autopilot import operations visible to the current user.
 
     .DESCRIPTION
-    Calls the manager-protected import history endpoint and returns recent
-    imported Windows Autopilot device identities with their Intune status and
-    error details. The caller must be allowed by the application's manager
-    policy or, when enabled, have an Intune Role Administrator assignment.
+    Returns imports requested by the signed-in user during the last 30 days.
+    ImportId, SerialNumber, and DeviceHash can retrieve specific records,
+    including who requested them. User filters and ShowAll require the caller
+    to be allowed by the manager policy or have an enabled Intune Role
+    Administrator assignment.
 
     Existing client configurations remain supported: when ImportHistoryUrl is
     omitted, the endpoint is derived from managementUrl.
@@ -1314,6 +1339,26 @@ function Get-AutoPilotImportHistory {
     .PARAMETER Top
     Maximum number of import operations to return. The default is 100 and the
     supported range is 1 through 1000.
+
+    .PARAMETER ImportId
+    One or more import IDs to retrieve regardless of who requested them.
+
+    .PARAMETER SerialNumber
+    One or more Autopilot device serial numbers to retrieve regardless of who
+    requested them. This is the first positional parameter.
+
+    .PARAMETER User
+    One or more user principal names whose imports should be retrieved. This
+    filter is restricted to importer managers.
+
+    .PARAMETER DeviceHash
+    One or more Base64 Autopilot device hashes to retrieve. The command sends
+    only locally computed SHA-256 indexes to the history endpoint.
+
+    .PARAMETER ShowAll
+    Returns all retained imports. This switch is restricted to importer
+    managers and cannot be combined with ImportId, SerialNumber, DeviceHash,
+    or User.
 
     .PARAMETER ImportHistoryUrl
     HTTPS URL of the import history management endpoint. Overrides the URL
@@ -1340,7 +1385,35 @@ function Get-AutoPilotImportHistory {
     Get-AutoPilotImportHistory -Top 500 |
         Where-Object Status -eq 'error'
 
-    Returns failed operations from the latest 500 records available in Intune.
+    Returns failed operations requested by the signed-in user.
+
+    .EXAMPLE
+    Get-AutoPilotImportHistory `
+        -ImportId '11111111-1111-1111-1111-111111111111'
+
+    Returns the specified import and the user who requested it.
+
+    .EXAMPLE
+    Get-AutoPilotImportHistory `
+        -SerialNumber '7892-5288-2670-2860-4823-9507-73'
+
+    Returns imports for the specified Autopilot device serial number.
+
+    .EXAMPLE
+    Get-AutoPilotImportHistory '7892-5288-2670-2860-4823-9507-73'
+
+    Returns imports using the serial number as a positional argument.
+
+    .EXAMPLE
+    Get-AutoPilotImportHistory -User 'aa@bloedgelaber.de'
+
+    Returns imports requested by the specified user principal name.
+
+    .EXAMPLE
+    Get-AutoPilotImportHistory -ShowAll
+
+    Returns all imports retained for 30 days when the caller is an importer
+    manager.
 
     .OUTPUTS
     PSCustomObject import records. With Raw, returns the unchanged API response.
@@ -1349,6 +1422,21 @@ function Get-AutoPilotImportHistory {
     param(
         [ValidateRange(1, 1000)]
         [int] $Top = 100,
+
+        [ValidateCount(1, 50)]
+        [guid[]] $ImportId,
+
+        [Parameter(Position = 0)]
+        [ValidateCount(1, 50)]
+        [string[]] $SerialNumber,
+
+        [ValidateCount(1, 50)]
+        [string[]] $DeviceHash,
+
+        [ValidateCount(1, 50)]
+        [string[]] $User,
+
+        [switch] $ShowAll,
 
         [ValidatePattern('^https://')]
         [string] $ImportHistoryUrl,
@@ -1391,35 +1479,98 @@ function Get-AutoPilotImportHistory {
         $configuration `
         tenantId `
         'TenantId'
-    $token = Get-ClientAccessToken $resolvedTenantId $audience
-    $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
-
     try {
-        $response = Invoke-RestMethod `
-            -Method Get `
-            -Uri $requestUrl `
-            -Authentication Bearer `
-            -Token $token `
-            -ErrorAction Stop
+        $token = Get-ClientAccessToken $resolvedTenantId $audience
     }
     catch {
+        throw 'Authentication for the Autopilot import history failed. Run Connect-AzAccount and retry.'
+    }
+    [guid[]] $requestedImportIds = @()
+    if ($PSBoundParameters.ContainsKey('ImportId')) {
+        $requestedImportIds = @($ImportId)
+    }
+    [string[]] $requestedSerialNumbers = @()
+    if ($PSBoundParameters.ContainsKey('SerialNumber')) {
+        $requestedSerialNumbers = @($SerialNumber | ForEach-Object {
+            ([string] $_).Trim()
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        if ($requestedSerialNumbers.Count -ne $SerialNumber.Count) {
+            throw 'SerialNumber values must not be empty.'
+        }
+    }
+    [string[]] $requestedUsers = @()
+    if ($PSBoundParameters.ContainsKey('User')) {
+        $requestedUsers = @($User | ForEach-Object {
+            ([string] $_).Trim()
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        if ($requestedUsers.Count -ne $User.Count) {
+            throw 'User values must not be empty.'
+        }
+    }
+    [string[]] $requestedDeviceHashes = @()
+    if ($PSBoundParameters.ContainsKey('DeviceHash')) {
+        $requestedDeviceHashes = @($DeviceHash)
+    }
+    $hasExplicitFilter = $requestedImportIds.Count -gt 0 -or
+        $requestedSerialNumbers.Count -gt 0 -or
+        $requestedUsers.Count -gt 0 -or
+        $requestedDeviceHashes.Count -gt 0
+    if ($ShowAll -and $hasExplicitFilter) {
+        throw 'ShowAll cannot be combined with ImportId, SerialNumber, DeviceHash, or User.'
+    }
+    if ($requestedImportIds.Count + $requestedSerialNumbers.Count +
+        $requestedDeviceHashes.Count + $requestedUsers.Count -gt 50) {
+        throw 'At most 50 ImportId, SerialNumber, DeviceHash, and User values may be requested.'
+    }
+    $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
+    if ($ShowAll) {
+        $requestUrl += '&showAll=true'
+    }
+    $requestParameters = @{
+        Method = if ($hasExplicitFilter) { 'Post' } else { 'Get' }
+        Uri = $requestUrl
+        Authentication = 'Bearer'
+        Token = $token
+        ErrorAction = 'Stop'
+    }
+    if ($hasExplicitFilter) {
+        $requestParameters.ContentType = 'application/json'
+        $requestParameters.Body = @{
+            importIds = @($requestedImportIds | ForEach-Object { $_.ToString() })
+            serialNumbers = @($requestedSerialNumbers)
+            users = @($requestedUsers)
+            deviceHashSha256 = @($requestedDeviceHashes | ForEach-Object {
+                Get-ClientDeviceHashSha256 -DeviceHash $_
+            })
+        } | ConvertTo-Json -Compress
+    }
+
+    try {
+        $response = Invoke-RestMethod @requestParameters
+    }
+    catch {
+        $requestError = $_
         $serviceResponse = $null
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+        if ($requestError.ErrorDetails -and
+            $requestError.ErrorDetails.Message) {
             try {
-                $serviceResponse = $_.ErrorDetails.Message | ConvertFrom-Json
+                $serviceResponse = $requestError.ErrorDetails.Message |
+                    ConvertFrom-Json
             }
             catch {
                 $serviceResponse = $null
             }
         }
         $statusCode = $null
-        if ($_.Exception.PSObject.Properties['Response'] -and
-            $_.Exception.Response -and
-            $_.Exception.Response.PSObject.Properties['StatusCode']) {
-            $statusCode = [int] $_.Exception.Response.StatusCode
+        if ($requestError.Exception.PSObject.Properties['Response'] -and
+            $requestError.Exception.Response -and
+            $requestError.Exception.Response.PSObject.Properties['StatusCode']) {
+            $statusCode = [int] $requestError.Exception.Response.StatusCode
         }
-        elseif ($_.Exception.Data.Contains('StatusCode')) {
-            $statusCode = [int] $_.Exception.Data['StatusCode']
+        elseif ($requestError.Exception.Data.Contains('StatusCode')) {
+            $statusCode = [int] $requestError.Exception.Data['StatusCode']
         }
 
         $serviceError = if ($serviceResponse -and
@@ -1434,7 +1585,7 @@ function Get-AutoPilotImportHistory {
                 'Authentication for the Autopilot import history failed. Sign in again and retry.'
             }
             403 {
-                'The signed-in user is not authorized to read the Autopilot import history. Ask an administrator to add the user to the manager policy or assign the Intune Role Administrator role.'
+                'The signed-in user is not authorized to view the requested import history. User filters and ShowAll require the importer-manager policy or the Intune Role Administrator role.'
             }
             404 {
                 "The Autopilot import history endpoint was not found at '$requestUrl'. The deployed Function App is probably older than the installed client module or was published without GetImportHistory. Run Update-AutopilotImport.ps1 without -SkipPublish, then retry. If -ImportHistoryUrl was supplied, verify that it ends with '/api/management/imports'."
@@ -1450,7 +1601,7 @@ function Get-AutoPilotImportHistory {
                     'The authorization service is temporarily unavailable. Retry later.'
                 }
                 else {
-                    "Could not retrieve the Autopilot import history. $($_.Exception.Message)"
+                    "Could not retrieve the Autopilot import history. $($requestError.Exception.Message)"
                 }
             }
         }
@@ -1469,15 +1620,52 @@ function Get-AutoPilotImportHistory {
         foreach ($property in $_.PSObject.Properties) {
             $importProperties[$property.Name] = $property.Value
         }
+        $auditTimestampNames = @(
+            'requestReceivedAtUtc'
+            'graphImportCreatedAtUtc'
+            'queuedAtUtc'
+            'processingStartedAtUtc'
+            'entraDeviceResolvedAtUtc'
+            'extensionAttributeUpdatedAtUtc'
+            'administrativeUnitAssignedAtUtc'
+            'processingCompletedAtUtc'
+        )
+        $auditTimestamps = @{}
+        foreach ($timestampName in $auditTimestampNames) {
+            $timestampValue = [string] $importProperties[$timestampName]
+            $auditTimestamps[$timestampName] = if (
+                [string]::IsNullOrWhiteSpace($timestampValue)) {
+                $null
+            }
+            else {
+                [datetimeoffset]::Parse(
+                    $timestampValue,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind
+                )
+            }
+        }
         $result = [pscustomobject][ordered]@{
-            PSTypeName      = 'AutopilotImport.ImportHistoryRecord'
-            ImportId        = [string] $importProperties['importId']
-            BatchImportId   = [string] $importProperties['batchImportId']
-            SerialNumber    = [string] $importProperties['serialNumber']
-            GroupTag        = [string] $importProperties['groupTag']
-            Status          = [string] $importProperties['status']
-            DeviceErrorCode = $importProperties['deviceErrorCode']
-            DeviceErrorName = [string] $importProperties['deviceErrorName']
+            PSTypeName                       = 'AutopilotImport.ImportHistoryRecord'
+            ImportId                         = [string] $importProperties['importId']
+            BatchImportId                    = [string] $importProperties['batchImportId']
+            SerialNumber                     = [string] $importProperties['serialNumber']
+            GroupTag                         = [string] $importProperties['groupTag']
+            Status                           = [string] $importProperties['status']
+            DeviceErrorCode                  = $importProperties['deviceErrorCode']
+            DeviceErrorName                  = [string] $importProperties['deviceErrorName']
+            RequestedBy                      = [string] $importProperties['requestedBy']
+            RequestedByObjectId              = [string] $importProperties['requestedByObjectId']
+            RequestedByUserPrincipalName     = [string] $importProperties['requestedByUserPrincipalName']
+            RequestedByDisplayName           = [string] $importProperties['requestedByDisplayName']
+            RequestReceivedAtUtc              = $auditTimestamps['requestReceivedAtUtc']
+            GraphImportCreatedAtUtc           = $auditTimestamps['graphImportCreatedAtUtc']
+            QueuedAtUtc                       = $auditTimestamps['queuedAtUtc']
+            ProcessingStartedAtUtc            = $auditTimestamps['processingStartedAtUtc']
+            EntraDeviceResolvedAtUtc          = $auditTimestamps['entraDeviceResolvedAtUtc']
+            ExtensionAttributeUpdatedAtUtc    = $auditTimestamps['extensionAttributeUpdatedAtUtc']
+            AdministrativeUnitAssignedAtUtc   = $auditTimestamps['administrativeUnitAssignedAtUtc']
+            ProcessingCompletedAtUtc          = $auditTimestamps['processingCompletedAtUtc']
         }
         $displayPropertySet = [Management.Automation.PSPropertySet]::new(
             'DefaultDisplayPropertySet',
@@ -1486,6 +1674,9 @@ function Get-AutoPilotImportHistory {
                 'SerialNumber'
                 'GroupTag'
                 'Status'
+                'RequestedBy'
+                'RequestReceivedAtUtc'
+                'ProcessingCompletedAtUtc'
                 'DeviceErrorName'
             )
         )

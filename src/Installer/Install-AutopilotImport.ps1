@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260918.2
+# Project-Version: 1.1.20260921.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -949,6 +949,8 @@ function Assert-AzureDeploymentPermissions {
         'Microsoft.Storage/storageAccounts/write'
         'Microsoft.Storage/storageAccounts/blobServices/write'
         'Microsoft.Storage/storageAccounts/blobServices/containers/write'
+        'Microsoft.Storage/storageAccounts/tableServices/write'
+        'Microsoft.Storage/storageAccounts/tableServices/tables/write'
         'Microsoft.OperationalInsights/workspaces/write'
         'Microsoft.Insights/components/write'
         'Microsoft.Web/serverfarms/write'
@@ -1004,6 +1006,10 @@ function Assert-AzureDeploymentPermissions {
                 'Create or update the Blob service'
             'Microsoft.Storage/storageAccounts/blobServices/containers/write' = `
                 'Create or update Blob containers'
+            'Microsoft.Storage/storageAccounts/tableServices/write' = `
+                'Create or update the Table service'
+            'Microsoft.Storage/storageAccounts/tableServices/tables/write' = `
+                'Create or update Storage tables'
             'Microsoft.OperationalInsights/workspaces/write' = `
                 'Create or update the Log Analytics workspace'
             'Microsoft.Insights/components/write' = `
@@ -1771,6 +1777,7 @@ if (-not $SkipPublish) {
                 (Join-Path $functionAppRoot 'ManageTagPolicy'),
                 (Join-Path $functionAppRoot 'GetAuthorizedTags'),
                 (Join-Path $functionAppRoot 'GetImportHistory'),
+                (Join-Path $functionAppRoot 'RemoveExpiredImportHistory'),
                 (Join-Path $functionAppRoot 'WebFrontend'),
                 (Join-Path $functionAppRoot 'src')
             ) `
