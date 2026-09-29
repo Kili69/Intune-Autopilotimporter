@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20260929.3
+# Project-Version: 1.2.20260929.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#

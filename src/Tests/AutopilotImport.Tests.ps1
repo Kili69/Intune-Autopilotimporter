@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20260929.3
+# Project-Version: 1.2.20260929.4
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -5262,6 +5262,8 @@ Describe 'Deployment package' {
         $workflow | Should -Not -Match `
             '(?m)^\s*runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$'
         $workflow | Should -Match 'RequiredVersion 5\.7\.1'
+        $workflow | Should -Match `
+            '(?s)- name: Run tests.*?Import-Module Pester -RequiredVersion 5\.7\.1.*?Invoke-Pester'
         foreach ($moduleName in @(
                 'Az.Accounts'
                 'Az.Resources'

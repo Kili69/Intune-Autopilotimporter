@@ -51,7 +51,9 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
 
       - name: Detect web frontend changes
         id: web_changes
