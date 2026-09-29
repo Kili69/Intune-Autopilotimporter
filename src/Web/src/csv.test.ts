@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isValidBase64, parseAutopilotCsv } from './csv';
+import { buildHistoryRequestUrl, formatHashReference } from './history';
 
 const hash = btoa('hardware-hash');
 
@@ -31,5 +32,21 @@ describe('isValidBase64', () => {
     expect(isValidBase64(hash)).toBe(true);
     expect(isValidBase64('')).toBe(false);
     expect(isValidBase64('%%%')).toBe(false);
+  });
+});
+
+describe('history helpers', () => {
+  it('adds the manager-wide history flag only when requested', () => {
+    expect(buildHistoryRequestUrl('https://example.test/api/management/imports', false))
+      .toBe('https://example.test/api/management/imports?top=25');
+    expect(buildHistoryRequestUrl('https://example.test/api/management/imports', true))
+      .toBe('https://example.test/api/management/imports?top=25&showAll=true');
+  });
+
+  it('shortens long hash values for the audit table', () => {
+    expect(formatHashReference('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'))
+      .toBe('012345…abcdef');
+    expect(formatHashReference('   abc   ')).toBe('abc');
+    expect(formatHashReference('')).toBe('—');
   });
 });

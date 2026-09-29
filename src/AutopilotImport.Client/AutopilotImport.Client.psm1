@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260921.2
+# Project-Version: 1.2.20260929.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1652,6 +1652,7 @@ function Get-AutoPilotImportHistory {
             SerialNumber                     = [string] $importProperties['serialNumber']
             GroupTag                         = [string] $importProperties['groupTag']
             Status                           = [string] $importProperties['status']
+            DeviceHashSha256                 = [string] $importProperties['deviceHashSha256']
             DeviceErrorCode                  = $importProperties['deviceErrorCode']
             DeviceErrorName                  = [string] $importProperties['deviceErrorName']
             RequestedBy                      = [string] $importProperties['requestedBy']

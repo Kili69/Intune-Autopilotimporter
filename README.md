@@ -540,6 +540,8 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 
 - An Azure subscription and an active Intune tenant
 - For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
+- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
+- For a least-privilege Entra installation, the installing administrator needs the `Application Administrator`, `Privileged Role Administrator`, and `Global Reader` directory roles.
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
@@ -581,9 +583,10 @@ For a standard installation, one installing administrator performs the complete 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
 | Installing administrator | Azure subscription | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Creates the resource group and resources, then assigns the scoped Storage data roles required for keyless access. |
-| Installing administrator | Existing Azure resource group | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Sufficient when the resource group already exists. Equivalent subscription-level roles are then not required. |
+| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `Role Based Access Control Administrator` or `User Access Administrator` on the resource group; alternatively `Owner` on the resource group | Deploys and manages resources in the existing resource group while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
 | Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
 | Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
+| Installing administrator | Entra ID | `Global Reader` | Reads tenant and directory configuration required during installation. |
 | Installing administrator | Microsoft Graph, delegated | `Application.ReadWrite.All`, `User.Read` | Configures the API application and records the installing user as a permanent Group Tag manager. |
 | Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
@@ -1003,16 +1006,17 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 
 ##### Deployment Package
 
-Azure Pipelines builds a deployment package for every commit pushed to any
-branch. It runs the test suite and publishes
-`Intune-autopilotImporter-<branch><version>` as a pipeline artifact. Branch
-characters that are not portable in file names, such as `/`, are replaced with
-`-`. The Azure deployment stage remains restricted to `main`.
+GitHub Actions and Azure Pipelines build a deployment package for every commit
+pushed to any branch. Both workflows run the test suite and publish
+`Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub
+Actions uses a self-hosted Linux x64 runner and retains its artifact for 30
+days. Branch characters that are not portable in file names, such as `/`, are
+replaced with `-`. The Azure deployment stage remains restricted to `main`.
 
-The pipeline rebuilds and tests the web frontend only when files under
-`src/Web` changed. Other changes reuse the committed frontend bundle. No
-GitHub Actions workflows are configured, so pushes and pull requests do not
-start GitHub-hosted or self-hosted workers.
+The workflows rebuild and test the web frontend only when files under `src/Web`
+changed. Other changes reuse the committed frontend bundle. The GitHub workflow
+requires a runner registered with the standard `self-hosted`, `Linux`, and
+`X64` labels; it does not request a GitHub-hosted runner.
 
 The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
 
@@ -1788,7 +1792,7 @@ The tests cover Group Tag authorization, manager users and groups, the strict Ow
 
 ### Versioning
 
-The project version is stored in `VERSION` and follows `1.1.<yyyyMMdd>.<counter>`, for example `1.1.20260913.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
+The project version is stored in `VERSION` and follows `1.2.<yyyyMMdd>.<counter>`, for example `1.2.20260922.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
 The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
 Every commit must include an updated `History.md` and a new project version.

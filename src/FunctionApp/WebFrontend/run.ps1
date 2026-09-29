@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260921.2
+# Project-Version: 1.2.20260929.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -80,13 +80,14 @@ if ($requestedPath -ieq 'config') {
         -ContentType 'application/json' `
         -CacheControl 'no-store' `
         -Body (@{
-            clientId       = $env:WEB_CLIENT_ID
-            authority      = "https://login.microsoftonline.com/$($env:TENANT_ID)"
-            scope          = "$($env:API_AUDIENCE)/DeviceHash.Import"
-            redirectUri    = "$origin/api/ui/index.html"
-            importUrl      = "$origin/api/devices/import"
-            tagsUrl        = "$origin/api/devices/tags"
-            functionVersion = $functionVersion
+            clientId         = $env:WEB_CLIENT_ID
+            authority        = "https://login.microsoftonline.com/$($env:TENANT_ID)"
+            scope            = "$($env:API_AUDIENCE)/DeviceHash.Import"
+            redirectUri      = "$origin/api/ui/index.html"
+            importUrl        = "$origin/api/devices/import"
+            tagsUrl          = "$origin/api/devices/tags"
+            importHistoryUrl = "$origin/api/management/imports"
+            functionVersion   = $functionVersion
         } | ConvertTo-Json -Compress)
     return
 }

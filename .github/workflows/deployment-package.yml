@@ -1,0 +1,125 @@
+name: Build deployment package
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require change history and version update
+        shell: pwsh
+        env:
+          BASE_COMMIT: ${{ github.event.before }}
+          HEAD_COMMIT: ${{ github.sha }}
+        run: |
+          $baseCommit = $env:BASE_COMMIT
+          if ([string]::IsNullOrWhiteSpace($baseCommit)) {
+            $baseCommit = "$env:HEAD_COMMIT^"
+          }
+          ./src/Scripts/Test-ChangeHistory.ps1 `
+            -BaseCommit $baseCommit `
+            -HeadCommit $env:HEAD_COMMIT
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name Pester | Where-Object Version -ge '5.0.0')) {
+            Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0 -Force -SkipPublisherCheck
+          }
+
+      - name: Run tests
+        shell: pwsh
+        run: Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
+
+      - name: Detect web frontend changes
+        id: web_changes
+        shell: pwsh
+        env:
+          BASE_COMMIT: ${{ github.event.before }}
+          HEAD_COMMIT: ${{ github.sha }}
+        run: |
+          $baseCommit = $env:BASE_COMMIT
+          if ([string]::IsNullOrWhiteSpace($baseCommit) -or
+              $baseCommit -match '^0+$') {
+            $baseCommit = "$env:HEAD_COMMIT^"
+          }
+          $changedFiles = @(git diff --name-only `
+            $baseCommit `
+            $env:HEAD_COMMIT `
+            -- `
+            src/Web)
+          $changed = ($changedFiles.Count -gt 0).ToString().ToLowerInvariant()
+          "changed=$changed" >> $env:GITHUB_OUTPUT
+
+      - name: Build web frontend
+        if: steps.web_changes.outputs.changed == 'true'
+        working-directory: src/Web
+        shell: pwsh
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build deployment package
+        id: package
+        shell: pwsh
+        env:
+          PACKAGE_BRANCH: ${{ github.ref_name }}
+        run: |
+          $package = ./src/Scripts/New-DeploymentPackage.ps1 `
+            -BranchName $env:PACKAGE_BRANCH
+          "path=$($package.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($package.BaseName)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish main installation package to repository
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+        run: |
+          $stagedPackage = Join-Path `
+            $env:RUNNER_TEMP `
+            (Split-Path $env:PACKAGE_PATH -Leaf)
+          Copy-Item -LiteralPath $env:PACKAGE_PATH -Destination $stagedPackage
+
+          git rm -r --ignore-unmatch artifacts InstallationPackage
+          New-Item -Path InstallationPackage -ItemType Directory -Force |
+            Out-Null
+          Copy-Item -LiteralPath $stagedPackage -Destination InstallationPackage
+          git add -f InstallationPackage
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git config user.name 'github-actions[bot]'
+            git config user.email `
+              '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m "build: publish $env:PACKAGE_NAME [skip ci]"
+            git push origin HEAD:main
+          }
+          elseif ($LASTEXITCODE -ne 0) {
+            throw "git diff failed with exit code $LASTEXITCODE."
+          }

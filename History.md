@@ -2,6 +2,19 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.2.20260929.1` - 2026-09-29
+
+- Added manager-aware import history to the web frontend, including requester, status, serial number, and shortened device-hash references, with automatic fallback to the signed-in user's own records.
+- Clarified least-privilege installation requirements: subscription-level read access, the required Resource Group deployment and role-assignment permissions, and the applicable Entra directory roles.
+- Restored GitHub deployment-package automation on a self-hosted Linux x64 runner while retaining tests, conditional frontend builds, artifact upload, and publication of the current `main` installation package.
+- Advanced and synchronized the 1.2 project version across the Function, installer, scripts, client module, generated frontend, and deployment metadata.
+
+## `1.2.20260922.1` - 2026-09-22
+
+- Promoted the project release line from 1.1 to 1.2 and refreshed the central version metadata so the current package and PowerShell module version are aligned.
+- Added the manager-aware import history view to the web UI and exposed the stored device-hash index in the backend history payload for current-user and manager-wide audit visibility.
+- Kept the generated deployment package and version markers consistent with the active source release line.
+
 ## `1.1.20260921.2` - 2026-09-21
 
 - Added a runtime API version field to the client configuration output so installers and support staff can confirm the Function App version they are actually calling, which helps diagnose mismatches between the deployed REST API and the loaded PowerShell client.

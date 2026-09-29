@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.1.20260921.2
+# Project-Version: 1.2.20260929.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -22,7 +22,7 @@ Increments and synchronizes the project version.
 
 .DESCRIPTION
 Reads the current version from VERSION, creates a version in the format
-1.1.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
+1.2.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
 script, module, and data file in the repository.
 
 The counter increases by IncrementBy when the existing version date matches
@@ -70,10 +70,10 @@ $scriptInfoVersionPattern = `
 
 $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($currentVersion -notmatch $versionPattern) {
-    throw "VERSION contains '$currentVersion', which does not match 1.1.yyyyMMdd.counter."
+    throw "VERSION contains '$currentVersion', which does not match 1.2.yyyyMMdd.counter."
 }
-if ($Matches.major -ne '1' -or $Matches.minor -ne '1') {
-    throw "VERSION must use the 1.1 major and minor version prefix."
+if ($Matches.major -ne '1' -or $Matches.minor -ne '2') {
+    throw "VERSION must use the 1.2 major and minor version prefix."
 }
 
 $versionDate = $Date.ToUniversalTime().ToString('yyyyMMdd')
@@ -83,7 +83,7 @@ $counter = if ($Matches.date -eq $versionDate) {
 else {
     $IncrementBy
 }
-$newVersion = "1.1.$versionDate.$counter"
+$newVersion = "1.2.$versionDate.$counter"
 
 $powerShellFiles = @(
     Get-ChildItem -LiteralPath $projectRoot -Recurse -File |

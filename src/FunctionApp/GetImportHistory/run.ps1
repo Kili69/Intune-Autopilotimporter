@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260921.2
+# Project-Version: 1.2.20260929.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -343,6 +343,7 @@ $history = @($auditRecords | ForEach-Object {
             serialNumber                     = if ($graphRecord) { [string] $graphRecord.serialNumber } else { [string] $audit.serialNumber }
             groupTag                         = if ($graphRecord) { [string] $graphRecord.groupTag } else { [string] $audit.groupTag }
             status                           = if ($graphRecord) { [string] $graphRecord.state.deviceImportStatus } else { $null }
+            deviceHashSha256                 = if ($audit) { [string] $audit.deviceHashSha256 } else { $null }
             deviceErrorCode                  = if ($graphRecord) { $graphRecord.state.deviceErrorCode } else { $null }
             deviceErrorName                  = if ($graphRecord) { [string] $graphRecord.state.deviceErrorName } else { $null }
             requestedBy                      = $requestedBy

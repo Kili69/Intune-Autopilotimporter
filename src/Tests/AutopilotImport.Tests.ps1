@@ -1,4 +1,4 @@
-# Project-Version: 1.1.20260921.2
+# Project-Version: 1.2.20260929.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -5171,7 +5171,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should -Match '^1\.1\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^1\.2\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
@@ -5251,14 +5251,16 @@ Describe 'Project metadata entries' {
 }
 
 Describe 'Deployment package' {
-    It 'does not define GitHub Actions workflows' {
-        $workflowRoot = Join-Path $PSScriptRoot '..\..\.github\workflows'
-        $workflowFiles = @(Get-ChildItem `
-            -LiteralPath $workflowRoot `
-            -File `
-            -ErrorAction SilentlyContinue)
+    It 'uses a self-hosted Linux runner for the GitHub package workflow' {
+        $workflowPath = Join-Path $PSScriptRoot `
+            '..\..\.github\workflows\deployment-package.yml'
+        $workflow = Get-Content -LiteralPath $workflowPath -Raw
 
-        $workflowFiles.Count | Should -Be 0
+        $workflow | Should -Match '(?m)^\s+- self-hosted\s*$'
+        $workflow | Should -Match '(?m)^\s+- Linux\s*$'
+        $workflow | Should -Match '(?m)^\s+- X64\s*$'
+        $workflow | Should -Not -Match `
+            '(?m)^\s*runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$'
     }
 
     It 'requires History.md and VERSION in every pushed first-parent commit' {

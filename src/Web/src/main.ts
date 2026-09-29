@@ -4,6 +4,7 @@ import {
   PublicClientApplication,
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
+import { buildHistoryRequestUrl, formatHashReference } from './history';
 import './style.css';
 
 interface RuntimeConfig {
@@ -13,6 +14,7 @@ interface RuntimeConfig {
   redirectUri: string;
   importUrl: string;
   tagsUrl: string;
+  importHistoryUrl: string;
 }
 
 interface ApiError {
@@ -28,6 +30,15 @@ interface ImportResult {
   detail?: string;
 }
 
+interface ImportHistoryRecord {
+  importId?: string;
+  serialNumber?: string;
+  status?: string;
+  requestedBy?: string;
+  requestedByDisplayName?: string;
+  deviceHashSha256?: string;
+}
+
 type Language = 'de' | 'en';
 
 const translations = {
@@ -40,6 +51,7 @@ const translations = {
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Importstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', importId: 'Import-ID', status: 'Status', details: 'Details',
+    historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
     footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
@@ -55,6 +67,7 @@ const translations = {
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
+    historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
@@ -170,6 +183,22 @@ app.innerHTML = `
           </table>
         </div>
       </section>
+
+      <section id="history-panel" class="panel results-panel hidden">
+        <div class="results-header">
+          <div>
+            <span class="eyebrow">${t('importStatus')}</span>
+            <h2>${t('historyTitle')}</h2>
+          </div>
+          <span id="history-scope" class="progress-label">${t('historyScopeSelf')}</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>${t('hashLabel')}</th><th>${t('serialNumber')}</th><th>${t('status')}</th><th>${t('requestedBy')}</th></tr></thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
 
     <footer>${t('footer')} · v${__APP_VERSION__}</footer>
@@ -199,6 +228,9 @@ const resultsTitle = element<HTMLElement>('results-title');
 const resultsBody = element<HTMLTableSectionElement>('results-body');
 const progressLabel = element<HTMLElement>('progress-label');
 const progressBar = element<HTMLElement>('progress-bar');
+const historyPanel = element<HTMLElement>('history-panel');
+const historyBody = element<HTMLTableSectionElement>('history-body');
+const historyScope = element<HTMLElement>('history-scope');
 
 let config: RuntimeConfig;
 let msal: PublicClientApplication;
@@ -266,6 +298,45 @@ function updateResults(): void {
   progressBar.style.width = results.length === 0 ? '0%' : `${Math.round((finished / results.length) * 100)}%`;
 }
 
+function renderHistory(records: ImportHistoryRecord[]): void {
+  historyPanel.classList.remove('hidden');
+  historyBody.replaceChildren(...records.map((record) => {
+    const row = document.createElement('tr');
+    const hashCell = document.createElement('td');
+    hashCell.textContent = formatHashReference(record.deviceHashSha256);
+    row.append(hashCell);
+
+    const serialCell = document.createElement('td');
+    serialCell.textContent = record.serialNumber ?? '—';
+    row.append(serialCell);
+
+    const statusCell = document.createElement('td');
+    const statusBadge = document.createElement('span');
+    const normalized = record.status ?? 'pending';
+    const statusClass = normalized === 'error' || normalized === 'failed'
+      ? 'status-error'
+      : normalized === 'complete' || normalized === 'succeeded'
+        ? 'status-complete'
+        : 'status-pending';
+    statusBadge.className = `status ${statusClass}`;
+    statusBadge.textContent = normalized === 'error' || normalized === 'failed'
+      ? t('statusError')
+      : normalized === 'complete' || normalized === 'succeeded'
+        ? t('statusComplete')
+        : normalized === 'pending'
+          ? t('statusPending')
+          : t('statusReady');
+    statusCell.append(statusBadge);
+    row.append(statusCell);
+
+    const requesterCell = document.createElement('td');
+    requesterCell.textContent = record.requestedByDisplayName ?? record.requestedBy ?? '—';
+    row.append(requesterCell);
+
+    return row;
+  }));
+}
+
 async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!account) throw new Error(t('signInRequired'));
   let token;
@@ -311,6 +382,31 @@ async function loadTags(): Promise<void> {
   if (response.tags.length === 0) showAlert(t('noTagsForAccount'));
 }
 
+async function loadImportHistory(): Promise<void> {
+  if (!config?.importHistoryUrl) return;
+
+  const selfUrl = `${config.importHistoryUrl}?top=25`;
+  const allUrl = `${config.importHistoryUrl}?top=25&showAll=true`;
+
+  try {
+    const allHistory = await apiRequest<{ imports?: ImportHistoryRecord[]; count?: number }>(allUrl);
+    historyScope.textContent = t('historyScopeAll');
+    renderHistory(allHistory.imports ?? []);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const isForbidden = /403|forbidden|not authorized|historyAccessForbidden/i.test(message);
+    if (isForbidden) {
+      const selfHistory = await apiRequest<{ imports?: ImportHistoryRecord[]; count?: number }>(selfUrl);
+      historyScope.textContent = t('historyScopeSelf');
+      renderHistory(selfHistory.imports ?? []);
+      return;
+    }
+    historyScope.textContent = t('historyScopeSelf');
+    renderHistory([]);
+    showAlert(message || t('statusFailed'));
+  }
+}
+
 async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void> {
   account = selectedAccount;
   msal.setActiveAccount(account);
@@ -321,7 +417,7 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');
   try {
-    await loadTags();
+    await Promise.all([loadTags(), loadImportHistory()]);
   } catch (error) {
     showAlert(error instanceof Error ? error.message : t('tagsLoadFailed'));
   }
@@ -446,6 +542,7 @@ importButton.addEventListener('click', async () => {
   if (results.some((item) => item.status === 'pending')) {
     pollTimer = window.setInterval(() => void pollResults(), 15_000);
   }
+  await loadImportHistory();
   updateImportButton();
 });
 
