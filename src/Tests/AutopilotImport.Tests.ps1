@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20260929.1
+# Project-Version: 1.2.20260929.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -5261,6 +5261,14 @@ Describe 'Deployment package' {
         $workflow | Should -Match '(?m)^\s+- X64\s*$'
         $workflow | Should -Not -Match `
             '(?m)^\s*runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$'
+        foreach ($moduleName in @(
+                'Az.Accounts'
+                'Az.Resources'
+                'Az.Storage'
+                'Az.Websites'
+            )) {
+            $workflow | Should -Match ([regex]::Escape("'$moduleName'"))
+        }
     }
 
     It 'requires History.md and VERSION in every pushed first-parent commit' {
