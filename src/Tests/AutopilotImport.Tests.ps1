@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20260929.2
+# Project-Version: 1.2.20260929.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -3389,10 +3389,10 @@ Describe 'Update script deployment discovery' {
         $roots = @(Get-UserAutoPilotClientModuleRoots)
 
         $roots.Count | Should -Be 2
-        $roots[0] | Should -BeLike `
-            '*\PowerShell\Modules\AutopilotImport.Client'
-        $roots[1] | Should -BeLike `
-            '*\WindowsPowerShell\Modules\AutopilotImport.Client'
+        ($roots[0] -replace '\\', '/') | Should -BeLike `
+            '*/PowerShell/Modules/AutopilotImport.Client'
+        ($roots[1] -replace '\\', '/') | Should -BeLike `
+            '*/WindowsPowerShell/Modules/AutopilotImport.Client'
     }
 
     It 'falls back to user modules and warns when system-wide access is unavailable' {
@@ -5261,6 +5261,7 @@ Describe 'Deployment package' {
         $workflow | Should -Match '(?m)^\s+- X64\s*$'
         $workflow | Should -Not -Match `
             '(?m)^\s*runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$'
+        $workflow | Should -Match 'RequiredVersion 5\.7\.1'
         foreach ($moduleName in @(
                 'Az.Accounts'
                 'Az.Resources'

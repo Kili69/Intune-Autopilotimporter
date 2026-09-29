@@ -75,7 +75,7 @@ Install Pester for the current user when it is not already available:
 ```powershell
 Install-Module Pester `
     -Scope CurrentUser `
-    -MinimumVersion 5.0.0 `
+    -RequiredVersion 5.7.1 `
     -Force `
     -SkipPublisherCheck
 ```
