@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -157,6 +157,68 @@ Describe 'Client CSV input validation' {
             -FunctionUrl 'https://func.example/api/devices/import' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Get-ClientAccessToken `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+    }
+}
+
+Describe 'Client Autopilot Group Tag reassignment' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+    }
+
+    BeforeEach {
+        $configPath = Join-Path $TestDrive 'client.settings.json'
+        @{
+            functionUrl = 'https://func.example/api/devices/import'
+            apiApplicationIdUri = 'api://33333333-3333-3333-3333-333333333333'
+            tenantId = '44444444-4444-4444-4444-444444444444'
+        } | ConvertTo-Json | Set-Content -LiteralPath $configPath
+        Mock Get-ClientAccessToken -ModuleName AutopilotImport.Client {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        }
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            [pscustomobject]@{
+                deviceId = '11111111-1111-1111-1111-111111111111'
+                groupTag = 'BG-VIP'
+                changed = $true
+                postProcessingStatus = 'queued'
+            }
+        }
+    }
+
+    It 'derives the endpoint and submits a serial number and target tag' {
+        $result = Set-AutoPilotDeviceGroupTag `
+            -SerialNumber ' PC-001 ' `
+            -GroupTag 'BG-VIP' `
+            -ConfigPath $configPath
+
+        $result.changed | Should -Be $true
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Post' -and
+                [string] $Uri -eq `
+                    'https://func.example/api/devices/group-tag' -and
+                ($Body | ConvertFrom-Json).serialNumber -eq 'PC-001' -and
+                ($Body | ConvertFrom-Json).groupTag -eq 'BG-VIP'
+            }
+    }
+
+    It 'does not authenticate or submit with WhatIf' {
+        Set-AutoPilotDeviceGroupTag `
+            -DeviceId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'BG-VIP' `
+            -ConfigPath $configPath `
             -WhatIf
 
         Should -Invoke Get-ClientAccessToken `
@@ -462,6 +524,8 @@ Describe 'Client configuration creation' {
             ConvertFrom-Json
         $settings.functionUrl | Should -Be `
             'https://func-autopilot-import.azurewebsites.net/api/devices/import'
+        $settings.groupTagUrl | Should -Be `
+            'https://func-autopilot-import.azurewebsites.net/api/devices/group-tag'
         $settings.managementUrl | Should -Be `
             'https://func-autopilot-import.azurewebsites.net/api/management/tag-policy'
         $settings.apiApplicationIdUri | Should -Be `
@@ -550,6 +614,7 @@ Describe 'Client configuration display' {
             'New-AutoPilotImporterClientConfiguration'
             'Remove-AutoPilotTagPolicy'
             'Remove-AutoPilotTagPolicyManager'
+            'Set-AutoPilotDeviceGroupTag'
             'Set-AutoPilotTagPolicy'
             'Update-AutoPilotTagPolicyManager'
         )
@@ -586,6 +651,8 @@ Describe 'Client configuration display' {
             ([IO.Path]::GetFullPath($settingsPath))
         $persistedConfiguration.FunctionUrl | Should -Be `
             'https://func-example.azurewebsites.net/api/devices/import'
+        $persistedConfiguration.GroupTagUrl | Should -Be `
+            'https://func-example.azurewebsites.net/api/devices/group-tag'
         $persistedConfiguration.ManagementUrl | Should -Be `
             'https://func-example.azurewebsites.net/api/management/tag-policy'
         $persistedConfiguration.ApiApplicationIdUri | Should -Be `
@@ -1344,6 +1411,12 @@ Describe 'Import history endpoint' {
         @($historyBinding.bindings[0].methods) | Should -Contain 'post'
     }
 
+    It 'includes the Group Tag reassignment Function in the Azure publish archive' {
+        $installer.Contains(
+            "Join-Path `$functionAppRoot 'ReassignDeviceGroupTag'") |
+            Should -BeTrue
+    }
+
     It 'defaults to the caller and reserves broad history access for importer managers' {
         $historyFunction | Should -Match 'ActorObjectId = \$actorObjectId'
         $historyFunction | Should -Match '\$showAll'
@@ -1416,6 +1489,59 @@ Describe 'Import audit workflow integration' {
         $processorFunction | Should -Match 'processingCompletedAtUtc'
     }
 
+    It 'uses the same worker for existing Autopilot registrations' {
+        $reassignmentFunction = Get-Content -LiteralPath (Join-Path `
+            $projectRoot 'src\FunctionApp\ReassignDeviceGroupTag\run.ps1') -Raw
+        $reassignmentBinding = Get-Content -LiteralPath (Join-Path `
+            $projectRoot 'src\FunctionApp\ReassignDeviceGroupTag\function.json') `
+            -Raw | ConvertFrom-Json
+
+        $reassignmentBinding.bindings[0].route |
+            Should -Be 'api/devices/group-tag'
+        @($reassignmentBinding.bindings[0].methods) |
+            Should -Be @('get', 'post')
+        $reassignmentFunction | Should -Match 'updateDeviceProperties'
+        $reassignmentFunction | Should -Match 'deviceAlreadyEnrolled'
+        $reassignmentFunction | Should -Match `
+            'restrictedAdministrativeUnitReassignmentNotSupported'
+        $reassignmentFunction | Should -Match `
+            'isMemberManagementRestricted'
+        $reassignmentFunction | Should -Match `
+            'Add-EntraDeviceToAdministrativeUnit'
+        $reassignmentFunction | Should -Match 'previousAdministrativeUnitNames'
+        $reassignmentFunction | Should -Match `
+            "requestUri = 'https://graph\.microsoft\.com/v1\.0/deviceManagement/windowsAutopilotDeviceIdentities'"
+        $reassignmentFunction | Should -Not -Match `
+            'windowsAutopilotDeviceIdentities\?\$select=id,serialNumber,groupTag,enrollmentState'
+        $reassignmentFunction | Should -Not -Match `
+            'windowsAutopilotDeviceIdentities/\$deviceId\?\`\$select'
+        $reassignmentFunction | Should -Not -Match `
+            "serialNumber eq '\$escapedSerialNumber'"
+        $reassignmentFunction | Should -Match `
+            'Get-AutopilotDevices -AccessToken \$graphToken'
+        $reassignmentFunction | Should -Not -Match `
+            "enrollmentState eq 'notContacted'"
+        $reassignmentFunction | Should -Match `
+            "\[StringComparison\]::OrdinalIgnoreCase"
+        $reassignmentFunction | Should -Match "'@odata\.nextLink'"
+        $reassignmentFunction | Should -Match 'Get-AuthorizedGroupTags'
+        $reassignmentFunction | Should -Match `
+            'Get-ImportAuditRecords[\s\S]+-PartitionKey reassignments'
+        $reassignmentFunction | Should -Match `
+            'operationId\s*=\s*\$operationId'
+        $reassignmentFunction | Should -Match `
+            'actorObjectId[\s\S]+operationNotAllowed'
+        $processorFunction | Should -Match 'registrationId'
+        $processorFunction | Should -Match `
+            "workflowStatus\s*=\s*'pending'"
+        $processorFunction | Should -Match `
+            "workflowStatus\s*=\s*'complete'"
+        $processorFunction | Should -Match `
+            "workflowStatus\s*=\s*'error'"
+        $processorFunction | Should -Match `
+            'Remove-EntraDeviceFromAdministrativeUnit'
+    }
+
     It 'provisions the audit table and managed identity data role' {
         $infrastructure | Should -Match `
             "Microsoft\.Storage/storageAccounts/tableServices/tables@"
@@ -1428,6 +1554,8 @@ Describe 'Import audit workflow integration' {
         $retentionFunction | Should -Match `
             'Get-ImportAuditRetentionCutoffUtc'
         $retentionFunction | Should -Match 'Remove-ExpiredImportAuditRecords'
+        $retentionFunction | Should -Match `
+            "@\('imports', 'reassignments'\)"
         $retentionBinding.bindings[0].type | Should -Be 'timerTrigger'
         $retentionBinding.bindings[0].schedule | Should -Be '0 17 * * * *'
     }
@@ -2125,6 +2253,7 @@ Describe 'Import audit table storage' {
                 $exception.Data['StatusCode'] = 404
                 throw $exception
             }
+
         }
 
         Set-ImportAuditRecord `
@@ -2143,6 +2272,26 @@ Describe 'Import audit table storage' {
                 $Method -eq 'Post' -and
                 $Uri -eq 'https://staudit.table.core.windows.net/importaudit' -and
                 -not $Headers.ContainsKey('If-Match')
+            }
+    }
+
+    It 'stores reassignment operations in their own audit partition' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {}
+        $operationId = [guid] 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb'
+
+        Set-ImportAuditRecord `
+            -ImportId $operationId `
+            -Properties @{ workflowStatus = 'pending' } `
+            -AccessToken $auditToken `
+            -PartitionKey reassignments
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Merge' -and
+                $Uri -eq "https://staudit.table.core.windows.net/importaudit(PartitionKey='reassignments',RowKey='$operationId')" -and
+                $Body -match '"PartitionKey":"reassignments"'
             }
     }
 
@@ -2276,6 +2425,7 @@ Describe 'Import audit table storage' {
                         RowKey = '77777777-7777-7777-7777-777777777777'
                     })
                 }
+
             }
         }
 
@@ -2291,6 +2441,31 @@ Describe 'Import audit table storage' {
                 $Method -eq 'Delete' -and
                 ([string] $Uri).Contains(
                     "RowKey='77777777-7777-7777-7777-777777777777'")
+            }
+    }
+
+    It 'deletes expired reassignment status records from their partition' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        RowKey = '88888888-8888-8888-8888-888888888888'
+                    })
+                }
+            }
+        }
+
+        Remove-ExpiredImportAuditRecords `
+            -BeforeUtc ([datetimeoffset] '2026-08-19T00:00:00Z') `
+            -AccessToken $auditToken `
+            -PartitionKey reassignments | Should -Be 1
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Delete' -and
+                ([string] $Uri).Contains("PartitionKey='reassignments'")
             }
     }
 }
@@ -2354,6 +2529,74 @@ Describe 'Entra device extension attribute updates' {
             Get-AutoPilotDeviceRegistrationId -ImportedDevice `
                 ([pscustomobject]@{ state = [pscustomobject]@{} })
         } | Should -Throw '*registration is not available yet*'
+    }
+}
+
+Describe 'Administrative-unit reassignment helpers' {
+    It 'returns every unique administrative unit configured for the old tag' {
+        $policy = @(
+            [pscustomobject]@{
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('PAW-CSM')
+                administrativeUnitName = 'AU-PAW'
+            }
+            [pscustomobject]@{
+                groupId = '22222222-2222-2222-2222-222222222222'
+                tags = @('paw-csm')
+                administrativeUnitName = 'AU-PAW'
+            }
+            [pscustomobject]@{
+                groupId = '33333333-3333-3333-3333-333333333333'
+                tags = @('PAW-CSM')
+                administrativeUnitName = 'AU-Privileged'
+            }
+        )
+
+        @(Get-AdministrativeUnitNamesForGroupTag `
+                -Policy $policy `
+                -GroupTag 'PAW-CSM') | Should -Be @(
+            'AU-PAW'
+            'AU-Privileged'
+        )
+    }
+
+    It 'removes an existing administrative-unit membership' {
+        $deviceObjectId = [guid] `
+            '11111111-1111-1111-1111-111111111111'
+        Mock Invoke-RestMethod -ModuleName AutopilotImport {
+            if ($Method -eq 'Get' -and
+                ([string] $Uri).Contains(
+                    '/directory/administrativeUnits?')) {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        id = '22222222-2222-2222-2222-222222222222'
+                        displayName = 'AU-PAW'
+                    })
+                }
+            }
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        id = $deviceObjectId.ToString()
+                    })
+                }
+            }
+        }
+
+        $result = Remove-EntraDeviceFromAdministrativeUnit `
+            -AdministrativeUnitName 'AU-PAW' `
+            -DeviceObjectId $deviceObjectId `
+            -AccessToken (ConvertTo-SecureString 'token' -AsPlainText -Force)
+
+        $result.MembershipRemoved | Should -Be $true
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Delete' -and
+                ([string] $Uri).EndsWith(
+                    "/members/$deviceObjectId/`$ref")
+            }
     }
 }
 
@@ -3086,7 +3329,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 13
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 14
         Remove-Module AutopilotImport.Client
     }
 }
@@ -4854,6 +5097,32 @@ Describe 'Web frontend response types' {
         $style | Should -Not -Match 'transform:\s*rotate\('
     }
 
+    It 'offers notContacted device reassignment below the CSV input' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $frontend = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\main.ts') `
+            -Raw
+
+        $frontend | Should -Match 'id="existing-devices-body"'
+        $frontend | Should -Match 'config\.groupTagUrl'
+        $frontend | Should -Match `
+            'JSON\.stringify\(\{ deviceId: device\.deviceId, groupTag \}\)'
+        $frontend | Should -Match `
+            'devices\.length > 0 \|\| selectedDeviceId\.length > 0'
+        $frontend | Should -Match `
+            'selectedDeviceId = '''';\s+renderReassignableDevices\(\)'
+        $frontend | Should -Match `
+            'restrictedAdministrativeUnitReassignmentNotSupported'
+        $frontend | Should -Match `
+            'Das Gerät ist bereits einer Restricted Administrative Unit zugewiesen'
+        $frontend | Should -Match `
+            "status:\s*response\.changed \? 'pending' : 'complete'"
+        $frontend | Should -Match `
+            'groupTagUrl\}\?operationId='
+        $frontend | Should -Match `
+            'Group-Tag-Zuweisung und Nachbearbeitung abgeschlossen'
+    }
+
     It 'serves textual assets as strings so Azure preserves their MIME types' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $frontendFunction = Get-Content `
@@ -4888,6 +5157,8 @@ Describe 'Web frontend response types' {
             'redirectUri\s*=\s*"\$origin/api/ui/index\.html"'
         $frontendFunction | Should -Match `
             'importUrl\s*=\s*"\$origin/api/devices/import"'
+        $frontendFunction | Should -Match `
+            'groupTagUrl\s*=\s*"\$origin/api/devices/group-tag"'
     }
 
     It 'redirects the Function hostname root while preserving existing API URLs' {
@@ -4907,6 +5178,7 @@ Describe 'Web frontend response types' {
             "name:\s*'AzureWebJobsFeatureFlags'\s+value:\s*'EnableProxies'"
         $expectedRoutes = @{
             'ImportDevice'      = 'api/devices/import'
+            'ReassignDeviceGroupTag' = 'api/devices/group-tag'
             'GetAuthorizedTags' = 'api/devices/tags'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
@@ -5338,6 +5610,7 @@ Describe 'Deployment package' {
         try {
             $entries = @($archive.Entries.FullName)
             foreach ($requiredEntry in @(
+                    'CHANGELOG.md'
                     'History.md'
                     'README.md'
                     'Install-AutopilotImport.ps1'
@@ -5355,6 +5628,8 @@ Describe 'Deployment package' {
                     'GetAuthorizedTags/function.json'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
+                    'ReassignDeviceGroupTag/function.json'
+                    'ReassignDeviceGroupTag/run.ps1'
                     'RemoveExpiredImportHistory/function.json'
                     'RemoveExpiredImportHistory/run.ps1'
                     'proxies.json'

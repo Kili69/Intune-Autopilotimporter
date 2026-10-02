@@ -1,5 +1,6 @@
 {
   "functionUrl": "https://<function-app>.azurewebsites.net/api/devices/import",
+  "groupTagUrl": "https://<function-app>.azurewebsites.net/api/devices/group-tag",
   "managementUrl": "https://<function-app>.azurewebsites.net/api/management/tag-policy",
   "apiApplicationIdUri": "api://<application-client-id>",
   "tenantId": "<tenant-id>",

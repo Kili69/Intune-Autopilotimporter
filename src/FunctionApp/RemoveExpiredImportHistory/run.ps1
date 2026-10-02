@@ -1,9 +1,9 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
 .SYNOPSIS
-Removes import audit records after the 30-day retention period.
+Removes import and reassignment audit records after the 30-day retention period.
 
 .DESCRIPTION
 Runs hourly and deletes Azure Table Storage entities whose request time is
@@ -17,10 +17,15 @@ $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.ps
 Import-Module $modulePath -Force
 
 $retentionCutoffUtc = Get-ImportAuditRetentionCutoffUtc
-$removedCount = Remove-ExpiredImportAuditRecords `
-    -BeforeUtc $retentionCutoffUtc `
-    -AccessToken (Get-ImportAuditAccessToken)
+$auditToken = Get-ImportAuditAccessToken
+$removedCount = 0
+foreach ($partitionKey in @('imports', 'reassignments')) {
+    $removedCount += Remove-ExpiredImportAuditRecords `
+        -BeforeUtc $retentionCutoffUtc `
+        -AccessToken $auditToken `
+        -PartitionKey $partitionKey
+}
 
 Write-Information (
-    "Removed $removedCount import audit record(s) older than " +
+    "Removed $removedCount audit record(s) older than " +
     "$($retentionCutoffUtc.ToString('o')).")

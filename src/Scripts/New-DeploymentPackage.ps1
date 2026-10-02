@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -245,6 +245,7 @@ Assert-BuiltWebFrontend -Root $ProjectRoot
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
     @{ Source = 'AUTHOR'; Destination = 'AUTHOR' }
+    @{ Source = 'CHANGELOG.md'; Destination = 'CHANGELOG.md' }
     @{ Source = 'History.md'; Destination = 'History.md' }
     @{ Source = 'README.md'; Destination = 'README.md' }
     @{ Source = 'VERSION'; Destination = 'VERSION' }
@@ -261,6 +262,7 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
+    @{ Source = 'src\FunctionApp\ReassignDeviceGroupTag'; Destination = 'ReassignDeviceGroupTag' }
     @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
     @{ Source = 'src\Infrastructure'; Destination = 'infra' }

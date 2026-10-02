@@ -13,6 +13,7 @@ interface RuntimeConfig {
   scope: string;
   redirectUri: string;
   importUrl: string;
+  groupTagUrl: string;
   tagsUrl: string;
   importHistoryUrl: string;
 }
@@ -26,6 +27,7 @@ interface ApiError {
 interface ImportResult {
   serialNumber: string;
   importId?: string;
+  operationId?: string;
   status: 'ready' | 'sending' | 'pending' | 'complete' | 'error';
   detail?: string;
 }
@@ -39,6 +41,13 @@ interface ImportHistoryRecord {
   deviceHashSha256?: string;
 }
 
+interface ReassignableDevice {
+  deviceId: string;
+  serialNumber: string;
+  groupTag?: string;
+  enrollmentState: 'notContacted';
+}
+
 type Language = 'de' | 'en';
 
 const translations = {
@@ -49,6 +58,8 @@ const translations = {
     hashStep4: 'Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv ausführen', hashNote: 'Den Laufwerksbuchstaben bei Bedarf an den USB-Stick anpassen.',
     newImport: 'Neuer Import', register: 'Geräte registrieren', registerIntro: 'CSV prüfen, autorisierten Tag auswählen und Import starten.',
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
+    existingDevices: 'Vorhandene Geräte', existingDevicesHelp: 'Oder wählen Sie ein noch nicht installiertes Autopilot-Gerät aus.', currentGroupTag: 'Aktueller Group Tag',
+    loadingDevices: 'Geräte werden geladen …', noExistingDevices: 'Keine Geräte mit Status notContacted gefunden.', devicesLoadFailed: 'Geräte konnten nicht geladen werden.',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Importstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', importId: 'Import-ID', status: 'Status', details: 'Details',
     historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
@@ -56,7 +67,9 @@ const translations = {
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
-    processed: 'Alle Importvorgänge wurden verarbeitet.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
+    reassignmentStarted: 'Group-Tag-Zuweisung wurde gestartet. Die Nachbearbeitung läuft noch.', reassignmentCompleted: 'Group-Tag-Zuweisung und Nachbearbeitung abgeschlossen.', reassignmentUnchanged: 'Der ausgewählte Group Tag ist bereits zugewiesen.', reassignmentFailed: 'Group-Tag-Zuweisung fehlgeschlagen.', reassignmentPostProcessingFailed: 'Die Group-Tag-Zuweisung wurde geändert, aber die Nachbearbeitung ist fehlgeschlagen.',
+    restrictedAuReassignmentBlocked: 'Das Gerät ist bereits einer Restricted Administrative Unit zugewiesen. Das Retagging wurde abgebrochen',
+    processed: 'Alle Vorgänge wurden erfolgreich verarbeitet.', processedWithErrors: 'Mindestens ein Vorgang ist fehlgeschlagen.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
   },
   en: {
     homeLabel: 'Autopilot Import home', logout: 'Sign out', intro: 'Sign in with your organizational account. Permissions and Group Tags are validated on the server.',
@@ -65,6 +78,8 @@ const translations = {
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
     newImport: 'New import', register: 'Register devices', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
+    existingDevices: 'Existing devices', existingDevicesHelp: 'Or select an Autopilot device that has not been installed yet.', currentGroupTag: 'Current Group Tag',
+    loadingDevices: 'Loading devices …', noExistingDevices: 'No devices with status notContacted were found.', devicesLoadFailed: 'Devices could not be loaded.',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
@@ -72,7 +87,9 @@ const translations = {
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
-    processed: 'All import operations have been processed.', completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
+    reassignmentStarted: 'Group Tag reassignment was started. Post-processing is still running.', reassignmentCompleted: 'Group Tag reassignment and post-processing completed.', reassignmentUnchanged: 'The selected Group Tag is already assigned.', reassignmentFailed: 'Group Tag reassignment failed.', reassignmentPostProcessingFailed: 'The Group Tag was changed, but post-processing failed.',
+    restrictedAuReassignmentBlocked: 'The device is already assigned to a restricted management administrative unit. Retagging was canceled',
+    processed: 'All operations completed successfully.', processedWithErrors: 'At least one operation failed.', completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
   },
 } as const;
 
@@ -151,6 +168,26 @@ app.innerHTML = `
             <strong>${t('csvSelect')}</strong>
             <span id="file-summary">${t('csvRequirements')}</span>
           </label>
+          <div class="device-list">
+            <div class="device-list-heading">
+              <strong>${t('existingDevices')}</strong>
+              <span>${t('existingDevicesHelp')}</span>
+            </div>
+            <div class="table-wrap device-list-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="selection-column"></th>
+                    <th>${t('serialNumber')}</th>
+                    <th>${t('currentGroupTag')}</th>
+                  </tr>
+                </thead>
+                <tbody id="existing-devices-body">
+                  <tr><td colspan="3">${t('loadingDevices')}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </article>
 
         <article class="panel">
@@ -220,6 +257,7 @@ const accountUpn = element<HTMLElement>('account-upn');
 const fileInput = element<HTMLInputElement>('csv-file');
 const fileSummary = element<HTMLElement>('file-summary');
 const dropZone = element<HTMLElement>('drop-zone');
+const existingDevicesBody = element<HTMLTableSectionElement>('existing-devices-body');
 const tagSelect = element<HTMLSelectElement>('group-tag');
 const importButton = element<HTMLButtonElement>('start-import');
 const alertBox = element<HTMLElement>('alert');
@@ -236,6 +274,8 @@ let config: RuntimeConfig;
 let msal: PublicClientApplication;
 let account: AccountInfo | null = null;
 let devices: AutopilotDevice[] = [];
+let reassignableDevices: ReassignableDevice[] = [];
+let selectedDeviceId = '';
 let results: ImportResult[] = [];
 let pollTimer: number | undefined;
 
@@ -259,7 +299,8 @@ function clearAlert(): void {
 }
 
 function updateImportButton(): void {
-  importButton.disabled = devices.length === 0 || !tagSelect.value || !account;
+  const hasSource = devices.length > 0 || selectedDeviceId.length > 0;
+  importButton.disabled = !hasSource || !tagSelect.value || !account;
 }
 
 function updateResults(): void {
@@ -270,7 +311,10 @@ function updateResults(): void {
       : result.status === 'complete'
         ? 'status-complete'
         : 'status-pending';
-    for (const value of [result.serialNumber, result.importId ?? '—']) {
+    for (const value of [
+      result.serialNumber,
+      result.importId ?? result.operationId ?? '—',
+    ]) {
       const cell = document.createElement('td');
       cell.textContent = value;
       row.append(cell);
@@ -337,6 +381,71 @@ function renderHistory(records: ImportHistoryRecord[]): void {
   }));
 }
 
+function clearCsvSelection(): void {
+  devices = [];
+  fileInput.value = '';
+  fileSummary.textContent = t('csvRequirements');
+  dropZone.classList.remove('drop-zone-valid');
+}
+
+function renderReassignableDevices(): void {
+  if (reassignableDevices.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 3;
+    cell.textContent = t('noExistingDevices');
+    row.append(cell);
+    existingDevicesBody.replaceChildren(row);
+    return;
+  }
+
+  existingDevicesBody.replaceChildren(...reassignableDevices.map((device) => {
+    const row = document.createElement('tr');
+    if (device.deviceId === selectedDeviceId) {
+      row.classList.add('selected-row');
+    }
+
+    const selectionCell = document.createElement('td');
+    const selection = document.createElement('input');
+    selection.type = 'radio';
+    selection.name = 'existing-device';
+    selection.value = device.deviceId;
+    selection.checked = device.deviceId === selectedDeviceId;
+    selection.setAttribute(
+      'aria-label',
+      `${t('serialNumber')}: ${device.serialNumber}`,
+    );
+    selection.addEventListener('change', () => {
+      selectedDeviceId = device.deviceId;
+      clearCsvSelection();
+      renderReassignableDevices();
+      updateImportButton();
+    });
+    selectionCell.append(selection);
+    row.append(selectionCell);
+
+    for (const value of [device.serialNumber, device.groupTag || '—']) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.append(cell);
+    }
+    row.addEventListener('click', (event) => {
+      if (event.target === selection) return;
+      selection.click();
+    });
+    return row;
+  }));
+}
+
+function renderReassignableDevicesError(): void {
+  const row = document.createElement('tr');
+  const cell = document.createElement('td');
+  cell.colSpan = 3;
+  cell.textContent = t('devicesLoadFailed');
+  row.append(cell);
+  existingDevicesBody.replaceChildren(row);
+}
+
 async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!account) throw new Error(t('signInRequired'));
   let token;
@@ -357,11 +466,38 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const body = await response.json() as T & ApiError;
   if (!response.ok) {
-    const detail = body.message ?? body.error ?? `HTTP ${response.status}`;
+    const detail = body.error ===
+      'restrictedAdministrativeUnitReassignmentNotSupported'
+      ? t('restrictedAuReassignmentBlocked')
+      : body.message ?? body.error ?? `HTTP ${response.status}`;
     const correlation = body.correlationId ? ` Correlation ID: ${body.correlationId}.` : '';
     throw new Error(`${detail}.${correlation}`);
   }
   return body;
+}
+
+async function loadReassignableDevices(): Promise<void> {
+  try {
+    const response = await apiRequest<{ devices: ReassignableDevice[] }>(
+      config.groupTagUrl,
+    );
+    reassignableDevices = response.devices;
+    if (selectedDeviceId && !reassignableDevices.some(
+      (device) => device.deviceId === selectedDeviceId
+    )) {
+      selectedDeviceId = '';
+    }
+    renderReassignableDevices();
+    updateImportButton();
+  } catch (error) {
+    reassignableDevices = [];
+    selectedDeviceId = '';
+    renderReassignableDevicesError();
+    updateImportButton();
+    throw new Error(
+      error instanceof Error ? error.message : t('devicesLoadFailed'),
+    );
+  }
 }
 
 async function loadTags(): Promise<void> {
@@ -417,7 +553,11 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');
   try {
-    await Promise.all([loadTags(), loadImportHistory()]);
+    await Promise.all([
+      loadTags(),
+      loadReassignableDevices(),
+      loadImportHistory(),
+    ]);
   } catch (error) {
     showAlert(error instanceof Error ? error.message : t('tagsLoadFailed'));
   }
@@ -427,6 +567,8 @@ async function readFile(file: File): Promise<void> {
   clearAlert();
   try {
     devices = parseAutopilotCsv(await file.text());
+    selectedDeviceId = '';
+    renderReassignableDevices();
     fileSummary.textContent = `${file.name} · ${devices.length} ${devices.length === 1 ? t('device') : t('devices')} ${t('checked')}`;
     dropZone.classList.add('drop-zone-valid');
   } catch (error) {
@@ -464,10 +606,69 @@ async function importDevice(index: number, groupTag: string): Promise<void> {
   updateResults();
 }
 
+async function reassignDevice(
+  device: ReassignableDevice,
+  groupTag: string,
+): Promise<void> {
+  results = [{ serialNumber: device.serialNumber, status: 'sending' }];
+  updateResults();
+  try {
+    const response = await apiRequest<{
+      changed: boolean;
+      groupTag: string;
+      postProcessingStatus: string;
+      operationId?: string;
+    }>(config.groupTagUrl, {
+      method: 'POST',
+      body: JSON.stringify({ deviceId: device.deviceId, groupTag }),
+    });
+    results[0] = {
+      serialNumber: device.serialNumber,
+      operationId: response.operationId,
+      status: response.changed ? 'pending' : 'complete',
+      detail: response.changed
+        ? t('reassignmentStarted')
+        : t('reassignmentUnchanged'),
+    };
+    device.groupTag = response.groupTag;
+    renderReassignableDevices();
+    showAlert(
+      response.changed ? t('reassignmentStarted') : t('reassignmentUnchanged'),
+      'success',
+    );
+  } catch (error) {
+    results[0] = {
+      serialNumber: device.serialNumber,
+      status: 'error',
+      detail: error instanceof Error ? error.message : t('reassignmentFailed'),
+    };
+  }
+  updateResults();
+}
+
 async function pollResults(): Promise<void> {
-  const pending = results.filter((item) => item.importId && item.status === 'pending');
+  const pending = results.filter(
+    (item) => (item.importId || item.operationId) && item.status === 'pending',
+  );
   await Promise.all(pending.map(async (item) => {
     try {
+      if (item.operationId) {
+        const status = await apiRequest<{
+          workflowStatus: string;
+          status: string;
+          failureReason?: string;
+        }>(`${config.groupTagUrl}?operationId=${encodeURIComponent(item.operationId)}`);
+        if (status.workflowStatus === 'complete') {
+          item.status = 'complete';
+          item.detail = t('reassignmentCompleted');
+        } else if (status.workflowStatus === 'error') {
+          item.status = 'error';
+          item.detail = status.failureReason ?? t('reassignmentPostProcessingFailed');
+        } else {
+          item.detail = t('reassignmentStarted');
+        }
+        return;
+      }
       const status = await apiRequest<{
         workflowStatus: string;
         status: string;
@@ -490,7 +691,11 @@ async function pollResults(): Promise<void> {
   if (results.every((item) => item.status === 'complete' || item.status === 'error')) {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     pollTimer = undefined;
-    showAlert(t('processed'), 'success');
+    const hasErrors = results.some((item) => item.status === 'error');
+    showAlert(
+      hasErrors ? t('processedWithErrors') : t('processed'),
+      hasErrors ? 'error' : 'success',
+    );
   }
 }
 
@@ -523,10 +728,28 @@ dropZone.addEventListener('drop', (event) => {
 });
 importButton.addEventListener('click', async () => {
   const groupTag = tagSelect.value;
-  if (!groupTag || devices.length === 0) return;
+  if (!groupTag || (devices.length === 0 && !selectedDeviceId)) return;
   clearAlert();
   importButton.disabled = true;
   resultsPanel.classList.remove('hidden');
+
+  if (devices.length === 0) {
+    const selectedDevice = reassignableDevices.find(
+      (device) => device.deviceId === selectedDeviceId,
+    );
+    if (!selectedDevice) {
+      updateImportButton();
+      return;
+    }
+    await reassignDevice(selectedDevice, groupTag);
+    await pollResults();
+    if (results.some((item) => item.status === 'pending')) {
+      pollTimer = window.setInterval(() => void pollResults(), 15_000);
+    }
+    updateImportButton();
+    return;
+  }
+
   results = devices.map((device) => ({ serialNumber: device.serialNumber, status: 'ready' }));
   updateResults();
 

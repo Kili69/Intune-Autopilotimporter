@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 using namespace System.Net
@@ -85,6 +85,7 @@ if ($requestedPath -ieq 'config') {
             scope            = "$($env:API_AUDIENCE)/DeviceHash.Import"
             redirectUri      = "$origin/api/ui/index.html"
             importUrl        = "$origin/api/devices/import"
+            groupTagUrl      = "$origin/api/devices/group-tag"
             tagsUrl          = "$origin/api/devices/tags"
             importHistoryUrl = "$origin/api/management/imports"
             functionVersion   = $functionVersion

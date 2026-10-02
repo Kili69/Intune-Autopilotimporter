@@ -1,0 +1,35 @@
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "Request",
+      "methods": [
+        "get",
+        "post"
+      ],
+      "route": "api/devices/group-tag"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "Response"
+    },
+    {
+      "type": "queue",
+      "direction": "out",
+      "name": "DeviceAttributeUpdate",
+      "queueName": "device-attribute-updates",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "blob",
+      "direction": "in",
+      "name": "TagPolicyBlob",
+      "dataType": "string",
+      "path": "configuration/tag-authorization-policy.json",
+      "connection": "AzureWebJobsStorage"
+    }
+  ]
+}

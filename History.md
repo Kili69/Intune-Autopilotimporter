@@ -2,9 +2,15 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261002.2` - 2026-10-02
+## `1.3.20261002.3` - 2026-10-02
 
-- Promoted the development branch to the 1.3 release line and synchronized project version metadata.
+- Promoted the development branch to the 1.3 release line and synchronized project version metadata across PowerShell sources, the client module, and generated frontend artifacts.
+- Added authenticated REST, PowerShell, and web workflows for assigning authorized Group Tags to existing `notContacted` Autopilot devices, while rejecting enrolled devices and devices protected by configured Restricted Management Administrative Units before Intune is changed.
+- Reused the import post-processing worker for reassigned devices, including extension-attribute updates, removal from Administrative Units associated with the previous tag, and assignment to the target Administrative Unit.
+- Added persistent, owner-scoped reassignment operation tracking with explicit queued, processing, complete, and error states; the web interface now remains pending until all Entra post-processing is finished and clearly reports partial failures.
+- Improved tenant compatibility by listing and resolving Autopilot devices without unsupported Microsoft Graph filter, projection, or page-size options, then matching locally across paginated results.
+- Added the existing-device selector below a smaller CSV drop area, localized reassignment and Restricted Administrative Unit messages, updated REST and client documentation, deployment packaging, retention cleanup, and complete automated coverage.
+- Introduced `CHANGELOG.md` in Keep a Changelog format for concise, GitHub-friendly release notes while retaining this file as the complete historical record.
 
 ## `1.2.20260929.4` - 2026-09-29
 

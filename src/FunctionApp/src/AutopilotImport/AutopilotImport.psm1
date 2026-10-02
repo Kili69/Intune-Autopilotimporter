@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -190,13 +190,16 @@ function Set-ImportAuditRecord {
         [Collections.IDictionary] $Properties,
 
         [Parameter(Mandatory)]
-        [Security.SecureString] $AccessToken
+        [Security.SecureString] $AccessToken,
+
+        [ValidateSet('imports', 'reassignments')]
+        [string] $PartitionKey = 'imports'
     )
 
     $tableUri = Get-ImportAuditTableUri
     $rowKey = $ImportId.ToString()
     $entity = [ordered]@{
-        PartitionKey = 'imports'
+        PartitionKey = $PartitionKey
         RowKey = $rowKey
     }
     foreach ($propertyName in $Properties.Keys) {
@@ -214,7 +217,7 @@ function Set-ImportAuditRecord {
         'x-ms-version' = '2019-02-02'
     }
     $body = $entity | ConvertTo-Json -Depth 6 -Compress
-    $entityUri = "$tableUri(PartitionKey='imports',RowKey='$rowKey')"
+    $entityUri = "$tableUri(PartitionKey='$PartitionKey',RowKey='$rowKey')"
 
     try {
         Invoke-RestMethod `
@@ -254,7 +257,8 @@ function Set-ImportAuditRecord {
             Set-ImportAuditRecord `
                 -ImportId $ImportId `
                 -Properties $Properties `
-                -AccessToken $AccessToken
+                -AccessToken $AccessToken `
+                -PartitionKey $PartitionKey
         }
     }
 }
@@ -270,7 +274,10 @@ function Get-ImportAuditRecords {
         [guid[]] $ImportId,
 
         [Parameter(Mandatory)]
-        [Security.SecureString] $AccessToken
+        [Security.SecureString] $AccessToken,
+
+        [ValidateSet('imports', 'reassignments')]
+        [string] $PartitionKey = 'imports'
     )
 
     $records = @{}
@@ -291,7 +298,7 @@ function Get-ImportAuditRecords {
         $rowFilters = @($ids[$offset..$lastIndex] | ForEach-Object {
             "RowKey eq '$($_.ToString())'"
         })
-        $filter = "PartitionKey eq 'imports' and ($($rowFilters -join ' or '))"
+        $filter = "PartitionKey eq '$PartitionKey' and ($($rowFilters -join ' or '))"
         $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))"
         $response = Invoke-RestMethod `
             -Method Get `
@@ -446,7 +453,7 @@ function Get-ImportAuditHistory {
 function Remove-ExpiredImportAuditRecords {
     <#
     .SYNOPSIS
-    Deletes import audit records older than the supplied UTC cutoff.
+    Deletes audit records older than the supplied UTC cutoff.
     #>
     [CmdletBinding()]
     param(
@@ -454,14 +461,17 @@ function Remove-ExpiredImportAuditRecords {
         [datetimeoffset] $BeforeUtc,
 
         [Parameter(Mandatory)]
-        [Security.SecureString] $AccessToken
+        [Security.SecureString] $AccessToken,
+
+        [ValidateSet('imports', 'reassignments')]
+        [string] $PartitionKey = 'imports'
     )
 
     $tableUri = Get-ImportAuditTableUri
     $beforeValue = $BeforeUtc.UtcDateTime.ToString(
         'yyyy-MM-ddTHH:mm:ss.fffffffZ',
         [Globalization.CultureInfo]::InvariantCulture)
-    $filter = "PartitionKey eq 'imports' and requestReceivedAtUtc lt '$beforeValue'"
+    $filter = "PartitionKey eq '$PartitionKey' and requestReceivedAtUtc lt '$beforeValue'"
     $headers = @{
         Accept         = 'application/json;odata=nometadata'
         'If-Match'     = '*'
@@ -485,7 +495,7 @@ function Remove-ExpiredImportAuditRecords {
             $rowKey = [uri]::EscapeDataString([string] $record.RowKey)
             Invoke-RestMethod `
                 -Method Delete `
-                -Uri "$tableUri(PartitionKey='imports',RowKey='$rowKey')" `
+                -Uri "$tableUri(PartitionKey='$PartitionKey',RowKey='$rowKey')" `
                 -Authentication Bearer `
                 -Token $AccessToken `
                 -Headers $headers `
@@ -747,6 +757,29 @@ function Resolve-EffectiveAdministrativeUnitName {
     return $null
 }
 
+function Get-AdministrativeUnitNamesForGroupTag {
+    <#
+    .SYNOPSIS
+    Returns all administrative units configured for a Group Tag.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]] $Policy = @(),
+
+        [Parameter(Mandatory)]
+        [string] $GroupTag
+    )
+
+    return @($Policy | Where-Object {
+        @($_.tags) -icontains $GroupTag -and
+        $_.PSObject.Properties['administrativeUnitName'] -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $_.administrativeUnitName)
+    } | ForEach-Object {
+        ([string] $_.administrativeUnitName).Trim()
+    } | Sort-Object -Unique)
+}
+
 function Resolve-EntraAdministrativeUnit {
     <#
     .SYNOPSIS
@@ -865,6 +898,45 @@ function Add-EntraDeviceToAdministrativeUnit {
         AdministrativeUnitId = [string] $administrativeUnit.id
         IsMember             = $isMember
         MembershipAdded      = -not $isMember -and -not $TestOnly
+    }
+}
+
+function Remove-EntraDeviceFromAdministrativeUnit {
+    <#
+    .SYNOPSIS
+    Removes an Entra device from a named administrative unit when present.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 256)]
+        [string] $AdministrativeUnitName,
+
+        [Parameter(Mandatory)]
+        [guid] $DeviceObjectId,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $membership = Add-EntraDeviceToAdministrativeUnit `
+        -AdministrativeUnitName $AdministrativeUnitName `
+        -DeviceObjectId $DeviceObjectId `
+        -AccessToken $AccessToken `
+        -TestOnly
+    if ($membership.IsMember) {
+        Invoke-RestMethod `
+            -Method Delete `
+            -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($membership.AdministrativeUnitId)/members/$($DeviceObjectId.ToString())/`$ref" `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -ErrorAction Stop | Out-Null
+    }
+
+    return [pscustomobject]@{
+        AdministrativeUnitId = $membership.AdministrativeUnitId
+        WasMember            = $membership.IsMember
+        MembershipRemoved    = $membership.IsMember
     }
 }
 
@@ -1485,8 +1557,10 @@ Export-ModuleMember -Function @(
     'ConvertTo-EntraDeviceExtensionAttributes',
     'Resolve-AdministrativeUnitName',
     'Resolve-EffectiveAdministrativeUnitName',
+    'Get-AdministrativeUnitNamesForGroupTag',
     'Resolve-EntraAdministrativeUnit',
     'Add-EntraDeviceToAdministrativeUnit',
+    'Remove-EntraDeviceFromAdministrativeUnit',
     'Get-AutoPilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',

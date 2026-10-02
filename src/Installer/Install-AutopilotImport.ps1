@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -1658,6 +1658,7 @@ $managedIdentityObjectId = [guid] $deployment.Outputs.managedIdentityObjectId.Va
 $storageAccountName = [string] $deployment.Outputs.storageAccountName.Value
 $clientSettings = [ordered]@{
     functionUrl            = $functionUrl
+    groupTagUrl            = "$(([uri] $functionUrl).GetLeftPart([UriPartial]::Authority))/api/devices/group-tag"
     managementUrl          = $managementUrl
     apiApplicationIdUri    = $ApiAudience
     tenantId               = $TenantId
@@ -1778,6 +1779,7 @@ if (-not $SkipPublish) {
                 (Join-Path $functionAppRoot 'GetAuthorizedTags'),
                 (Join-Path $functionAppRoot 'GetImportHistory'),
                 (Join-Path $functionAppRoot 'RemoveExpiredImportHistory'),
+                (Join-Path $functionAppRoot 'ReassignDeviceGroupTag'),
                 (Join-Path $functionAppRoot 'WebFrontend'),
                 (Join-Path $functionAppRoot 'src')
             ) `

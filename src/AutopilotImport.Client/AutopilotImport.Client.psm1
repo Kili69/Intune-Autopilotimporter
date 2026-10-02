@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -256,6 +256,85 @@ function Get-ClientApiErrorMessage {
     }
 
     $message = "Import failed for serial '$SerialNumber'. $message"
+    if (-not [string]::IsNullOrWhiteSpace($correlationId)) {
+        $message += " Correlation ID: $correlationId."
+    }
+    return $message
+}
+
+function Get-ClientGroupTagErrorMessage {
+    param(
+        [Parameter(Mandatory)]
+        [System.Management.Automation.ErrorRecord] $ErrorRecord,
+
+        [Parameter(Mandatory)]
+        [string] $DeviceIdentity,
+
+        [Parameter(Mandatory)]
+        [string] $GroupTag
+    )
+
+    $response = $null
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        try {
+            $response = $ErrorRecord.ErrorDetails.Message | ConvertFrom-Json
+        }
+        catch {
+            $response = $null
+        }
+    }
+    $errorCode = if ($response -and $response.PSObject.Properties['error']) {
+        [string] $response.error
+    }
+    else {
+        ''
+    }
+    $correlationId = if (
+        $response -and $response.PSObject.Properties['correlationId']) {
+        [string] $response.correlationId
+    }
+    else {
+        ''
+    }
+
+    $message = switch ($errorCode) {
+        'groupTagNotAllowed' {
+            "Group Tag '$GroupTag' is not allowed for the signed-in user."
+        }
+        'deviceAlreadyEnrolled' {
+            'The Autopilot device is already enrolled and cannot be reassigned.'
+        }
+        'deviceNotFound' {
+            'The Autopilot device was not found.'
+        }
+        'restrictedAdministrativeUnitReassignmentNotSupported' {
+            'The Autopilot device belongs to a restricted management administrative unit. The service requires a role scoped to that administrative unit before the device can be reassigned.'
+        }
+        'deviceProtectionLookupFailed' {
+            'The administrative-unit protection state of the Autopilot device could not be verified.'
+        }
+        'invalidRequest' {
+            if ($response.PSObject.Properties['message']) {
+                "The reassignment request is invalid: $($response.message)"
+            }
+            else {
+                'The reassignment request is invalid.'
+            }
+        }
+        'authenticationRequired' {
+            'Authentication is required. Sign in again and retry.'
+        }
+        'invalidPrincipal' {
+            'The signed-in identity could not be validated by the Function.'
+        }
+        'serviceNotConfigured' {
+            'The Autopilot import service is not configured correctly.'
+        }
+        default {
+            "The Group Tag could not be changed: $($ErrorRecord.Exception.Message)"
+        }
+    }
+    $message = "Group Tag reassignment failed for '$DeviceIdentity'. $message"
     if (-not [string]::IsNullOrWhiteSpace($correlationId)) {
         $message += " Correlation ID: $correlationId."
     }
@@ -670,6 +749,7 @@ function Get-AutoPilotImporterClientConfiguration {
         $authority = [string] $runtimeSettings['authority']
         $scope = [string] $runtimeSettings['scope']
         $importUrl = [string] $runtimeSettings['importUrl']
+        $groupTagUrl = [string] $runtimeSettings['groupTagUrl']
         $functionVersion = [string] $runtimeSettings['functionVersion']
         $scopeSuffix = '/DeviceHash.Import'
         if ([string]::IsNullOrWhiteSpace($clientId) -or
@@ -716,6 +796,16 @@ function Get-AutoPilotImporterClientConfiguration {
             $importUri.GetLeftPart([UriPartial]::Authority) -ne $origin) {
             throw 'The Function runtime configuration contains an import URL from a different origin.'
         }
+        $groupTagUri = if ([string]::IsNullOrWhiteSpace($groupTagUrl)) {
+            [uri] "$origin/api/devices/group-tag"
+        }
+        else {
+            [uri] $groupTagUrl
+        }
+        if ($groupTagUri.Scheme -ne 'https' -or
+            $groupTagUri.GetLeftPart([UriPartial]::Authority) -ne $origin) {
+            throw 'The Function runtime configuration contains a Group Tag URL from a different origin.'
+        }
 
         $inferredFunctionAppName = if ($functionUri.Host.EndsWith(
                 '.azurewebsites.net',
@@ -760,6 +850,7 @@ function Get-AutoPilotImporterClientConfiguration {
 
         $settings = [ordered]@{
             functionUrl         = $importUri.AbsoluteUri
+            groupTagUrl         = $groupTagUri.AbsoluteUri
             managementUrl       = "$origin/api/management/tag-policy"
             apiApplicationIdUri = $apiApplicationIdUri
             tenantId            = $parsedTenantId.ToString()
@@ -833,6 +924,14 @@ function Get-AutoPilotImporterClientConfiguration {
         ResourceGroupName   = [string] $configuration['resourceGroupName']
         FunctionAppName     = [string] $configuration['functionAppName']
         FunctionUrl         = $resolvedSettings.functionUrl
+        GroupTagUrl         = if ([string]::IsNullOrWhiteSpace(
+                [string] $configuration['groupTagUrl'])) {
+            "$(([uri] $resolvedSettings.functionUrl).GetLeftPart(
+                [UriPartial]::Authority))/api/devices/group-tag"
+        }
+        else {
+            [string] $configuration['groupTagUrl']
+        }
         ManagementUrl       = $resolvedSettings.managementUrl
         ApiApplicationIdUri = $resolvedSettings.apiApplicationIdUri
         WebUrl              = $resolvedSettings.webUrl
@@ -981,6 +1080,7 @@ function New-AutoPilotImporterClientConfiguration {
     New-Item -Path $resolvedOutputPath -ItemType Directory -Force | Out-Null
     [ordered]@{
         functionUrl            = "https://$FunctionAppName.azurewebsites.net/api/devices/import"
+        groupTagUrl            = "https://$FunctionAppName.azurewebsites.net/api/devices/group-tag"
         managementUrl          = "https://$FunctionAppName.azurewebsites.net/api/management/tag-policy"
         apiApplicationIdUri    = $apiApplicationIdUri
         tenantId               = $TenantId
@@ -1174,6 +1274,146 @@ function Import-AutoPilotDevice {
                     -SerialNumber $device.serialNumber `
                     -GroupTag $GroupTag)
         }
+    }
+}
+
+function Set-AutoPilotDeviceGroupTag {
+    <#
+    .SYNOPSIS
+    Changes the Group Tag of an existing Autopilot device.
+
+    .DESCRIPTION
+    Calls the secured Function API to change the Group Tag of a registered
+    Windows Autopilot device that is not enrolled. The target tag must be
+    authorized for the signed-in user's current Entra groups. After Intune
+    accepts the change, the service queues the same extension-attribute and
+    administrative-unit processing used after an import.
+
+    .PARAMETER DeviceId
+    Microsoft Graph ID of the registered Windows Autopilot device.
+
+    .PARAMETER SerialNumber
+    Serial number that uniquely identifies the registered Autopilot device.
+
+    .PARAMETER GroupTag
+    New Group Tag to assign.
+
+    .PARAMETER GroupTagUrl
+    HTTPS URL of the Group Tag reassignment endpoint. When omitted, the URL is
+    derived from the configured Function URL.
+
+    .EXAMPLE
+    Set-AutoPilotDeviceGroupTag `
+        -SerialNumber 'PC-001' `
+        -GroupTag 'BG-VIP'
+
+    .EXAMPLE
+    Set-AutoPilotDeviceGroupTag `
+        -DeviceId '11111111-1111-1111-1111-111111111111' `
+        -GroupTag 'BG-VIP'
+
+    .OUTPUTS
+    PSCustomObject containing the operation ID, device, old and new Group
+    Tags, change status, post-processing status, and correlation ID.
+    #>
+    [CmdletBinding(
+        SupportsShouldProcess,
+        ConfirmImpact = 'Medium',
+        DefaultParameterSetName = 'BySerialNumber'
+    )]
+    param(
+        [Parameter(Mandatory, ParameterSetName = 'ByDeviceId')]
+        [guid] $DeviceId,
+
+        [Parameter(
+            Mandatory,
+            Position = 0,
+            ParameterSetName = 'BySerialNumber'
+        )]
+        [ValidateLength(1, 128)]
+        [string] $SerialNumber,
+
+        [Parameter(Mandatory, Position = 1)]
+        [ValidateLength(1, 128)]
+        [string] $GroupTag,
+
+        [ValidatePattern('^https://')]
+        [string] $GroupTagUrl,
+
+        [ValidatePattern('^api://')]
+        [string] $ApiApplicationIdUri,
+
+        [string] $TenantId,
+
+        [string] $ConfigPath
+    )
+
+    $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath `
+        -Overrides @{
+            apiApplicationIdUri = $ApiApplicationIdUri
+            tenantId = $TenantId
+        }
+    $deviceIdentity = if ($PSCmdlet.ParameterSetName -eq 'ByDeviceId') {
+        $DeviceId.ToString()
+    }
+    else {
+        $SerialNumber.Trim()
+    }
+    if (-not $PSCmdlet.ShouldProcess(
+            "Autopilot device '$deviceIdentity'",
+            "Assign Group Tag '$GroupTag'")) {
+        return
+    }
+
+    $resolvedGroupTagUrl = if (
+        -not [string]::IsNullOrWhiteSpace($GroupTagUrl)) {
+        $GroupTagUrl
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace(
+            [string] $configuration['groupTagUrl'])) {
+        [string] $configuration['groupTagUrl']
+    }
+    else {
+        $configuredFunctionUrl = Get-ConfigurationValue `
+            $configuration functionUrl 'FunctionUrl'
+        $functionUri = [uri] $configuredFunctionUrl
+        "$($functionUri.GetLeftPart([UriPartial]::Authority))/api/devices/group-tag"
+    }
+    $audience = Get-ConfigurationValue `
+        $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue `
+        $configuration tenantId 'TenantId'
+    $parsedTenantId = [guid]::Empty
+    if (-not [guid]::TryParse($resolvedTenantId, [ref] $parsedTenantId)) {
+        throw 'TenantId must be a GUID.'
+    }
+
+    $body = [ordered]@{ groupTag = $GroupTag.Trim() }
+    if ($PSCmdlet.ParameterSetName -eq 'ByDeviceId') {
+        $body.deviceId = $DeviceId.ToString()
+    }
+    else {
+        $body.serialNumber = $SerialNumber.Trim()
+    }
+
+    try {
+        $token = Get-ClientAccessToken `
+            -TenantId $resolvedTenantId `
+            -ResourceUrl $audience
+        return Invoke-RestMethod `
+            -Method Post `
+            -Uri $resolvedGroupTagUrl.TrimEnd('/') `
+            -Authentication Bearer `
+            -Token $token `
+            -ContentType 'application/json' `
+            -Body ($body | ConvertTo-Json -Compress) `
+            -ErrorAction Stop
+    }
+    catch {
+        throw (Get-ClientGroupTagErrorMessage `
+                -ErrorRecord $_ `
+                -DeviceIdentity $deviceIdentity `
+                -GroupTag $GroupTag)
     }
 }
 
@@ -2845,6 +3085,7 @@ Export-ModuleMember -Function @(
     'New-AutoPilotImporterClientConfiguration',
     'Get-AutoPilotImporterClientConfiguration',
     'Import-AutoPilotDevice',
+    'Set-AutoPilotDeviceGroupTag',
     'Get-AutoPilotImportStatus',
     'Get-AutoPilotImportHistory',
     'Get-AutoPilotTagPolicy',

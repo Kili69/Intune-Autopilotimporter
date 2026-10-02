@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -14,8 +14,9 @@ Successful updates are idempotent.
 
 .PARAMETER QueueItem
 Message supplied by the Azure Storage Queue trigger. The value may be a JSON
-string or a deserialized object and must contain importId and groupTag. It may
-also contain administrativeUnitName.
+string or a deserialized object and must contain groupTag plus either importId
+or registrationId. Reassignment messages may also contain administrative
+units associated with the previous Group Tag.
 
 .PARAMETER TriggerMetadata
 Metadata supplied by the Azure Functions PowerShell worker for the queue
@@ -61,35 +62,87 @@ else {
 }
 
 # Reject malformed queue data permanently rather than issuing Graph requests
-# with an ambiguous import identity or missing authorized Group Tag.
+# with an ambiguous device identity or missing authorized Group Tag.
 $importId = [guid]::Empty
-if (-not [guid]::TryParse([string] $message.importId, [ref] $importId)) {
-    throw 'Queued Autopilot import ID is invalid.'
+$registrationId = [guid]::Empty
+$operationId = [guid]::Empty
+$hasImportId = [guid]::TryParse([string] $message.importId, [ref] $importId)
+$hasRegistrationId = [guid]::TryParse(
+    [string] $message.registrationId,
+    [ref] $registrationId
+)
+$hasOperationId = [guid]::TryParse(
+    [string] $message.operationId,
+    [ref] $operationId
+)
+if ($hasImportId -eq $hasRegistrationId) {
+    throw 'Queued work must contain exactly one valid Autopilot import ID or registration ID.'
 }
 $groupTag = [string] $message.groupTag
 if ([string]::IsNullOrWhiteSpace($groupTag)) {
-    throw "Queued Group Tag is missing for import '$importId'."
+    throw 'Queued Group Tag is missing.'
 }
 
-$auditToken = Get-ImportAuditAccessToken
-$initialAuditProperties = [ordered]@{}
-if ($message.PSObject.Properties['audit'] -and $message.audit) {
-    foreach ($property in $message.audit.PSObject.Properties) {
-        $initialAuditProperties[$property.Name] = $property.Value
+$auditToken = if ($hasImportId -or $hasOperationId) {
+    Get-ImportAuditAccessToken
+}
+else {
+    $null
+}
+if ($hasImportId) {
+    $initialAuditProperties = [ordered]@{}
+    if ($message.PSObject.Properties['audit'] -and $message.audit) {
+        foreach ($property in $message.audit.PSObject.Properties) {
+            $initialAuditProperties[$property.Name] = $property.Value
+        }
     }
-}
-$existingAuditRecord = (Get-ImportAuditRecords `
+    $existingAuditRecord = (Get-ImportAuditRecords `
+            -ImportId $importId `
+            -AccessToken $auditToken)[[string] $importId]
+    if (-not $existingAuditRecord -or [string]::IsNullOrWhiteSpace(
+            [string] $existingAuditRecord.processingStartedAtUtc)) {
+        $initialAuditProperties['processingStartedAtUtc'] = `
+            [datetime]::UtcNow.ToString('o')
+    }
+    Set-ImportAuditRecord `
         -ImportId $importId `
-        -AccessToken $auditToken)[[string] $importId]
-if (-not $existingAuditRecord -or [string]::IsNullOrWhiteSpace(
-        [string] $existingAuditRecord.processingStartedAtUtc)) {
-    $initialAuditProperties['processingStartedAtUtc'] = `
-        [datetime]::UtcNow.ToString('o')
+        -Properties $initialAuditProperties `
+        -AccessToken $auditToken
 }
-Set-ImportAuditRecord `
-    -ImportId $importId `
-    -Properties $initialAuditProperties `
-    -AccessToken $auditToken
+if ($hasOperationId) {
+    Set-ImportAuditRecord `
+        -ImportId $operationId `
+        -PartitionKey reassignments `
+        -Properties @{
+            workflowStatus       = 'pending'
+            status               = 'processing'
+            processingStartedAtUtc = [datetime]::UtcNow.ToString('o')
+        } `
+        -AccessToken $auditToken
+}
+
+trap {
+    $processingError = $_
+    if ($hasOperationId -and $auditToken) {
+        try {
+            Set-ImportAuditRecord `
+                -ImportId $operationId `
+                -PartitionKey reassignments `
+                -Properties @{
+                    workflowStatus = 'error'
+                    status         = 'postProcessingFailed'
+                    failureReason  = $processingError.Exception.Message
+                    processingFailedAtUtc = `
+                        [datetime]::UtcNow.ToString('o')
+                } `
+                -AccessToken $auditToken
+        }
+        catch {
+            Write-Warning "Reassignment failure status for '$operationId' could not be written: $($_.Exception.Message)"
+        }
+    }
+    throw $processingError
+}
 
 $tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent `
     -Value $TagPolicyBlob
@@ -109,6 +162,17 @@ $administrativeUnitName = `
         -GroupTag $groupTag `
         -QueuedAdministrativeUnitName `
             ([string] $message.administrativeUnitName)
+$previousAdministrativeUnitNames = if (
+    $message.PSObject.Properties['previousAdministrativeUnitNames']) {
+    @($message.previousAdministrativeUnitNames | ForEach-Object {
+        ([string] $_).Trim()
+    } | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    } | Sort-Object -Unique)
+}
+else {
+    @()
+}
 
 # Build the PATCH body with the deployment-selected extension attribute. The
 # helper also enforces the supported extensionAttribute1..15 range.
@@ -135,17 +199,18 @@ else {
 }
 $secureToken = ConvertTo-SecureString $accessToken -AsPlainText -Force
 
-# Resolve the asynchronous identity chain: queued import ID -> completed
-# Autopilot registration ID -> Entra device ID. Missing IDs throw deliberately
-# so the Storage Queue retry policy can try again after Intune progresses.
-$importedDevice = Invoke-RestMethod `
-    -Method Get `
-    -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importId" `
+# Resolve either the asynchronous import identity chain or use the registered
+# Autopilot identity supplied by a Group Tag reassignment.
+if ($hasImportId) {
+    $importedDevice = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importId" `
     -Authentication Bearer `
     -Token $secureToken `
     -ErrorAction Stop
-$registrationId = Get-AutoPilotDeviceRegistrationId `
-    -ImportedDevice $importedDevice
+    $registrationId = Get-AutoPilotDeviceRegistrationId `
+        -ImportedDevice $importedDevice
+}
 $registeredDevice = Invoke-RestMethod `
     -Method Get `
     -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registrationId" `
@@ -156,21 +221,22 @@ $entraDeviceId = [guid]::Empty
 if (-not [guid]::TryParse(
         [string] $registeredDevice.azureActiveDirectoryDeviceId,
         [ref] $entraDeviceId)) {
-    throw "Entra device is not available yet for Autopilot import '$importId'."
+    throw "Entra device is not available yet for Autopilot registration '$registrationId'."
 }
-Set-ImportAuditRecord `
-    -ImportId $importId `
-    -Properties @{
-        entraDeviceResolvedAtUtc = [datetime]::UtcNow.ToString('o')
-        entraDeviceId = $entraDeviceId.ToString()
-    } `
-    -AccessToken $auditToken
-
+if ($hasImportId) {
+    Set-ImportAuditRecord `
+        -ImportId $importId `
+        -Properties @{
+            entraDeviceResolvedAtUtc = [datetime]::UtcNow.ToString('o')
+            entraDeviceId = $entraDeviceId.ToString()
+        } `
+        -AccessToken $auditToken
+}
 # Administrative-unit membership requires the Entra object ID, which differs
 # from the deviceId (azureActiveDirectoryDeviceId) resolved above.
 $deviceObjectId = [guid]::Empty
-if (-not [string]::IsNullOrWhiteSpace(
-        $administrativeUnitName)) {
+if (-not [string]::IsNullOrWhiteSpace($administrativeUnitName) -or
+    $previousAdministrativeUnitNames.Count -gt 0) {
     $entraDevice = Invoke-RestMethod `
         -Method Get `
         -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
@@ -179,28 +245,6 @@ if (-not [string]::IsNullOrWhiteSpace(
         -ErrorAction Stop
     if (-not [guid]::TryParse([string] $entraDevice.id, [ref] $deviceObjectId)) {
         throw "Entra device object ID is unavailable for device '$entraDeviceId'."
-    }
-
-    # Membership is the completion marker for the optional AU workflow. An
-    # existing membership means a prior delivery already completed both writes.
-    $existingMembership = `
-        Add-EntraDeviceToAdministrativeUnit `
-            -AdministrativeUnitName `
-                $administrativeUnitName `
-            -DeviceObjectId $deviceObjectId `
-            -AccessToken $secureToken `
-            -TestOnly
-    if ($existingMembership.IsMember) {
-        $completedAtUtc = [datetime]::UtcNow.ToString('o')
-        Set-ImportAuditRecord `
-            -ImportId $importId `
-            -Properties @{
-                administrativeUnitAssignedAtUtc = $completedAtUtc
-                processingCompletedAtUtc = $completedAtUtc
-            } `
-            -AccessToken $auditToken
-        Write-Information "Entra device '$entraDeviceId' is already a member of administrative unit '$administrativeUnitName'."
-        return
     }
 }
 
@@ -216,14 +260,31 @@ Invoke-RestMethod `
     -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
     -ErrorAction Stop | Out-Null
 
-Set-ImportAuditRecord `
-    -ImportId $importId `
-    -Properties @{
-        extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
-    } `
-    -AccessToken $auditToken
-
+if ($hasImportId) {
+    Set-ImportAuditRecord `
+        -ImportId $importId `
+        -Properties @{
+            extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+        } `
+        -AccessToken $auditToken
+}
 Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
+
+foreach ($previousAdministrativeUnitName in $previousAdministrativeUnitNames) {
+    if ([string]::Equals(
+            $previousAdministrativeUnitName,
+            $administrativeUnitName,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        continue
+    }
+    $removalResult = Remove-EntraDeviceFromAdministrativeUnit `
+        -AdministrativeUnitName $previousAdministrativeUnitName `
+        -DeviceObjectId $deviceObjectId `
+        -AccessToken $secureToken
+    if ($removalResult.MembershipRemoved) {
+        Write-Information "Entra device '$entraDeviceId' removed from administrative unit '$previousAdministrativeUnitName'."
+    }
+}
 
 if (-not [string]::IsNullOrWhiteSpace(
         $administrativeUnitName)) {
@@ -243,17 +304,32 @@ if (-not [string]::IsNullOrWhiteSpace(
     }
     Write-Information "Entra device '$entraDeviceId' $membershipAction administrative unit '$administrativeUnitName'."
 
+    if ($hasImportId) {
+        Set-ImportAuditRecord `
+            -ImportId $importId `
+            -Properties @{
+                administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
+            } `
+            -AccessToken $auditToken
+    }
+}
+
+if ($hasImportId) {
     Set-ImportAuditRecord `
         -ImportId $importId `
         -Properties @{
-            administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
+            processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
         } `
         -AccessToken $auditToken
 }
-
-Set-ImportAuditRecord `
-    -ImportId $importId `
-    -Properties @{
-        processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
-    } `
-    -AccessToken $auditToken
+if ($hasOperationId) {
+    Set-ImportAuditRecord `
+        -ImportId $operationId `
+        -PartitionKey reassignments `
+        -Properties @{
+            workflowStatus           = 'complete'
+            status                   = 'complete'
+            processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+        } `
+        -AccessToken $auditToken
+}

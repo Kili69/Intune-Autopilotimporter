@@ -58,6 +58,8 @@ The frontend provides the following functions:
 - Local validation of Autopilot CSV files before any data is transmitted
 - Selection of only those Group Tags authorized for the signed-in user's Entra
     groups
+- Selection of existing Autopilot devices with `enrollmentState: notContacted`
+    and reassignment to an authorized Group Tag
 - Parallel submission of up to three devices to the secured Function API
 - Display of serial number, import ID, processing status, and error details
 - Automatic monitoring of both the Intune import and the Entra device
@@ -123,9 +125,11 @@ organization.
 
 1. Sign in with an Entra account that belongs to an authorized importer group.
 2. Select or drop an Autopilot CSV containing `Device Serial Number` and
-     `Hardware Hash`.
+     `Hardware Hash`, or select an existing `notContacted` device below the CSV
+     field.
 3. Select one of the Group Tags returned for the signed-in account.
-4. Start the import and keep the page open while processing continues.
+4. Start the import or Group Tag reassignment and keep the page open while
+     processing continues.
 
 The frontend performs the first status request immediately after submission.
 While at least one device is pending, it refreshes the status every 15 seconds.
@@ -171,6 +175,37 @@ Import-AutoPilotDevice `
 ```
 
 PowerShell signs you in with your Entra account when an access token is needed. The Azure Function then verifies that your account is authorized for the requested Group Tag before submitting each device to Intune. No Azure role, Microsoft Graph permission, client secret, or direct Intune role is required on the importing computer.
+
+### Change the Group Tag of an existing Autopilot device
+
+Use `Set-AutoPilotDeviceGroupTag` to assign a different Group Tag to an
+existing Windows Autopilot registration. Identify the device by serial number:
+
+```powershell
+Set-AutoPilotDeviceGroupTag `
+    -SerialNumber 'PC-0001' `
+    -GroupTag 'BG-VIP'
+```
+
+Alternatively, use the Microsoft Graph ID of the registered Autopilot device:
+
+```powershell
+Set-AutoPilotDeviceGroupTag `
+    -DeviceId '11111111-1111-1111-1111-111111111111' `
+    -GroupTag 'BG-VIP'
+```
+
+The server verifies that the signed-in user is authorized for the target tag.
+Devices whose Intune `enrollmentState` is `enrolled` are rejected. After Intune
+accepts a changed tag, the existing asynchronous post-processing updates the
+configured Entra extension attribute, removes memberships in administrative
+units configured for the previous tag, and assigns the administrative unit
+configured for the new tag. Dynamic group memberships based on the extension
+attribute then update through Entra.
+
+Use `-WhatIf` to preview the operation without authentication or an API call.
+Supplying the same tag returns `changed: false` and does not queue
+post-processing.
 
 The client package also contains the standalone REST client
 `Import-AutopilotDevice.ps1`. It reads the public runtime configuration from
@@ -1255,6 +1290,9 @@ errors with Application Insights logs.
 | `GET` | `/api/devices/tags` | Authorized importer | List Group Tags available to the caller |
 | `POST` | `/api/devices/import` | Authorized importer | Submit an Autopilot device identity |
 | `GET` | `/api/devices/import?importId=<guid>` | Authorized importer | Read import and post-processing status |
+| `GET` | `/api/devices/group-tag` | Authorized importer | List `notContacted` Autopilot devices |
+| `GET` | `/api/devices/group-tag?operationId=<guid>` | Authorized importer | Read the caller's Group Tag reassignment and post-processing status |
+| `POST` | `/api/devices/group-tag` | Authorized importer | Change the Group Tag of a not-enrolled Autopilot device |
 | `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
@@ -1303,6 +1341,104 @@ from the matching policy rule. A successful submission returns HTTP `202`:
     "correlationId": "00000000-0000-0000-0000-000000000000"
 }
 ```
+
+### Change an Autopilot Device Group Tag
+
+List the existing Autopilot devices available for reassignment:
+
+```http
+GET /api/devices/group-tag
+```
+
+The response contains all devices whose Intune `enrollmentState` is
+`notContacted`. The caller must be authorized for at least one target Group
+Tag. The current tag of a listed device does not need to be authorized:
+
+Before changing the Intune Group Tag, the API checks whether the Entra device
+is a member of a restricted management administrative unit configured in the
+Group Tag policy. Without a service role scoped to that administrative unit,
+the reassignment is rejected before Intune is changed. This avoids a partial
+state where Intune is updated but the protected Entra device cannot be
+post-processed.
+
+```json
+{
+    "devices": [
+        {
+            "operationId": "22222222-2222-2222-2222-222222222222",
+            "deviceId": "11111111-1111-1111-1111-111111111111",
+            "serialNumber": "PC-0001",
+            "groupTag": "PAW-CSM",
+            "enrollmentState": "notContacted"
+        }
+    ],
+    "count": 1,
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Change the selected device:
+
+```http
+POST /api/devices/group-tag
+Content-Type: application/json
+```
+
+Supply the target `groupTag` and exactly one device identifier:
+
+```json
+{
+    "serialNumber": "PC-0001",
+    "groupTag": "BG-VIP"
+}
+```
+
+`deviceId` can be used instead of `serialNumber`. The target tag must be
+authorized for the caller. The API rejects devices whose `enrollmentState` is
+`enrolled` with HTTP `409`. A changed assignment returns HTTP `202`:
+
+```json
+{
+    "deviceId": "11111111-1111-1111-1111-111111111111",
+    "serialNumber": "PC-0001",
+    "previousGroupTag": "PAW-CSM",
+    "groupTag": "BG-VIP",
+    "enrollmentState": "notContacted",
+    "changed": true,
+    "postProcessingStatus": "queued",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+HTTP `202` confirms that Intune accepted the Group Tag change and that
+post-processing was queued; it does not confirm completion of the extension
+attribute or administrative-unit changes. Poll the returned operation ID:
+
+```http
+GET /api/devices/group-tag?operationId=<operation-id>
+```
+
+Only the user who started the reassignment can read its status. A
+`workflowStatus` value of `pending` means the worker is queued or processing.
+`complete` confirms that Group Tag reassignment and all configured
+post-processing completed. `error` reports failed post-processing:
+
+```json
+{
+    "operationId": "22222222-2222-2222-2222-222222222222",
+    "workflowStatus": "complete",
+    "status": "complete",
+    "serialNumber": "PC-0001",
+    "groupTag": "BG-VIP",
+    "failureReason": "",
+    "processingStartedAtUtc": "2026-10-02T12:00:01.0000000Z",
+    "processingCompletedAtUtc": "2026-10-02T12:00:03.0000000Z",
+    "correlationId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+When the requested tag already matches exactly, the API returns HTTP `200`
+with `changed: false` and `postProcessingStatus: "notRequired"`.
 
 ### Get Import Status
 
@@ -1491,7 +1627,8 @@ Common status codes are:
 - `400 Bad Request`: malformed input, invalid IDs, or an invalid policy
 - `401 Unauthorized`: authentication is missing or invalid
 - `403 Forbidden`: the caller is not authorized for the tag or management API
-- `404 Not Found`: a requested static frontend resource does not exist
+- `404 Not Found`: a requested device or static frontend resource does not exist
+- `409 Conflict`: the Autopilot device is already enrolled
 - `500 Internal Server Error`: required service configuration is missing or invalid
 - `502 Bad Gateway`: a Microsoft Graph operation failed
 - `503 Service Unavailable`: manager authorization could not be verified
@@ -1792,7 +1929,7 @@ The tests cover Group Tag authorization, manager users and groups, the strict Ow
 
 ### Versioning
 
-The project version is stored in `VERSION` and follows `1.2.<yyyyMMdd>.<counter>`, for example `1.2.20260922.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
+The project version is stored in `VERSION` and follows `1.3.<yyyyMMdd>.<counter>`, for example `1.3.20261002.3`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
 The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
 
 Every commit must include an updated `History.md` and a new project version.
@@ -1806,6 +1943,11 @@ a commit, run:
 The counter increases for commits created on the same UTC date and starts at
 `1` on a new UTC date. Repository automation commits marked with `[skip ci]`
 are excluded from this rule.
+
+User-facing release notes follow the
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure in
+[`CHANGELOG.md`](./CHANGELOG.md). The complete development record remains in
+[`History.md`](./History.md).
 
 ### Operations and Security
 

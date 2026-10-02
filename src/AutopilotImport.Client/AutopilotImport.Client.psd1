@@ -1,9 +1,9 @@
-# Project-Version: 1.3.20261002.2
+# Project-Version: 1.3.20261002.3
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.3.20261002.2'
+    ModuleVersion     = '1.3.20261002.3'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@microsoft.com (aka Kili)'
     Description       = 'Client commands for the secured Windows Autopilot import Function.'
@@ -12,6 +12,7 @@
         'New-AutoPilotImporterClientConfiguration'
         'Get-AutoPilotImporterClientConfiguration'
         'Import-AutoPilotDevice'
+        'Set-AutoPilotDeviceGroupTag'
         'Get-AutoPilotImportStatus'
         'Get-AutoPilotImportHistory'
         'Get-AutoPilotTagPolicy'
