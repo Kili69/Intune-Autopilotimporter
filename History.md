@@ -2,6 +2,10 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261002.2` - 2026-10-02
+
+- Promoted the development branch to the 1.3 release line and synchronized project version metadata.
+
 ## `1.2.20260929.4` - 2026-09-29
 
 - Added manager-aware import history to the web frontend, including requester, status, serial number, and shortened device-hash references, with automatic fallback to the signed-in user's own records.

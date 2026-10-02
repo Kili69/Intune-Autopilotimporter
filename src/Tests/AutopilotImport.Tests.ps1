@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20260929.4
+# Project-Version: 1.3.20261002.2
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -5171,7 +5171,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should -Match '^1\.2\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^1\.3\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
