@@ -2,6 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.2.20261003.1` - 2026-10-03
+
+- Documented the Group Tag policy management Function end to end, including its authentication and authorization flow, policy normalization, administrative-unit validation, configuration fallback, output bindings, helper functions, and safe persistence behavior.
+- Advanced and synchronized the project version and regenerated release artifacts for publication from `main`.
+
 ## `1.2.20260929.4` - 2026-09-29
 
 - Added manager-aware import history to the web frontend, including requester, status, serial number, and shortened device-hash references, with automatic fallback to the signed-in user's own records.
