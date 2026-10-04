@@ -1777,17 +1777,14 @@ Publish-Script `
 
 ### Branch Promotion Policy
 
-Changes to `main` should be promoted through a pull request whose source branch
-is `dev`. No GitHub Actions workflow is used for this policy.
+All changes to `main` must be promoted through a pull request from the `dev`
+branch in this repository. Direct pushes, force pushes, branch deletion, and
+pull requests from other branches or forks are blocked.
 
-To enforce this policy, configure a GitHub ruleset or branch protection rule for `main` with these settings:
-
-- Require a pull request before merging.
-- Block force pushes and branch deletion.
-- Do not allow direct-push bypasses, or restrict bypass permission to designated repository administrators for emergencies.
-
-The repository rules prevent direct pushes. Reviewers must verify that the
-pull request source branch is `dev`.
+The `Enforce dev promotion` workflow validates the pull-request source. The
+`main` branch ruleset requires this check and requires a pull request before any
+update can be merged. Develop and validate changes on `dev`, then open a pull
+request from `dev` to `main`.
 
 ### Tests
 

@@ -1,0 +1,31 @@
+name: Enforce dev promotion
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  enforce-dev-source:
+    name: Require dev as source branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request source
+        shell: bash
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ "$SOURCE_REPOSITORY" != "$TARGET_REPOSITORY" || "$SOURCE_BRANCH" != "dev" ]]; then
+            echo "::error::Pull requests to main must originate from the dev branch in $TARGET_REPOSITORY."
+            exit 1
+          fi

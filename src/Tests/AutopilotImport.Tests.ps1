@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.3
+# Project-Version: 1.2.20261004.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5277,6 +5277,24 @@ Describe 'Project metadata entries' {
                 }
         )
         $legacyDisclaimerFiles | Should -BeNullOrEmpty
+    }
+
+    It 'requires pull requests to main to originate from dev' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $workflow = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                '.github\workflows\enforce-dev-promotion.yml') `
+            -Raw
+
+        $workflow | Should -Match '(?m)^\s+pull_request:\s*$'
+        $workflow | Should -Match '(?m)^\s+- main\s*$'
+        $workflow | Should -Match `
+            'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
+        $workflow | Should -Match `
+            'SOURCE_REPOSITORY: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \}\}'
+        $workflow | Should -Match '\$SOURCE_BRANCH" != "dev"'
+        $workflow | Should -Match `
+            '\$SOURCE_REPOSITORY" != "\$TARGET_REPOSITORY"'
     }
 }
 
