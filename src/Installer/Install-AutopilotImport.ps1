@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.5
+# Project-Version: 1.2.20261004.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -109,6 +109,11 @@ Signs out the cached Microsoft Graph account before Entra configuration and
 uses device-code authentication to select an account explicitly. The Azure
 PowerShell account is not changed.
 
+.PARAMETER SkipExistingDeploymentDetection
+Prevents delegation to Update-AutopilotImport.ps1 when the target Function App
+already exists. This internal switch is used by the updater to avoid recursive
+installer invocation.
+
 .PARAMETER SkipEntraAppConfiguration
 Skips app registration and API scope management.
 EntraClientId must be supplied when this switch is used.
@@ -215,6 +220,8 @@ param(
 
     [switch] $ForceGraphSignIn,
 
+    [switch] $SkipExistingDeploymentDetection,
+
     [switch] $SkipEntraAppConfiguration,
 
     [switch] $SkipGraphPermission,
@@ -270,6 +277,12 @@ $templatePath = if ($isRepositoryLayout) {
 }
 else {
     Join-Path $projectRoot 'infra\main.bicep'
+}
+$updaterPath = if ($isRepositoryLayout) {
+    Join-Path $projectRoot 'src\Installer\Update-AutopilotImport.ps1'
+}
+else {
+    Join-Path $projectRoot 'Update-AutopilotImport.ps1'
 }
 $grantScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityGraphPermission.ps1'
 $ensureEntraAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraApiApplication.ps1'
@@ -1329,15 +1342,131 @@ $ResourceGroupName = Read-DeploymentValue `
     -CurrentValue $ResourceGroupName `
     -Prompt 'Azure Resource Group' `
     -DefaultValue 'rg-autopilot-import'
-$Location = Read-DeploymentValue `
-    -CurrentValue $Location `
-    -Prompt 'Azure Region' `
-    -DefaultValue 'westeurope'
 
 $defaultFunctionName = "func-autopilot-$($TenantId.Replace('-', '').Substring(0, 8))"
 $FunctionAppName = Read-FunctionAppName `
     -CurrentValue $FunctionAppName `
     -DefaultValue $defaultFunctionName
+
+$contextMatches = $currentContext -and
+    $currentContext.Subscription.Id -eq $SubscriptionId -and
+    $currentContext.Tenant.Id -eq $TenantId
+if (-not $contextMatches) {
+    Connect-AzAccount `
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId | Out-Null
+}
+
+try {
+    Set-AzContext `
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId `
+        -WhatIf:$false | Out-Null
+    $subscription = Get-AzSubscription `
+        -SubscriptionId $SubscriptionId `
+        -TenantId $TenantId
+}
+catch {
+    Write-Host 'The stored Azure session is unavailable or expired. Sign in again.'
+    Connect-AzAccount `
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId | Out-Null
+    Set-AzContext `
+        -Tenant $TenantId `
+        -Subscription $SubscriptionId `
+        -WhatIf:$false | Out-Null
+    $subscription = Get-AzSubscription `
+        -SubscriptionId $SubscriptionId `
+        -TenantId $TenantId
+}
+
+$tenant = Get-AzTenant -TenantId $TenantId -ErrorAction Stop
+$subscriptionName = if (-not [string]::IsNullOrWhiteSpace(
+        [string] $subscription.Name)) {
+    ([string] $subscription.Name).Trim()
+}
+else {
+    $SubscriptionId
+}
+$tenantName = if (-not [string]::IsNullOrWhiteSpace(
+        [string] $tenant.Name)) {
+    ([string] $tenant.Name).Trim()
+}
+elseif (-not [string]::IsNullOrWhiteSpace(
+        [string] $tenant.DefaultDomain)) {
+    ([string] $tenant.DefaultDomain).Trim()
+}
+else {
+    $TenantId
+}
+
+$existingFunctionApp = Get-AzWebApp `
+    -ResourceGroupName $ResourceGroupName `
+    -Name $FunctionAppName `
+    -ErrorAction SilentlyContinue
+if ($null -ne $existingFunctionApp -and
+    -not $SkipExistingDeploymentDetection) {
+    if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
+        throw "Updater not found: $updaterPath"
+    }
+    if (-not $SkipEntraAppConfiguration -and
+        -not $InstallMissingModules -and
+        -not (Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication')) {
+        throw (
+            'Updating the existing deployment requires the PowerShell module ' +
+            "'Microsoft.Graph.Authentication'. Run " +
+            "'.\Install-AutopilotImport.ps1 -InstallMissingModules' to install " +
+            'missing prerequisites before the update starts.'
+        )
+    }
+
+    $documentsPath = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($documentsPath)) {
+        $documentsPath = $HOME
+    }
+    $updateClientToolsPath = if (-not [string]::IsNullOrWhiteSpace(
+            $ClientToolsPath)) {
+        $ClientToolsPath
+    }
+    else {
+        Join-Path $documentsPath 'AutopilotImport'
+    }
+    $updateParameters = @{
+        SubscriptionId            = $SubscriptionId
+        TenantId                  = $TenantId
+        ResourceGroupName         = $ResourceGroupName
+        FunctionAppName           = $FunctionAppName
+        ClientToolsPath           = $updateClientToolsPath
+        InstallMissingModules     = $InstallMissingModules
+        ForceGraphSignIn          = $ForceGraphSignIn
+        SkipEntraAppConfiguration = $SkipEntraAppConfiguration
+        SkipGraphPermission       = $SkipGraphPermission
+        SkipPublish               = $SkipPublish
+        SkipSmokeTest             = $SkipSmokeTest
+    }
+    if ($PSBoundParameters.ContainsKey('Confirm')) {
+        $updateParameters.Confirm = [bool] $PSBoundParameters['Confirm']
+    }
+
+    Write-Host (
+        "Existing Function App '$FunctionAppName' detected. " +
+        'Switching to update mode and preserving its application configuration.'
+    ) -ForegroundColor Cyan
+    if ($setupTranscriptActive) {
+        Stop-Transcript -WhatIf:$false | Out-Null
+        $setupTranscriptActive = $false
+    }
+    if ($WhatIfPreference) {
+        return & $updaterPath @updateParameters -WhatIf
+    }
+    return & $updaterPath @updateParameters
+}
+
+$Location = Read-DeploymentValue `
+    -CurrentValue $Location `
+    -Prompt 'Azure Region' `
+    -DefaultValue 'westeurope'
+
 $documentsPath = [Environment]::GetFolderPath('MyDocuments')
 if ([string]::IsNullOrWhiteSpace($documentsPath)) {
     $documentsPath = $HOME
@@ -1391,54 +1520,6 @@ if (-not $SkipPublish) {
     if (-not $npmCommand -and -not $builtWebFrontendAvailable) {
         throw 'Publishing requires Node.js and npm, or a deployment package containing a complete prebuilt WebFrontend\wwwroot bundle. Install Node.js 22 or download the release deployment package.'
     }
-}
-
-$contextMatches = $currentContext -and
-    $currentContext.Subscription.Id -eq $SubscriptionId -and
-    $currentContext.Tenant.Id -eq $TenantId
-if (-not $contextMatches) {
-    Connect-AzAccount -Tenant $TenantId -Subscription $SubscriptionId | Out-Null
-}
-
-try {
-    Set-AzContext `
-        -Tenant $TenantId `
-        -Subscription $SubscriptionId `
-        -WhatIf:$false | Out-Null
-    $subscription = Get-AzSubscription `
-        -SubscriptionId $SubscriptionId `
-        -TenantId $TenantId
-}
-catch {
-    Write-Host 'The stored Azure session is unavailable or expired. Sign in again.'
-    Connect-AzAccount -Tenant $TenantId -Subscription $SubscriptionId | Out-Null
-    Set-AzContext `
-        -Tenant $TenantId `
-        -Subscription $SubscriptionId `
-        -WhatIf:$false | Out-Null
-    $subscription = Get-AzSubscription `
-        -SubscriptionId $SubscriptionId `
-        -TenantId $TenantId
-}
-
-$tenant = Get-AzTenant -TenantId $TenantId -ErrorAction Stop
-$subscriptionName = if (-not [string]::IsNullOrWhiteSpace(
-        [string] $subscription.Name)) {
-    ([string] $subscription.Name).Trim()
-}
-else {
-    $SubscriptionId
-}
-$tenantName = if (-not [string]::IsNullOrWhiteSpace(
-        [string] $tenant.Name)) {
-    ([string] $tenant.Name).Trim()
-}
-elseif (-not [string]::IsNullOrWhiteSpace(
-        [string] $tenant.DefaultDomain)) {
-    ([string] $tenant.DefaultDomain).Trim()
-}
-else {
-    $TenantId
 }
 
 $administrativeUnitNames = @($tagAuthorizationPolicy | ForEach-Object {
@@ -1520,10 +1601,6 @@ $resourceGroup = Initialize-AzureResourceGroup `
     -Location $Location `
     -Tags $ResourceGroupTags
 
-$existingFunctionApp = Get-AzWebApp `
-    -ResourceGroupName $ResourceGroupName `
-    -Name $FunctionAppName `
-    -ErrorAction SilentlyContinue
 $existingFunctionAppHostNames = @(
     Get-WebAppHostName -WebApp $existingFunctionApp
 )

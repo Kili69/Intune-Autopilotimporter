@@ -631,6 +631,13 @@ prerequisites, run:
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
 ```
 
+After Subscription ID, Tenant ID, Resource Group, and Function App name are
+resolved, the installer checks whether that Function App already exists. When
+it does, the installer switches to update mode without requesting new
+application, Group Tag, manager, administrative-unit, extension-attribute, or
+region configuration. The update path reads those values from the deployed
+Function App and management API and preserves them.
+
 For a repeatable parameterized deployment, supply the deployment values
 directly:
 
@@ -1680,18 +1687,21 @@ application**, add this exact redirect URI:
 
 ```text
 https://autopilot.contoso.com/api/ui/index.html
+https://autopilot.contoso.com/api/ui/auth.html
 ```
 
 Redirect URIs are case-sensitive and must match the complete URL returned by
 `https://autopilot.contoso.com/api/ui/config`. Keep the existing
-`https://<function-app-name>.azurewebsites.net/api/ui/index.html` redirect URI
-until the company hostname has been tested and all bookmarks have been
-migrated. The API Application ID URI and audience, such as
+`index.html` and `auth.html` redirect URIs for the native
+`azurewebsites.net` hostname until the company hostname has been tested and all
+bookmarks have been migrated. The dedicated `auth.html` page allows MSAL to
+complete silent token acquisition without weakening the frame protection of
+the application UI. The API Application ID URI and audience, such as
 `api://<application-client-id>`, do not change.
 
 After the custom domain is assigned to the Function App, subsequent runs of
 `Update-AutopilotImport.ps1` discover it and ensure that its frontend redirect
-URI remains registered in the Entra SPA application.
+URIs remain registered in the Entra SPA application.
 
 ### 4. Validate the Company URL
 

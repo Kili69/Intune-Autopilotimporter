@@ -12,6 +12,7 @@ interface RuntimeConfig {
   authority: string;
   scope: string;
   redirectUri: string;
+  silentRedirectUri: string;
   importUrl: string;
   tagsUrl: string;
   importHistoryUrl: string;
@@ -43,7 +44,7 @@ type Language = 'de' | 'en';
 
 const translations = {
   de: {
-    homeLabel: 'Autopilot Import Startseite', logout: 'Abmelden', intro: 'Melden Sie sich mit Ihrem Unternehmenskonto an. Berechtigungen und Group Tags werden serverseitig geprüft.',
+    homeLabel: 'Autopilot Import Startseite', brandSubtitle: 'Device Hash Import', logout: 'Abmelden', intro: 'Melden Sie sich mit Ihrem Unternehmenskonto an. Berechtigungen und Group Tags werden serverseitig geprüft.',
     login: 'Mit Microsoft Entra ID anmelden', hashLabel: 'Device Hash erstellen', hashIntro: 'Auf dem Zielgerät während der Windows-Ersteinrichtung:',
     hashStep1: 'Mit Umschalt + F10 die Eingabeaufforderung öffnen', hashStep2: 'powershell.exe starten', hashStep3: 'Install-Script Get-WindowsAutopilotInfo -Force ausführen',
     hashStep4: 'Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv ausführen', hashNote: 'Den Laufwerksbuchstaben bei Bedarf an den USB-Stick anpassen.',
@@ -52,14 +53,14 @@ const translations = {
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Importstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', importId: 'Import-ID', status: 'Status', details: 'Details',
     historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
-    footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
+    footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', author: 'Autor: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
     processed: 'Alle Importvorgänge wurden verarbeitet.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
   },
   en: {
-    homeLabel: 'Autopilot Import home', logout: 'Sign out', intro: 'Sign in with your organizational account. Permissions and Group Tags are validated on the server.',
+    homeLabel: 'Autopilot Import home', brandSubtitle: 'Device Hash Import', logout: 'Sign out', intro: 'Sign in with your organizational account. Permissions and Group Tags are validated on the server.',
     login: 'Sign in with Microsoft Entra ID', hashLabel: 'Create a device hash', hashIntro: 'On the target device during Windows setup:',
     hashStep1: 'Press Shift + F10 to open Command Prompt', hashStep2: 'Start powershell.exe', hashStep3: 'Run Install-Script Get-WindowsAutopilotInfo -Force',
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
@@ -68,7 +69,7 @@ const translations = {
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
-    footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
+    footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
@@ -94,7 +95,7 @@ app.innerHTML = `
     <header class="topbar">
       <a class="brand" href="./index.html" aria-label="${t('homeLabel')}">
         <span class="brand-mark" aria-hidden="true">A</span>
-        <span><strong>Autopilot</strong><small>Secure Import</small></span>
+        <span><strong>Autopilot</strong><small>${t('brandSubtitle')}</small></span>
       </a>
       <div class="account-area">
         <div class="language-switch" aria-label="Language / Sprache">
@@ -201,7 +202,15 @@ app.innerHTML = `
       </section>
     </section>
 
-    <footer>${t('footer')} · v${__APP_VERSION__}</footer>
+    <footer>
+      <span>${t('footer')}</span>
+      <span aria-hidden="true">·</span>
+      <a href="mailto:andreas.lucas@outlook.com">${t('author')}</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/Kili69/Intune-Autopilotimporter/blob/dev/LICENSE" target="_blank" rel="noopener noreferrer">${t('license')}</a>
+      <span aria-hidden="true">·</span>
+      <span>v${__APP_VERSION__}</span>
+    </footer>
   </div>
 `;
 
@@ -341,7 +350,11 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!account) throw new Error(t('signInRequired'));
   let token;
   try {
-    token = await msal.acquireTokenSilent({ account, scopes: [config.scope] });
+    token = await msal.acquireTokenSilent({
+      account,
+      scopes: [config.scope],
+      redirectUri: config.silentRedirectUri,
+    });
   } catch (error) {
     if (!(error instanceof InteractionRequiredAuthError)) throw error;
     token = await msal.acquireTokenPopup({ account, scopes: [config.scope] });

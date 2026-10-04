@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.5
+# Project-Version: 1.2.20261004.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -23,6 +23,11 @@ $securityHeaders = @{
     'X-Content-Type-Options'  = 'nosniff'
     'X-Frame-Options'         = 'DENY'
     'Permissions-Policy'      = 'camera=(), microphone=(), geolocation=()'
+}
+if ($requestedPath -ieq 'auth.html') {
+    $securityHeaders['Content-Security-Policy'] = `
+        "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+    $securityHeaders.Remove('X-Frame-Options')
 }
 
 function Send-Response {
@@ -84,6 +89,7 @@ if ($requestedPath -ieq 'config') {
             authority        = "https://login.microsoftonline.com/$($env:TENANT_ID)"
             scope            = "$($env:API_AUDIENCE)/DeviceHash.Import"
             redirectUri      = "$origin/api/ui/index.html"
+            silentRedirectUri = "$origin/api/ui/auth.html"
             importUrl        = "$origin/api/devices/import"
             tagsUrl          = "$origin/api/devices/tags"
             importHistoryUrl = "$origin/api/management/imports"

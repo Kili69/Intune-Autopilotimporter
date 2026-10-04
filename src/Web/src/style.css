@@ -110,7 +110,12 @@ td { padding: 14px 12px; border-bottom: 1px solid #edf1f6; color: #43516b; max-w
 .status-pending { color: #805d0a; background: #fff5d8; }
 .status-complete { color: #0b704c; background: #e3f8ef; }
 .status-error { color: #9a2835; background: #fdebed; }
-footer { color: #8792a5; text-align: center; padding: 24px; font-size: 12px; }
+footer {
+  color: #8792a5; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px;
+  text-align: center; padding: 24px; font-size: 12px;
+}
+footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+footer a:hover { color: #0d5bd7; }
 .hidden { display: none !important; }
 
 @media (max-width: 820px) {
