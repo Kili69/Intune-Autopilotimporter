@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.4
+# Project-Version: 1.2.20261004.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2905,6 +2905,35 @@ Describe 'Installer Function App naming' {
         @{ Name = 'func autopilot' }
     ) {
         Test-FunctionAppName -Name $Name | Should -Be $false
+    }
+}
+
+Describe 'Installer Azure account display names' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot `
+            '..\Installer\Install-AutopilotImport.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+    }
+
+    It 'resolves subscription and tenant display names' {
+        $installer | Should -Match `
+            'Get-AzSubscription\s+`\s*\r?\n\s*-SubscriptionId \$SubscriptionId'
+        $installer | Should -Match `
+            'Get-AzTenant -TenantId \$TenantId -ErrorAction Stop'
+        $installer | Should -Match '\$tenant\.DefaultDomain'
+    }
+
+    It 'shows names together with their IDs in the confirmation' {
+        $installer | Should -Match `
+            'Subscription\s+:\s+\$subscriptionName \(\$SubscriptionId\)'
+        $installer | Should -Match `
+            'Tenant\s+:\s+\$tenantName \(\$TenantId\)'
+    }
+
+    It 'returns subscription and tenant names in the installer result' {
+        $installer | Should -Match `
+            'SubscriptionName\s+=\s+\$subscriptionName'
+        $installer | Should -Match 'TenantName\s+=\s+\$tenantName'
     }
 }
 

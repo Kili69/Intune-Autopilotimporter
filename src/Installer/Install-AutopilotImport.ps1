@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.4
+# Project-Version: 1.2.20261004.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -157,9 +157,10 @@ pwsh .\Install-AutopilotImport.ps1 `
 Displays the requested configuration without changing Azure or Entra.
 
 .OUTPUTS
-PSCustomObject containing the subscription, tenant, resource group, Function
-URL, API audience, managed identity object ID, authorization policy, and local
-and installed client settings paths and client tools directory.
+PSCustomObject containing the subscription and tenant IDs and display names,
+resource group, Function URL, API audience, managed identity object ID,
+authorization policy, and local and installed client settings paths and client
+tools directory.
 
 .NOTES
 The installing administrator requires Azure resource deployment permissions
@@ -1420,6 +1421,26 @@ catch {
         -TenantId $TenantId
 }
 
+$tenant = Get-AzTenant -TenantId $TenantId -ErrorAction Stop
+$subscriptionName = if (-not [string]::IsNullOrWhiteSpace(
+        [string] $subscription.Name)) {
+    ([string] $subscription.Name).Trim()
+}
+else {
+    $SubscriptionId
+}
+$tenantName = if (-not [string]::IsNullOrWhiteSpace(
+        [string] $tenant.Name)) {
+    ([string] $tenant.Name).Trim()
+}
+elseif (-not [string]::IsNullOrWhiteSpace(
+        [string] $tenant.DefaultDomain)) {
+    ([string] $tenant.DefaultDomain).Trim()
+}
+else {
+    $TenantId
+}
+
 $administrativeUnitNames = @($tagAuthorizationPolicy | ForEach-Object {
     if ($_.PSObject.Properties[
             'administrativeUnitName'] -and
@@ -1458,8 +1479,8 @@ Assert-AzureDeploymentPermissions `
     -ResourceGroupExists:($null -ne $existingResourceGroup)
 
 Write-Host "`nRequested installation" -ForegroundColor Cyan
-Write-Host "  Subscription : $($subscription.Name) ($SubscriptionId)"
-Write-Host "  Tenant       : $TenantId"
+Write-Host "  Subscription : $subscriptionName ($SubscriptionId)"
+Write-Host "  Tenant       : $tenantName ($TenantId)"
 Write-Host "  Resource group: $ResourceGroupName"
 if ($ResourceGroupTags -and $ResourceGroupTags.Count -gt 0) {
     Write-Host "  Resource group tags: $(
@@ -1816,7 +1837,9 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
 
 $result = [pscustomobject]@{
     SubscriptionId          = $SubscriptionId
+    SubscriptionName        = $subscriptionName
     TenantId                = $TenantId
+    TenantName              = $tenantName
     ResourceGroupName       = $ResourceGroupName
     FunctionAppName         = $FunctionAppName
     FunctionUrl             = $functionUrl

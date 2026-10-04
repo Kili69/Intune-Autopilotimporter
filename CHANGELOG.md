@@ -3,12 +3,13 @@
 All notable user-visible changes to Intune Autopilot Import are recorded here.
 The detailed development record is available in [History.md](./History.md).
 
-## `1.2.20261004.4` - 2026-10-04
+## `1.2.20261004.5` - 2026-10-04
 
 - Licensed the project under the Apache License 2.0.
 - Added public license metadata and included the license and changelog in deployment packages.
 - Moved the canonical repository to `Kili69` and updated the project author address.
 - Required all changes to `main` to arrive through a pull request from `dev`.
+- Added Azure Subscription and Entra Tenant names alongside their IDs in the installer.
 
 ## `1.2.20261003.1` - 2026-10-03
 

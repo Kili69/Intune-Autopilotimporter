@@ -2,13 +2,13 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.2.20261004.4` - 2026-10-04
+## `1.2.20261004.5` - 2026-10-04
 
-- Moved the canonical private repository from `anluca_microsoft` to `Kili69`, preserved all branches, tags, releases, and release assets, and updated embedded project metadata to the new repository URL.
 - Replaced the previous Microsoft author address with the author's personal Outlook address across project metadata, documentation, scripts, modules, Functions, installers, and tests.
 - Licensed the project under Apache 2.0, replaced Microsoft-specific sample disclaimers with project license notices, added public license metadata and a changelog, and included both files in deployment packages.
 - Enforced promotion to `main` through pull requests originating from the repository's `dev` branch, with direct and force pushes and branch deletion blocked by repository rules.
-- Advanced and synchronized the project version and regenerated versioned frontend and deployment artifacts after the repository, author-metadata, licensing, and branch-policy updates.
+- Added resolved Azure Subscription and Entra Tenant display names to the installation confirmation and structured installer result while retaining their IDs.
+- Advanced and synchronized the project version and regenerated versioned frontend and deployment artifacts after the repository, author-metadata, licensing, branch-policy, and installer-output updates.
 
 ## `1.2.20261003.1` - 2026-10-03
 
