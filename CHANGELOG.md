@@ -1,3 +1,5 @@
+<!-- markdownlint-configure-file { "MD024": { "siblings_only": true } } -->
+
 # Changelog
 
 All notable changes to this project are documented in this file.
@@ -6,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.2.20261004.7] - 2026-10-04
+## [1.2.20261004.9] - 2026-10-04
 
 ### Added
 
@@ -23,7 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Fixed MSAL silent token acquisition on custom domains without weakening the main UI's frame protection.
+- Reported a missing `Microsoft.Graph.Authentication` prerequisite before entering the nested update flow and retained explicit opt-in installation through `-InstallMissingModules`.
+- Fixed MSAL token acquisition on custom domains and InPrivate browser sessions by reusing the interactive login token and falling back from a timed-out hidden iframe to a top-level redirect without weakening the main UI's frame protection.
 
 ## [1.2.20261003.1] - 2026-10-03
 
@@ -85,7 +88,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added the initial secured Azure Function workflow for Windows Autopilot imports.
 
 [Unreleased]: https://github.com/Kili69/Intune-Autopilotimporter/compare/dev...HEAD
-[1.2.20261004.7]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.2.20261003.1...dev
+[1.2.20261004.9]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.2.20261003.1...dev
 [1.2.20261003.1]: https://github.com/Kili69/Intune-Autopilotimporter/releases/tag/v1.2.20261003.1
 [1.2.20260929.4]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-09-29&until=2026-09-30
 [1.1.20260918.4]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-09-18&until=2026-09-19

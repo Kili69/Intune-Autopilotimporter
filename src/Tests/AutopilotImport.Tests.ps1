@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.7
+# Project-Version: 1.2.20261004.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5013,6 +5013,12 @@ Describe 'Web frontend response types' {
             Should -BeTrue
         $frontendSource | Should -Match `
             'redirectUri:\s*config\.silentRedirectUri'
+        $frontendSource | Should -Match `
+            'if \(redirectResult\?\.accessToken\) accessTokenResult = redirectResult'
+        $frontendSource | Should -Match `
+            "error\.errorCode === 'monitor_window_timeout'"
+        $frontendSource | Should -Match `
+            'msal\.acquireTokenRedirect\(\{'
         $frontendFunction | Should -Match `
             "\`$requestedPath -ieq 'auth\.html'"
         $frontendFunction | Should -Match `

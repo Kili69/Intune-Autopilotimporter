@@ -1,5 +1,7 @@
 import {
   AccountInfo,
+  AuthenticationResult,
+  BrowserAuthError,
   InteractionRequiredAuthError,
   PublicClientApplication,
 } from '@azure/msal-browser';
@@ -244,6 +246,8 @@ const historyScope = element<HTMLElement>('history-scope');
 let config: RuntimeConfig;
 let msal: PublicClientApplication;
 let account: AccountInfo | null = null;
+let accessTokenResult: AuthenticationResult | null = null;
+let tokenAcquisition: Promise<AuthenticationResult> | null = null;
 let devices: AutopilotDevice[] = [];
 let results: ImportResult[] = [];
 let pollTimer: number | undefined;
@@ -346,20 +350,50 @@ function renderHistory(records: ImportHistoryRecord[]): void {
   }));
 }
 
-async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  if (!account) throw new Error(t('signInRequired'));
-  let token;
-  try {
-    token = await msal.acquireTokenSilent({
-      account,
-      scopes: [config.scope],
-      redirectUri: config.silentRedirectUri,
-    });
-  } catch (error) {
-    if (!(error instanceof InteractionRequiredAuthError)) throw error;
-    token = await msal.acquireTokenPopup({ account, scopes: [config.scope] });
+async function acquireApiToken(): Promise<AuthenticationResult> {
+  const selectedAccount = account;
+  if (!selectedAccount) throw new Error(t('signInRequired'));
+  if (accessTokenResult?.accessToken &&
+      (!accessTokenResult.expiresOn ||
+       accessTokenResult.expiresOn.getTime() > Date.now() + 60_000)) {
+    return accessTokenResult;
   }
+  if (!tokenAcquisition) {
+    tokenAcquisition = (async () => {
+      try {
+        return await msal.acquireTokenSilent({
+          account: selectedAccount,
+          scopes: [config.scope],
+          redirectUri: config.silentRedirectUri,
+        });
+      } catch (error) {
+        if (error instanceof BrowserAuthError &&
+            error.errorCode === 'monitor_window_timeout') {
+          await msal.acquireTokenRedirect({
+            account: selectedAccount,
+            scopes: [config.scope],
+            redirectUri: config.redirectUri,
+          });
+          return await new Promise<AuthenticationResult>(() => {});
+        }
+        if (!(error instanceof InteractionRequiredAuthError)) throw error;
+        return await msal.acquireTokenPopup({
+          account: selectedAccount,
+          scopes: [config.scope],
+        });
+      }
+    })();
+  }
+  try {
+    accessTokenResult = await tokenAcquisition;
+    return accessTokenResult;
+  } finally {
+    tokenAcquisition = null;
+  }
+}
 
+async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const token = await acquireApiToken();
   const response = await fetch(url, {
     ...init,
     headers: {
@@ -574,6 +608,7 @@ async function initialize(): Promise<void> {
     });
     await msal.initialize();
     const redirectResult = await msal.handleRedirectPromise();
+    if (redirectResult?.accessToken) accessTokenResult = redirectResult;
     const selectedAccount = redirectResult?.account ?? msal.getAllAccounts()[0];
     if (selectedAccount) await setAuthenticatedView(selectedAccount);
   } catch (error) {
