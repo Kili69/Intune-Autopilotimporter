@@ -2,6 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.2.20261004.1` - 2026-10-04
+
+- Moved the canonical private repository from `anluca_microsoft` to `Kili69`, preserved all branches, tags, releases, and release assets, and updated embedded project metadata to the new repository URL.
+- Advanced and synchronized the project version and regenerated versioned frontend and deployment artifacts for the new repository location.
+
 ## `1.2.20261003.1` - 2026-10-03
 
 - Documented the Group Tag policy management Function end to end, including its authentication and authorization flow, policy normalization, administrative-unit validation, configuration fallback, output bindings, helper functions, and safe persistence behavior.

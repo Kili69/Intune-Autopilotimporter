@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.2.20261003.1
+.VERSION 1.2.20261004.1
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
@@ -14,7 +14,7 @@
 
 .LICENSEURI
 
-.PROJECTURI https://github.com/anluca_microsoft/Intune-Autopilotimporter
+.PROJECTURI https://github.com/Kili69/Intune-Autopilotimporter
 
 .ICONURI
 
@@ -33,7 +33,7 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.2.20261003.1
+# Project-Version: 1.2.20261004.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#

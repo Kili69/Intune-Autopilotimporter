@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261003.1
+# Project-Version: 1.2.20261004.1
 # Author: andreas.lucas@microsoft.com (aka Kili)
 
 <#
@@ -5079,7 +5079,7 @@ Describe 'OOBE web importer helper script' {
         $scriptInfo.Name | Should -Be 'Start-IntuneAutopilotImporter'
         [string] $scriptInfo.Version | Should -Be $projectVersion
         $scriptInfo.ProjectUri | Should -Be `
-            'https://github.com/anluca_microsoft/Intune-Autopilotimporter'
+            'https://github.com/Kili69/Intune-Autopilotimporter'
     }
 
     It 'normalizes a Function App root URL to the frontend page' {
