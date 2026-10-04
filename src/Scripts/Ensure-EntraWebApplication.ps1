@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.2.20261004.4
+# Project-Version: 1.2.20261004.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -94,7 +94,7 @@ function Merge-WebRedirectUri {
         [object[]] $AdditionalRedirectUri
     )
 
-    return @(
+    $redirectUris = @(
         foreach ($uri in @(
             @($ExistingRedirectUri)
             @($PrimaryRedirectUri)
@@ -106,6 +106,22 @@ function Merge-WebRedirectUri {
             }
         }
     ) | Select-Object -Unique
+
+    $silentRedirectUris = @(
+        foreach ($uri in $redirectUris) {
+            $parsedUri = $null
+            if ([uri]::TryCreate(
+                    $uri,
+                    [UriKind]::Absolute,
+                    [ref] $parsedUri) -and
+                $parsedUri.Scheme -eq 'https' -and
+                $parsedUri.AbsolutePath -ieq '/api/ui/index.html') {
+                "$($parsedUri.GetLeftPart([UriPartial]::Authority))/api/ui/auth.html"
+            }
+        }
+    )
+
+    return @($redirectUris + $silentRedirectUris) | Select-Object -Unique
 }
 
 function ConvertTo-ValidPermissionIds {

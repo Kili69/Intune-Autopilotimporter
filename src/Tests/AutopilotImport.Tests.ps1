@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.4
+# Project-Version: 1.2.20261004.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2908,6 +2908,110 @@ Describe 'Installer Function App naming' {
     }
 }
 
+Describe 'Installer Azure account display names' {
+    BeforeAll {
+        $installerPath = Join-Path $PSScriptRoot `
+            '..\Installer\Install-AutopilotImport.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+    }
+
+    It 'resolves subscription and tenant display names' {
+        $installer | Should -Match `
+            'Get-AzSubscription\s+`\s*\r?\n\s*-SubscriptionId \$SubscriptionId'
+        $installer | Should -Match `
+            'Get-AzTenant -TenantId \$TenantId -ErrorAction Stop'
+        $installer | Should -Match '\$tenant\.DefaultDomain'
+    }
+
+    It 'shows names together with their IDs in the confirmation' {
+        $installer | Should -Match `
+            'Subscription\s+:\s+\$subscriptionName \(\$SubscriptionId\)'
+        $installer | Should -Match `
+            'Tenant\s+:\s+\$tenantName \(\$TenantId\)'
+    }
+
+    It 'returns subscription and tenant names in the installer result' {
+        $installer | Should -Match `
+            'SubscriptionName\s+=\s+\$subscriptionName'
+        $installer | Should -Match 'TenantName\s+=\s+\$tenantName'
+    }
+}
+
+Describe 'Installer existing deployment detection' {
+    BeforeAll {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $installer = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\Installer\Install-AutopilotImport.ps1') `
+            -Raw
+        $updater = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\Installer\Update-AutopilotImport.ps1') `
+            -Raw
+    }
+
+    It 'checks for an existing Function before requesting new configuration' {
+        $functionPromptIndex = $installer.IndexOf(
+            "-DefaultValue `$defaultFunctionName")
+        $existingFunctionIndex = $installer.IndexOf(
+            '$existingFunctionApp = Get-AzWebApp')
+        $locationPromptIndex = $installer.IndexOf(
+            "-Prompt 'Azure Region'")
+        $clientToolsPromptIndex = $installer.IndexOf(
+            "-Prompt 'Operational PowerShell scripts directory'")
+
+        $functionPromptIndex | Should -BeGreaterThan -1
+        $existingFunctionIndex | Should -BeGreaterThan $functionPromptIndex
+        $locationPromptIndex | Should -BeGreaterThan $existingFunctionIndex
+        $clientToolsPromptIndex | Should -BeGreaterThan $existingFunctionIndex
+    }
+
+    It 'delegates existing deployments to the updater with identity values' {
+        foreach ($parameterName in @(
+                'SubscriptionId'
+                'TenantId'
+                'ResourceGroupName'
+                'FunctionAppName'
+            )) {
+            $installer | Should -Match `
+                "$parameterName\s+=\s+\`$$parameterName"
+        }
+        $installer | Should -Match `
+            'Switching to update mode and preserving its application configuration'
+        $installer | Should -Match `
+            'return & \$updaterPath @updateParameters'
+    }
+
+    It 'prevents recursive detection when the updater invokes the installer' {
+        $installer | Should -Match `
+            '-not \$SkipExistingDeploymentDetection'
+        $updater | Should -Match `
+            'SkipExistingDeploymentDetection\s+=\s+\$true'
+    }
+
+    It 'fails before delegation when the required Graph module is missing' {
+        $installer | Should -Match (
+            "-not \`$SkipEntraAppConfiguration\s+-and\s+" +
+            "-not \`$InstallMissingModules\s+-and\s+" +
+            "-not \(Get-Module -ListAvailable -Name " +
+            "'Microsoft\.Graph\.Authentication'\)"
+        )
+        $installer | Should -Match (
+            "Install-AutopilotImport\.ps1 -InstallMissingModules"
+        )
+        $updater | Should -Match (
+            "Update-AutopilotImport\.ps1 -InstallMissingModules"
+        )
+    }
+
+    It 'forwards prerequisite installation through both update invocations' {
+        $installer | Should -Match `
+            'InstallMissingModules\s+=\s+\$InstallMissingModules'
+        $updater | Should -Match `
+            'InstallMissingModules\s+=\s+\$InstallMissingModules'
+    }
+}
+
 Describe 'Installer additional manager principal IDs' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
@@ -3784,6 +3888,8 @@ Describe 'Entra web application Graph responses' {
         $redirectUris | Should -Be @(
             'https://func-example.azurewebsites.net/api/ui/index.html'
             'https://autopilot.example.com/api/ui/index.html'
+            'https://func-example.azurewebsites.net/api/ui/auth.html'
+            'https://autopilot.example.com/api/ui/auth.html'
         )
     }
 
@@ -4887,7 +4993,56 @@ Describe 'Web frontend response types' {
         $frontendFunction | Should -Match `
             'redirectUri\s*=\s*"\$origin/api/ui/index\.html"'
         $frontendFunction | Should -Match `
+            'silentRedirectUri\s*=\s*"\$origin/api/ui/auth\.html"'
+        $frontendFunction | Should -Match `
             'importUrl\s*=\s*"\$origin/api/devices/import"'
+    }
+
+    It 'uses a frame-compatible dedicated MSAL silent redirect page' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\FunctionApp\WebFrontend\run.ps1') `
+            -Raw
+        $frontendSource = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\main.ts') `
+            -Raw
+        $silentRedirectPage = Join-Path $projectRoot `
+            'src\Web\public\auth.html'
+
+        Test-Path -LiteralPath $silentRedirectPage -PathType Leaf |
+            Should -BeTrue
+        $frontendSource | Should -Match `
+            'redirectUri:\s*config\.silentRedirectUri'
+        $frontendSource | Should -Match `
+            'if \(redirectResult\?\.accessToken\) accessTokenResult = redirectResult'
+        $frontendSource | Should -Match `
+            "error\.errorCode === 'monitor_window_timeout'"
+        $frontendSource | Should -Match `
+            'msal\.acquireTokenRedirect\(\{'
+        $frontendFunction | Should -Match `
+            "\`$requestedPath -ieq 'auth\.html'"
+        $frontendFunction | Should -Match `
+            "\`$securityHeaders\.Remove\('X-Frame-Options'\)"
+        $frontendFunction | Should -Match `
+            "frame-ancestors 'self'"
+    }
+
+    It 'shows the device hash brand, author, and Apache license' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $frontendSource = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\main.ts') `
+            -Raw
+
+        $frontendSource | Should -Match `
+            "brandSubtitle:\s*'Device Hash Import'"
+        $frontendSource | Should -Match `
+            "Andreas Lucas \(Kili\)"
+        $frontendSource | Should -Match `
+            "mailto:andreas\.lucas@outlook\.com"
+        $frontendSource | Should -Match `
+            "Kili69/Intune-Autopilotimporter/blob/dev/LICENSE"
+        $frontendSource | Should -Match `
+            "license:\s*'Apache License 2\.0'"
     }
 
     It 'redirects the Function hostname root while preserving existing API URLs' {

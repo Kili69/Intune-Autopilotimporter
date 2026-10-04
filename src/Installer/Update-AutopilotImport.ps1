@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.4
+# Project-Version: 1.2.20261004.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -1005,6 +1005,16 @@ if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
         -Force `
         -AllowClobber
 }
+if (-not $SkipEntraAppConfiguration -and
+    -not $InstallMissingModules -and
+    -not (Get-Module -ListAvailable -Name 'Microsoft.Graph.Authentication')) {
+    throw (
+        'Updating the deployment requires the PowerShell module ' +
+        "'Microsoft.Graph.Authentication'. Run " +
+        "'.\Update-AutopilotImport.ps1 -InstallMissingModules' to install " +
+        'missing prerequisites before the update starts.'
+    )
+}
 Import-Module 'Az.Accounts' -ErrorAction Stop
 
 if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
@@ -1300,6 +1310,7 @@ $installerParameters = @{
     ClientToolsPath             = $resolvedClientToolsPath
     InstallMissingModules       = $InstallMissingModules
     ForceGraphSignIn            = $ForceGraphSignIn
+    SkipExistingDeploymentDetection = $true
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission
     SkipPublish                 = $SkipPublish
