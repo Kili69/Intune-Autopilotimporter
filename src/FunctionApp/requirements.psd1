@@ -1,5 +1,5 @@
-# Project-Version: 1.2.20261004.1
-# Author: andreas.lucas@microsoft.com (aka Kili)
+# Project-Version: 1.2.20261004.2
+# Author: andreas.lucas@outlook.com (aka Kili)
 # Azure Functions PowerShell managed dependencies.
 #
 # Az.Accounts provides managed-identity authentication in profile.ps1 and

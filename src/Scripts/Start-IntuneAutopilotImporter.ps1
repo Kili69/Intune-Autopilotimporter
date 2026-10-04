@@ -1,10 +1,10 @@
 <#PSScriptInfo
 
-.VERSION 1.2.20261004.1
+.VERSION 1.2.20261004.2
 .GUID 8f3a78b6-8c87-4a89-b8cf-fb20f90ef96d
-.AUTHOR andreas.lucas@microsoft.com (aka Kili)
+.AUTHOR andreas.lucas@outlook.com (aka Kili)
 .COMPANYNAME Community
-.COPYRIGHT (c) 2026 andreas.lucas@microsoft.com. All rights reserved.
+.COPYRIGHT (c) 2026 andreas.lucas@outlook.com. All rights reserved.
 .TAGS Windows Autopilot Intune OOBE DeviceHash MicrosoftEdge
 .PROJECTURI https://github.com/Kili69/Intune-Autopilotimporter
 .RELEASENOTES
@@ -13,8 +13,8 @@ Creates an Autopilot hardware hash CSV and opens the secured web importer.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.2.20261004.1
-# Author: andreas.lucas@microsoft.com (aka Kili)
+# Project-Version: 1.2.20261004.2
+# Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
 .SYNOPSIS

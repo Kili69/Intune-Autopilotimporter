@@ -1,10 +1,10 @@
 <#PSScriptInfo
 
-.VERSION 1.2.20261004.1
+.VERSION 1.2.20261004.2
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
-.AUTHOR andreas.lucas@microsoft.com
+.AUTHOR andreas.lucas@outlook.com
 
 .COMPANYNAME
 
@@ -33,8 +33,8 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.2.20261004.1
-# Author: andreas.lucas@microsoft.com (aka Kili)
+# Project-Version: 1.2.20261004.2
+# Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
 .SYNOPSIS

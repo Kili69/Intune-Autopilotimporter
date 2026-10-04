@@ -1793,7 +1793,7 @@ The tests cover Group Tag authorization, manager users and groups, the strict Ow
 ### Versioning
 
 The project version is stored in `VERSION` and follows `1.2.<yyyyMMdd>.<counter>`, for example `1.2.20260922.1`. Every PowerShell script, module, and data file contains the same `# Project-Version:` marker.
-The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@microsoft.com (aka Kili)` marker.
+The canonical author is stored in `AUTHOR`, and the same files contain the matching `# Author: andreas.lucas@outlook.com (aka Kili)` marker.
 
 Every commit must include an updated `History.md` and a new project version.
 Azure Pipelines rejects source commits that omit either change. Before creating

@@ -2,10 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.2.20261004.1` - 2026-10-04
+## `1.2.20261004.2` - 2026-10-04
 
 - Moved the canonical private repository from `anluca_microsoft` to `Kili69`, preserved all branches, tags, releases, and release assets, and updated embedded project metadata to the new repository URL.
-- Advanced and synchronized the project version and regenerated versioned frontend and deployment artifacts for the new repository location.
+- Replaced the previous Microsoft author address with the author's personal Outlook address across project metadata, documentation, scripts, modules, Functions, installers, and tests.
+- Advanced and synchronized the project version and regenerated versioned frontend and deployment artifacts after the repository and author-metadata updates.
 
 ## `1.2.20261003.1` - 2026-10-03
 
