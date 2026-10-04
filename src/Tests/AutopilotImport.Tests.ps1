@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.2
+# Project-Version: 1.2.20261004.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5080,6 +5080,8 @@ Describe 'OOBE web importer helper script' {
         [string] $scriptInfo.Version | Should -Be $projectVersion
         $scriptInfo.ProjectUri | Should -Be `
             'https://github.com/Kili69/Intune-Autopilotimporter'
+        $scriptInfo.LicenseUri | Should -Be `
+            'https://github.com/Kili69/Intune-Autopilotimporter/blob/main/LICENSE'
     }
 
     It 'normalizes a Function App root URL to the frontend page' {
@@ -5248,6 +5250,34 @@ Describe 'Project metadata entries' {
             $markers[0].Groups['author'].Value | Should -Be $projectAuthor
         }
     }
+
+    It 'publishes Apache 2.0 licensing metadata without legacy disclaimers' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $license = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'LICENSE') `
+            -Raw
+        $manifest = Import-PowerShellDataFile `
+            (Join-Path $projectRoot `
+                'src\AutopilotImport.Client\AutopilotImport.Client.psd1')
+
+        $license | Should -Match 'Apache License\s+Version 2\.0'
+        Test-Path -LiteralPath (Join-Path $projectRoot 'CHANGELOG.md') |
+            Should -BeTrue
+        $manifest.PrivateData.PSData.LicenseUri | Should -Be `
+            'https://github.com/Kili69/Intune-Autopilotimporter/blob/main/LICENSE'
+
+        $legacyDisclaimerPattern = 'not supported under any ' +
+            'Microsoft standard support'
+        $legacyDisclaimerFiles = @(
+            Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
+                Where-Object {
+                    $_.Extension -in '.ps1', '.psm1', '.psd1' -and
+                    (Get-Content -LiteralPath $_.FullName -Raw) -match
+                    $legacyDisclaimerPattern
+                }
+        )
+        $legacyDisclaimerFiles | Should -BeNullOrEmpty
+    }
 }
 
 Describe 'Deployment package' {
@@ -5338,8 +5368,10 @@ Describe 'Deployment package' {
         try {
             $entries = @($archive.Entries.FullName)
             foreach ($requiredEntry in @(
-                    'History.md'
-                    'README.md'
+                'CHANGELOG.md'
+                'History.md'
+                'LICENSE'
+                'README.md'
                     'Install-AutopilotImport.ps1'
                     'Update-AutopilotImport.ps1'
                     'infra/main.bicep'

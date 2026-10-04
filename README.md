@@ -1018,7 +1018,14 @@ changed. Other changes reuse the committed frontend bundle. The GitHub workflow
 requires a runner registered with the standard `self-hosted`, `Linux`, and
 `X64` labels; it does not request a GitHub-hosted runner.
 
-The package contains `README.md`, the installer and updater, Function runtime files, Bicep infrastructure, operational scripts, source modules, configuration examples, and project version information. Local or generated configuration such as `client.settings.json` and `local.settings.json`, tests, logs, repository metadata, and development helpers such as `New-DeploymentPackage.ps1`, `New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are excluded.
+The package contains `README.md`, `CHANGELOG.md`, `History.md`, `LICENSE`, the
+installer and updater, Function runtime files, Bicep infrastructure,
+operational scripts, source modules, configuration examples, and project
+version information. Local or generated configuration such as
+`client.settings.json` and `local.settings.json`, tests, logs, repository
+metadata, and development helpers such as `New-DeploymentPackage.ps1`,
+`New-SyntheticAutopilotTestCsv.ps1`, and `Update-ProjectVersion.ps1` are
+excluded.
 
 The installer and updater publish the complete prebuilt web frontend included
 in a deployment package without running `npm ci`. Node.js and npm are required
@@ -1815,6 +1822,15 @@ are excluded from this rule.
 - Allowed tags are stored in a private Storage blob and changed through the protected management endpoint. Shared-key access is not required; the installer and Function use their Entra identities.
 - The explicit manager list remains in `MANAGER_AUTHORIZATION_POLICY` and can be changed only through Azure by an effective Owner or Contributor.
 - Tag authorization is denied when the Entra group claim is missing. This also applies to group overage for users with a very large number of group memberships.
+
+## License
+
+Copyright 2026 Andreas Lucas.
+
+Licensed under the [Apache License, Version 2.0](./LICENSE). The software is
+provided on an "AS IS" basis, without warranties or conditions of any kind.
+Microsoft product names are used only to identify the services with which this
+project interoperates; this project is not an official Microsoft product.
 
 ## Appendix: Bicep CLI in Restricted Environments
 

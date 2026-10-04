@@ -191,6 +191,7 @@ most important mappings are:
 
 | Repository source | Installation package destination |
 | --- | --- |
+| `LICENSE`, `CHANGELOG.md`, `History.md`, and `README.md` | Package root |
 | `src/FunctionApp/host.json` and Function configuration | Package root |
 | `src/FunctionApp/GetAuthorizedTags/` | `GetAuthorizedTags/` |
 | `src/FunctionApp/ImportDevice/` | `ImportDevice/` |

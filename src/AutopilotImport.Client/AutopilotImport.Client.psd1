@@ -1,9 +1,9 @@
-# Project-Version: 1.2.20261004.2
+# Project-Version: 1.2.20261004.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.2.20261004.2'
+    ModuleVersion     = '1.2.20261004.3'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@outlook.com (aka Kili)'
     Description       = 'Client commands for the secured Windows Autopilot import Function.'
@@ -28,7 +28,9 @@
     AliasesToExport   = @()
     PrivateData       = @{
         PSData = @{
-            Tags = @('Autopilot', 'Intune', 'AzureFunctions')
+            Tags       = @('Autopilot', 'Intune', 'AzureFunctions')
+            LicenseUri = 'https://github.com/Kili69/Intune-Autopilotimporter/blob/main/LICENSE'
+            ProjectUri = 'https://github.com/Kili69/Intune-Autopilotimporter'
         }
     }
 }
