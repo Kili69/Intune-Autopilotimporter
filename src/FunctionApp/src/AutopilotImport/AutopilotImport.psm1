@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.2.20261006.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas

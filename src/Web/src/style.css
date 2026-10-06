@@ -32,6 +32,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 .account-name, .account-upn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-name { color: #56647d; font-size: 14px; font-weight: 700; }
 .account-upn { color: #8792a5; font-size: 11px; margin-top: 3px; }
+.header-logo { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; }
 .language-switch { display: flex; padding: 3px; gap: 2px; background: #eef4fb; border-radius: 9px; }
 .language-switch button {
   border: 0; border-radius: 6px; padding: 6px 8px; color: #607089; background: transparent;
@@ -65,8 +66,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, .drop-zone:focu
 .security-card li { padding: 11px 0 11px 28px; border-top: 1px solid rgba(255,255,255,.1); position: relative; }
 .security-card li::before { content: "•"; position: absolute; left: 8px; color: #65dcae; }
 
-.workspace { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 64px 0 48px; flex: 1; }
-.intro h1 { font-size: clamp(34px, 4vw, 50px); }
+.workspace { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 40px 0 48px; flex: 1; }
+.intro h1 { margin-top: 0; font-size: clamp(34px, 4vw, 50px); }
 .intro p { color: #657188; margin: 0 0 36px; }
 .step-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 24px; }
 .panel { position: relative; background: white; border: 1px solid #e1e8f1; border-radius: 20px; padding: 30px; box-shadow: 0 12px 35px rgba(22, 45, 85, .06); }
@@ -126,6 +127,7 @@ footer a:hover { color: #0d5bd7; }
   .account-identity { max-width: 160px; }
   .account-name { font-size: 12px; }
   .account-upn { font-size: 10px; }
+  .header-logo { width: 42px; height: 42px; border-radius: 10px; }
 }
 
 @media (max-width: 520px) {

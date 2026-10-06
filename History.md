@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.2.20261006.1` - 2026-10-06
+
+- Simplified the import workspace header by removing the redundant new-import label, renaming the registration heading to explicitly reference Microsoft Intune in both supported languages, and moving the workspace content closer to the top of the page.
+- Added the Yeti logo to the right side of the application header with responsive desktop and mobile sizing.
+- Rebuilt the generated web frontend and synchronized the project version for publication from `dev`.
+
 ## `1.2.20261004.9` - 2026-10-04
 
 - Replaced the previous Microsoft author address with the author's personal Outlook address across project metadata, documentation, scripts, modules, Functions, installers, and tests.

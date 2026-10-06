@@ -50,7 +50,7 @@ const translations = {
     login: 'Mit Microsoft Entra ID anmelden', hashLabel: 'Device Hash erstellen', hashIntro: 'Auf dem Zielgerät während der Windows-Ersteinrichtung:',
     hashStep1: 'Mit Umschalt + F10 die Eingabeaufforderung öffnen', hashStep2: 'powershell.exe starten', hashStep3: 'Install-Script Get-WindowsAutopilotInfo -Force ausführen',
     hashStep4: 'Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv ausführen', hashNote: 'Den Laufwerksbuchstaben bei Bedarf an den USB-Stick anpassen.',
-    newImport: 'Neuer Import', register: 'Geräte registrieren', registerIntro: 'CSV prüfen, autorisierten Tag auswählen und Import starten.',
+    register: 'Geräte in Microsoft Intune registrieren', registerIntro: 'CSV prüfen, autorisierten Tag auswählen und Import starten.',
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Importstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', importId: 'Import-ID', status: 'Status', details: 'Details',
@@ -66,7 +66,7 @@ const translations = {
     login: 'Sign in with Microsoft Entra ID', hashLabel: 'Create a device hash', hashIntro: 'On the target device during Windows setup:',
     hashStep1: 'Press Shift + F10 to open Command Prompt', hashStep2: 'Start powershell.exe', hashStep3: 'Run Install-Script Get-WindowsAutopilotInfo -Force',
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
-    newImport: 'New import', register: 'Register devices', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
+    register: 'Register devices in Microsoft Intune', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
@@ -109,6 +109,7 @@ app.innerHTML = `
           <span id="account-upn" class="account-upn"></span>
         </span>
         <button id="logout" class="button button-quiet hidden" type="button">${t('logout')}</button>
+        <img class="header-logo" src="/api/ui/yeti-logo.png" alt="Yeti Logo">
       </div>
     </header>
 
@@ -134,7 +135,6 @@ app.innerHTML = `
 
     <section id="workspace" class="workspace hidden">
       <div class="intro">
-        <span class="eyebrow">${t('newImport')}</span>
         <h1>${t('register')}</h1>
         <p>${t('registerIntro')}</p>
       </div>
