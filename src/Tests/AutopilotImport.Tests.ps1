@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.5
+# Project-Version: 1.3.20261006.6
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5044,11 +5044,15 @@ Describe 'Web frontend response types' {
         $frontendFunction | Should -Match `
             "\$textExtensions = @\('\.html', '\.js', '\.css', '\.svg', '\.json'\)"
         $frontendFunction | Should -Match `
-            '\[IO\.File\]::ReadAllText\(\$resolvedPath, \[Text\.Encoding\]::UTF8\)'
+            '(?s)\[IO\.File\]::ReadAllText\(\s*\$resolvedPath,\s*\[Text\.Encoding\]::UTF8\s*\)'
         $frontendFunction | Should -Match `
             "'\.html' = 'text/html; charset=utf-8'"
         $frontendFunction | Should -Match `
             "'\.js'\s+= 'text/javascript; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            "'\.png'\s+= 'image/png'"
+        $frontendFunction | Should -Match `
+            '\[byte\[\]\]\s+\$body\s*=\s*\[IO\.File\]::ReadAllBytes'
         $frontendFunction | Should -Match `
             'ContentType\s*=\s*\$ContentType'
         $frontendFunction | Should -Not -Match `
