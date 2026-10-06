@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261006.1
+# Project-Version: 1.3.20261006.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -12,7 +12,7 @@ Increments and synchronizes the project version.
 
 .DESCRIPTION
 Reads the current version from VERSION, creates a version in the format
-1.2.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
+1.3.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
 script, module, and data file in the repository.
 
 The counter increases by IncrementBy when the existing version date matches
@@ -53,6 +53,8 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $versionPath = Join-Path $projectRoot 'VERSION'
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
+$targetMajor = 1
+$targetMinor = 3
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
 $moduleVersionPattern = "(?m)^(\s*ModuleVersion\s*=\s*)'\d+\.\d+\.\d{8}\.\d+'"
 $scriptInfoVersionPattern = `
@@ -60,20 +62,19 @@ $scriptInfoVersionPattern = `
 
 $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($currentVersion -notmatch $versionPattern) {
-    throw "VERSION contains '$currentVersion', which does not match 1.2.yyyyMMdd.counter."
-}
-if ($Matches.major -ne '1' -or $Matches.minor -ne '2') {
-    throw "VERSION must use the 1.2 major and minor version prefix."
+    throw "VERSION contains '$currentVersion', which does not match major.minor.yyyyMMdd.counter."
 }
 
 $versionDate = $Date.ToUniversalTime().ToString('yyyyMMdd')
-$counter = if ($Matches.date -eq $versionDate) {
+$counter = if ([int] $Matches.major -eq $targetMajor -and
+    [int] $Matches.minor -eq $targetMinor -and
+    $Matches.date -eq $versionDate) {
     [int] $Matches.counter + $IncrementBy
 }
 else {
     $IncrementBy
 }
-$newVersion = "1.2.$versionDate.$counter"
+$newVersion = "$targetMajor.$targetMinor.$versionDate.$counter"
 
 $powerShellFiles = @(
     Get-ChildItem -LiteralPath $projectRoot -Recurse -File |

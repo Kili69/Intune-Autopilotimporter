@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261006.1
+# Project-Version: 1.3.20261006.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -92,6 +92,7 @@ if ($requestedPath -ieq 'config') {
             silentRedirectUri = "$origin/api/ui/auth.html"
             importUrl        = "$origin/api/devices/import"
             tagsUrl          = "$origin/api/devices/tags"
+            deviceTagAssignmentsUrl = "$origin/api/devices/tags/assignments"
             importHistoryUrl = "$origin/api/management/imports"
             functionVersion   = $functionVersion
         } | ConvertTo-Json -Compress)

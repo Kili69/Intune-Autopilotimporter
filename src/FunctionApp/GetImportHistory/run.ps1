@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261006.1
+# Project-Version: 1.3.20261006.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#

@@ -17,6 +17,7 @@ interface RuntimeConfig {
   silentRedirectUri: string;
   importUrl: string;
   tagsUrl: string;
+  deviceTagAssignmentsUrl: string;
   importHistoryUrl: string;
 }
 
@@ -28,9 +29,18 @@ interface ApiError {
 
 interface ImportResult {
   serialNumber: string;
-  importId?: string;
+  operationId?: string;
+  operationType: 'import' | 'tagChange';
   status: 'ready' | 'sending' | 'pending' | 'complete' | 'error';
   detail?: string;
+}
+
+interface ExistingAutopilotDevice {
+  id: string;
+  serialNumber: string;
+  groupTag: string;
+  groups: string[];
+  administrativeUnits: string[];
 }
 
 interface ImportHistoryRecord {
@@ -53,13 +63,18 @@ const translations = {
     register: 'Geräte in Microsoft Intune registrieren', registerIntro: 'CSV prüfen, autorisierten Tag auswählen und Import starten.',
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
-    importStatus: 'Importstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', importId: 'Import-ID', status: 'Status', details: 'Details',
+    importStatus: 'Verarbeitungsstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', operationId: 'Vorgangs-ID', status: 'Status', details: 'Details',
     historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
     footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', author: 'Autor: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
-    processed: 'Alle Importvorgänge wurden verarbeitet.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
+    processed: 'Alle Vorgänge wurden verarbeitet.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
+    changeTagsTitle: 'Group Tags vorhandener Geräte ändern', changeTagsIntro: 'Noch nicht installierte Geräte aus Ihren Vorhaben auswählen und gemeinsam einem neuen Tag zuordnen.',
+    selectAll: 'Alle auswählen', currentTag: 'Aktueller Tag / OrderID', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
+    noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
+    devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
+    importTab: 'Import', retagTab: 'Re-Tagging',
   },
   en: {
     homeLabel: 'Autopilot Import home', brandSubtitle: 'Device Hash Import', logout: 'Sign out', intro: 'Sign in with your organizational account. Permissions and Group Tags are validated on the server.',
@@ -69,13 +84,18 @@ const translations = {
     register: 'Register devices in Microsoft Intune', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
-    importStatus: 'Import status', devicesZero: '0 devices', serialNumber: 'Serial number', importId: 'Import ID', status: 'Status', details: 'Details',
+    importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
-    processed: 'All import operations have been processed.', completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
+    processed: 'All operations have been processed.', completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
+    changeTagsTitle: 'Change Group Tags for existing devices', changeTagsIntro: 'Select devices that have not been installed from your projects and assign a new tag to them.',
+    selectAll: 'Select all', currentTag: 'Current tag / OrderID', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
+    noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
+    devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
+    importTab: 'Import', retagTab: 'Re-tagging',
   },
 } as const;
 
@@ -141,33 +161,75 @@ app.innerHTML = `
 
       <div id="alert" class="alert hidden" role="alert"></div>
 
-      <div class="step-grid">
-        <article class="panel">
-          <div class="step-number">1</div>
-          <div class="panel-heading">
-            <h2>Autopilot CSV</h2>
-            <p>${t('csvHelp')}</p>
-          </div>
-          <label id="drop-zone" class="drop-zone" for="csv-file">
-            <input id="csv-file" type="file" accept=".csv,text/csv" />
-            <span class="upload-icon" aria-hidden="true">↑</span>
-            <strong>${t('csvSelect')}</strong>
-            <span id="file-summary">${t('csvRequirements')}</span>
-          </label>
-        </article>
+      <div class="workspace-tabs" role="tablist" aria-label="${t('register')}">
+        <button id="import-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="import-tab-panel">${t('importTab')}</button>
+        <button id="retag-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="retag-tab-panel" tabindex="-1">${t('retagTab')}</button>
+      </div>
 
-        <article class="panel">
-          <div class="step-number">2</div>
-          <div class="panel-heading">
-            <h2>Group Tag</h2>
-            <p>${t('tagHelp')}</p>
+      <div id="import-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="import-tab">
+        <div class="step-grid">
+          <article class="panel">
+            <div class="step-number">1</div>
+            <div class="panel-heading">
+              <h2>Autopilot CSV</h2>
+              <p>${t('csvHelp')}</p>
+            </div>
+            <label id="drop-zone" class="drop-zone" for="csv-file">
+              <input id="csv-file" type="file" accept=".csv,text/csv" />
+              <span class="upload-icon" aria-hidden="true">↑</span>
+              <strong>${t('csvSelect')}</strong>
+              <span id="file-summary">${t('csvRequirements')}</span>
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="step-number">2</div>
+            <div class="panel-heading">
+              <h2>Group Tag</h2>
+              <p>${t('tagHelp')}</p>
+            </div>
+            <label class="field-label" for="group-tag">${t('authorizedTag')}</label>
+            <select id="group-tag" disabled>
+              <option value="">${t('loadingTags')}</option>
+            </select>
+            <button id="start-import" class="button button-primary button-wide" type="button" disabled>${t('startImport')}</button>
+          </article>
+        </div>
+      </div>
+
+      <div id="retag-tab-panel" class="tab-panel hidden" role="tabpanel" aria-labelledby="retag-tab">
+        <section class="panel">
+          <div class="results-header">
+            <div>
+              <span class="eyebrow">Autopilot</span>
+              <h2>${t('changeTagsTitle')}</h2>
+              <p class="section-intro">${t('changeTagsIntro')}</p>
+            </div>
+            <span id="device-count" class="progress-label"></span>
           </div>
-          <label class="field-label" for="group-tag">${t('authorizedTag')}</label>
-          <select id="group-tag" disabled>
-            <option value="">${t('loadingTags')}</option>
-          </select>
-          <button id="start-import" class="button button-primary button-wide" type="button" disabled>${t('startImport')}</button>
-        </article>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="selection-cell"><input id="select-all-devices" type="checkbox" aria-label="${t('selectAll')}"></th>
+                  <th>${t('serialNumber')}</th>
+                  <th>${t('currentTag')}</th>
+                  <th>${t('currentGroups')}</th>
+                  <th>${t('administrativeUnits')}</th>
+                </tr>
+              </thead>
+              <tbody id="existing-devices-body"></tbody>
+            </table>
+          </div>
+          <p id="no-existing-devices" class="empty-state hidden">${t('noEligibleDevices')}</p>
+          <div class="tag-change-actions">
+            <label class="field-label" for="new-group-tag">${t('targetTag')}</label>
+            <select id="new-group-tag" disabled>
+              <option value="">${t('loadingTags')}</option>
+            </select>
+            <button id="start-tag-change" class="button button-primary" type="button" disabled>${t('startTagChange')}</button>
+          </div>
+        </section>
       </div>
 
       <section id="results-panel" class="panel results-panel hidden">
@@ -181,13 +243,13 @@ app.innerHTML = `
         <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>${t('serialNumber')}</th><th>${t('importId')}</th><th>${t('status')}</th><th>${t('details')}</th></tr></thead>
+            <thead><tr><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('details')}</th></tr></thead>
             <tbody id="results-body"></tbody>
           </table>
         </div>
       </section>
 
-      <section id="history-panel" class="panel results-panel hidden">
+      <section id="history-panel" class="panel results-panel">
         <div class="results-header">
           <div>
             <span class="eyebrow">${t('importStatus')}</span>
@@ -224,6 +286,10 @@ function element<T extends HTMLElement>(id: string): T {
 
 const signinView = element<HTMLElement>('signin-view');
 const workspace = element<HTMLElement>('workspace');
+const importTab = element<HTMLButtonElement>('import-tab');
+const retagTab = element<HTMLButtonElement>('retag-tab');
+const importTabPanel = element<HTMLElement>('import-tab-panel');
+const retagTabPanel = element<HTMLElement>('retag-tab-panel');
 const loginButton = element<HTMLButtonElement>('login');
 const logoutButton = element<HTMLButtonElement>('logout');
 const accountName = element<HTMLElement>('account-name');
@@ -233,6 +299,12 @@ const fileSummary = element<HTMLElement>('file-summary');
 const dropZone = element<HTMLElement>('drop-zone');
 const tagSelect = element<HTMLSelectElement>('group-tag');
 const importButton = element<HTMLButtonElement>('start-import');
+const existingDevicesBody = element<HTMLTableSectionElement>('existing-devices-body');
+const noExistingDevices = element<HTMLElement>('no-existing-devices');
+const deviceCount = element<HTMLElement>('device-count');
+const selectAllDevices = element<HTMLInputElement>('select-all-devices');
+const newTagSelect = element<HTMLSelectElement>('new-group-tag');
+const tagChangeButton = element<HTMLButtonElement>('start-tag-change');
 const alertBox = element<HTMLElement>('alert');
 const resultsPanel = element<HTMLElement>('results-panel');
 const resultsTitle = element<HTMLElement>('results-title');
@@ -249,8 +321,20 @@ let account: AccountInfo | null = null;
 let accessTokenResult: AuthenticationResult | null = null;
 let tokenAcquisition: Promise<AuthenticationResult> | null = null;
 let devices: AutopilotDevice[] = [];
+let existingDevices: ExistingAutopilotDevice[] = [];
 let results: ImportResult[] = [];
 let pollTimer: number | undefined;
+let processing = false;
+
+function activateWorkspaceTab(tab: 'import' | 'retag'): void {
+  const showImport = tab === 'import';
+  importTab.setAttribute('aria-selected', String(showImport));
+  importTab.tabIndex = showImport ? 0 : -1;
+  retagTab.setAttribute('aria-selected', String(!showImport));
+  retagTab.tabIndex = showImport ? -1 : 0;
+  importTabPanel.classList.toggle('hidden', !showImport);
+  retagTabPanel.classList.toggle('hidden', showImport);
+}
 
 document.querySelectorAll<HTMLButtonElement>('[data-language]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -272,7 +356,23 @@ function clearAlert(): void {
 }
 
 function updateImportButton(): void {
-  importButton.disabled = devices.length === 0 || !tagSelect.value || !account;
+  importButton.disabled = processing || devices.length === 0 ||
+    !tagSelect.value || !account;
+}
+
+function selectedExistingDevices(): ExistingAutopilotDevice[] {
+  const selectedIds = new Set(
+    Array.from(existingDevicesBody.querySelectorAll<HTMLInputElement>(
+      'input[data-device-id]:checked',
+    )).map((checkbox) => checkbox.dataset.deviceId),
+  );
+  return existingDevices.filter((device) => selectedIds.has(device.id));
+}
+
+function updateTagChangeButton(): void {
+  const targetTag = newTagSelect.value;
+  tagChangeButton.disabled = processing || !account || !targetTag ||
+    !selectedExistingDevices().some((device) => device.groupTag !== targetTag);
 }
 
 function updateResults(): void {
@@ -283,7 +383,7 @@ function updateResults(): void {
       : result.status === 'complete'
         ? 'status-complete'
         : 'status-pending';
-    for (const value of [result.serialNumber, result.importId ?? '—']) {
+    for (const value of [result.serialNumber, result.operationId ?? '—']) {
       const cell = document.createElement('td');
       cell.textContent = value;
       row.append(cell);
@@ -413,20 +513,74 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function loadTags(): Promise<void> {
   const response = await apiRequest<{ tags: string[] }>(config.tagsUrl);
-  tagSelect.replaceChildren();
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = response.tags.length > 0 ? t('selectTag') : t('noTags');
-  tagSelect.append(placeholder);
-  for (const tag of response.tags) {
-    const option = document.createElement('option');
-    option.value = tag;
-    option.textContent = tag;
-    tagSelect.append(option);
+  for (const select of [tagSelect, newTagSelect]) {
+    select.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = response.tags.length > 0 ? t('selectTag') : t('noTags');
+    select.append(placeholder);
+    for (const tag of response.tags) {
+      const option = document.createElement('option');
+      option.value = tag;
+      option.textContent = tag;
+      select.append(option);
+    }
+    select.disabled = response.tags.length === 0;
   }
-  tagSelect.disabled = response.tags.length === 0;
   updateImportButton();
+  updateTagChangeButton();
   if (response.tags.length === 0) showAlert(t('noTagsForAccount'));
+}
+
+function renderExistingDevices(): void {
+  existingDevicesBody.replaceChildren(...existingDevices.map((device) => {
+    const row = document.createElement('tr');
+    const selectionCell = document.createElement('td');
+    selectionCell.className = 'selection-cell';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.dataset.deviceId = device.id;
+    checkbox.setAttribute('aria-label', `${t('serialNumber')} ${device.serialNumber}`);
+    checkbox.addEventListener('change', () => {
+      const checkboxes = Array.from(existingDevicesBody.querySelectorAll<HTMLInputElement>(
+        'input[data-device-id]',
+      ));
+      selectAllDevices.checked = checkboxes.length > 0 &&
+        checkboxes.every((item) => item.checked);
+      selectAllDevices.indeterminate = checkboxes.some((item) => item.checked) &&
+        !selectAllDevices.checked;
+      updateTagChangeButton();
+    });
+    selectionCell.append(checkbox);
+    row.append(selectionCell);
+    for (const value of [
+      device.serialNumber,
+      device.groupTag,
+      device.groups.join(', ') || '—',
+      device.administrativeUnits.join(', ') || '—',
+    ]) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.append(cell);
+    }
+    return row;
+  }));
+  selectAllDevices.checked = false;
+  selectAllDevices.indeterminate = false;
+  selectAllDevices.disabled = existingDevices.length === 0;
+  noExistingDevices.classList.toggle('hidden', existingDevices.length > 0);
+  deviceCount.textContent = `${existingDevices.length} ${
+    existingDevices.length === 1 ? t('device') : t('devices')}`;
+  updateTagChangeButton();
+}
+
+async function loadExistingDevices(): Promise<void> {
+  if (!config.deviceTagAssignmentsUrl) return;
+  const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
+    config.deviceTagAssignmentsUrl,
+  );
+  existingDevices = response.devices ?? [];
+  renderExistingDevices();
 }
 
 async function loadImportHistory(): Promise<void> {
@@ -464,7 +618,7 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');
   try {
-    await Promise.all([loadTags(), loadImportHistory()]);
+    await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices()]);
   } catch (error) {
     showAlert(error instanceof Error ? error.message : t('tagsLoadFailed'));
   }
@@ -488,7 +642,11 @@ async function readFile(file: File): Promise<void> {
 async function importDevice(index: number, groupTag: string): Promise<void> {
   const device = devices[index];
   if (!device) return;
-  results[index] = { serialNumber: device.serialNumber, status: 'sending' };
+  results[index] = {
+    serialNumber: device.serialNumber,
+    operationType: 'import',
+    status: 'sending',
+  };
   updateResults();
   try {
     const response = await apiRequest<{ importId: string; status: string }>(config.importUrl, {
@@ -497,13 +655,15 @@ async function importDevice(index: number, groupTag: string): Promise<void> {
     });
     results[index] = {
       serialNumber: device.serialNumber,
-      importId: response.importId,
+      operationId: response.importId,
+      operationType: 'import',
       status: 'pending',
       detail: response.status,
     };
   } catch (error) {
     results[index] = {
       serialNumber: device.serialNumber,
+      operationType: 'import',
       status: 'error',
       detail: error instanceof Error ? error.message : t('importFailed'),
     };
@@ -511,15 +671,55 @@ async function importDevice(index: number, groupTag: string): Promise<void> {
   updateResults();
 }
 
+async function changeExistingDeviceTag(
+  device: ExistingAutopilotDevice,
+  groupTag: string,
+  resultIndex: number,
+): Promise<void> {
+  results[resultIndex] = {
+    serialNumber: device.serialNumber,
+    operationType: 'tagChange',
+    status: 'sending',
+  };
+  updateResults();
+  try {
+    const response = await apiRequest<{
+      operationId: string;
+      status: string;
+    }>(config.deviceTagAssignmentsUrl, {
+      method: 'POST',
+      body: JSON.stringify({ deviceId: device.id, groupTag }),
+    });
+    results[resultIndex] = {
+      serialNumber: device.serialNumber,
+      operationId: response.operationId,
+      operationType: 'tagChange',
+      status: 'pending',
+      detail: response.status,
+    };
+  } catch (error) {
+    results[resultIndex] = {
+      serialNumber: device.serialNumber,
+      operationType: 'tagChange',
+      status: 'error',
+      detail: error instanceof Error ? error.message : t('tagChangeFailed'),
+    };
+  }
+  updateResults();
+}
+
 async function pollResults(): Promise<void> {
-  const pending = results.filter((item) => item.importId && item.status === 'pending');
+  const pending = results.filter((item) => item.operationId && item.status === 'pending');
   await Promise.all(pending.map(async (item) => {
     try {
+      const statusUrl = item.operationType === 'import'
+        ? `${config.importUrl}?importId=${encodeURIComponent(item.operationId ?? '')}`
+        : `${config.deviceTagAssignmentsUrl}?operationId=${encodeURIComponent(item.operationId ?? '')}`;
       const status = await apiRequest<{
         workflowStatus: string;
         status: string;
         deviceErrorName?: string;
-      }>(`${config.importUrl}?importId=${encodeURIComponent(item.importId ?? '')}`);
+      }>(statusUrl);
       if (status.workflowStatus === 'complete') {
         item.status = 'complete';
         item.detail = t('completedDetail');
@@ -537,6 +737,17 @@ async function pollResults(): Promise<void> {
   if (results.every((item) => item.status === 'complete' || item.status === 'error')) {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     pollTimer = undefined;
+    processing = false;
+    const refreshes: Promise<void>[] = [];
+    if (results.some((item) => item.operationType === 'import')) {
+      refreshes.push(loadImportHistory());
+    }
+    if (results.some((item) => item.operationType === 'tagChange')) {
+      refreshes.push(loadExistingDevices());
+    }
+    await Promise.all(refreshes);
+    updateImportButton();
+    updateTagChangeButton();
     showAlert(t('processed'), 'success');
   }
 }
@@ -548,6 +759,27 @@ logoutButton.addEventListener('click', () => {
   void msal.logoutRedirect({ account: account ?? undefined, postLogoutRedirectUri: config.redirectUri });
 });
 tagSelect.addEventListener('change', updateImportButton);
+importTab.addEventListener('click', () => activateWorkspaceTab('import'));
+retagTab.addEventListener('click', () => activateWorkspaceTab('retag'));
+for (const tab of [importTab, retagTab]) {
+  tab.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const showImport = event.key === 'ArrowLeft' || event.key === 'Home';
+    activateWorkspaceTab(showImport ? 'import' : 'retag');
+    (showImport ? importTab : retagTab).focus();
+  });
+}
+newTagSelect.addEventListener('change', updateTagChangeButton);
+selectAllDevices.addEventListener('change', () => {
+  existingDevicesBody.querySelectorAll<HTMLInputElement>(
+    'input[data-device-id]',
+  ).forEach((checkbox) => {
+    checkbox.checked = selectAllDevices.checked;
+  });
+  selectAllDevices.indeterminate = false;
+  updateTagChangeButton();
+});
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
   if (file) void readFile(file);
@@ -572,9 +804,15 @@ importButton.addEventListener('click', async () => {
   const groupTag = tagSelect.value;
   if (!groupTag || devices.length === 0) return;
   clearAlert();
-  importButton.disabled = true;
+  processing = true;
+  updateImportButton();
+  updateTagChangeButton();
   resultsPanel.classList.remove('hidden');
-  results = devices.map((device) => ({ serialNumber: device.serialNumber, status: 'ready' }));
+  results = devices.map((device) => ({
+    serialNumber: device.serialNumber,
+    operationType: 'import',
+    status: 'ready',
+  }));
   updateResults();
 
   let nextIndex = 0;
@@ -589,8 +827,42 @@ importButton.addEventListener('click', async () => {
   if (results.some((item) => item.status === 'pending')) {
     pollTimer = window.setInterval(() => void pollResults(), 15_000);
   }
-  await loadImportHistory();
   updateImportButton();
+});
+tagChangeButton.addEventListener('click', async () => {
+  const groupTag = newTagSelect.value;
+  const selectedDevices = selectedExistingDevices().filter(
+    (device) => device.groupTag !== groupTag,
+  );
+  if (!groupTag || selectedDevices.length === 0) return;
+  clearAlert();
+  processing = true;
+  updateImportButton();
+  updateTagChangeButton();
+  resultsPanel.classList.remove('hidden');
+  results = selectedDevices.map((device) => ({
+    serialNumber: device.serialNumber,
+    operationType: 'tagChange',
+    status: 'ready',
+  }));
+  updateResults();
+
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < selectedDevices.length) {
+      const index = nextIndex++;
+      const device = selectedDevices[index];
+      if (device) await changeExistingDeviceTag(device, groupTag, index);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(3, selectedDevices.length) }, worker),
+  );
+  await pollResults();
+  if (results.some((item) => item.status === 'pending')) {
+    pollTimer = window.setInterval(() => void pollResults(), 15_000);
+  }
+  updateTagChangeButton();
 });
 
 async function initialize(): Promise<void> {

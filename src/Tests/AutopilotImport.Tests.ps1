@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261006.1
+# Project-Version: 1.3.20261006.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2840,6 +2840,79 @@ Describe 'Administrative unit membership' {
                 -ParameterFilter { $Method -eq 'Post' }
         }
 
+        It 'moves a device between policy-managed administrative units' {
+            $deviceObjectId = [guid] `
+                '11111111-1111-1111-1111-111111111111'
+            $oldUnitId = '22222222-2222-2222-2222-222222222222'
+            $newUnitId = '33333333-3333-3333-3333-333333333333'
+            Mock Invoke-RestMethod {
+                if ($Uri -match '/directory/administrativeUnits\?') {
+                    $name = if ($Uri -match 'RMAU-Old') {
+                        'RMAU-Old'
+                    }
+                    else {
+                        'RMAU-New'
+                    }
+                    $id = if ($name -eq 'RMAU-Old') {
+                        $oldUnitId
+                    }
+                    else {
+                        $newUnitId
+                    }
+                    return @{
+                        value = @([pscustomobject]@{
+                            id = $id
+                            displayName = $name
+                            isMemberManagementRestricted = $true
+                        })
+                    }
+                }
+                if ($Uri -match "$oldUnitId/members\?") {
+                    return @{
+                        value = @([pscustomobject]@{
+                            id = $deviceObjectId.ToString()
+                        })
+                    }
+                }
+                if ($Uri -match "$newUnitId/members\?") {
+                    return @{ value = @() }
+                }
+                return $null
+            }
+            $policy = @(
+                [pscustomobject]@{
+                    groupId = [guid]::NewGuid()
+                    tags = @('Old')
+                    administrativeUnitName = 'RMAU-Old'
+                }
+                [pscustomobject]@{
+                    groupId = [guid]::NewGuid()
+                    tags = @('New')
+                    administrativeUnitName = 'RMAU-New'
+                }
+            )
+
+            $result = Sync-EntraDeviceAdministrativeUnits `
+                -Policy $policy `
+                -AdministrativeUnitName 'RMAU-New' `
+                -DeviceObjectId $deviceObjectId `
+                -AccessToken (ConvertTo-SecureString 'token' `
+                    -AsPlainText -Force)
+
+            $result.RemovedAdministrativeUnits | Should -Be 'RMAU-Old'
+            $result.MembershipAdded | Should -BeTrue
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter {
+                    $Method -eq 'Delete' -and
+                    $Uri -match "$oldUnitId/members/$deviceObjectId/\`$ref$"
+                }
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter {
+                    $Method -eq 'Post' -and
+                    $Uri -match "$newUnitId/members/\`$ref$"
+                }
+        }
+
         It 'rejects a missing administrative unit' {
             $script:administrativeUnits = @()
 
@@ -5063,10 +5136,12 @@ Describe 'Web frontend response types' {
         $expectedRoutes = @{
             'ImportDevice'      = 'api/devices/import'
             'GetAuthorizedTags' = 'api/devices/tags'
+            'ManageDeviceTags'  = 'api/devices/tags/assignments'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
             'WebFrontend'       = 'api/ui/{*path}'
         }
+
         foreach ($functionName in $expectedRoutes.Keys) {
             $functionConfiguration = Get-Content `
                 -LiteralPath (Join-Path `
@@ -5091,6 +5166,39 @@ Describe 'Web frontend response types' {
         $rootProxy.responseOverrides.'response.statusCode' | Should -Be '302'
         $rootProxy.responseOverrides.'response.headers.Location' |
             Should -Be '/api/ui/index.html'
+    }
+
+    It 'exposes authorized uninstalled-device Group Tag changes in the web client' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $deviceTagFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ManageDeviceTags\run.ps1') `
+            -Raw
+        $processorFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ProcessDeviceAttribute\run.ps1') `
+            -Raw
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\WebFrontend\run.ps1') `
+            -Raw
+
+        $deviceTagFunction | Should -Match "enrollmentState -ieq 'notContacted'"
+        $deviceTagFunction | Should -Match 'groupTag -iin \$authorizedTags'
+        $deviceTagFunction | Should -Match 'Resolve-AuthorizedGroupTag'
+        $deviceTagFunction | Should -Match 'memberOf'
+        $processorFunction | Should -Match 'updateDeviceProperties'
+        $processorFunction | Should -Match `
+            'Sync-EntraDeviceAdministrativeUnits'
+        $frontendFunction | Should -Match `
+            'deviceTagAssignmentsUrl\s*=\s*"\$origin/api/devices/tags/assignments"'
+        $frontendSource = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\main.ts') `
+            -Raw
+        $frontendSource | Should -Match 'role="tablist"'
+        $frontendSource | Should -Match 'role="tabpanel"'
+        $frontendSource | Should -Match `
+            'id="history-panel" class="panel results-panel"'
     }
 
     It 'extracts policy rules from Functions dictionary request bodies' {
@@ -5328,7 +5436,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should -Match '^1\.2\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^1\.3\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
@@ -5558,6 +5666,8 @@ Describe 'Deployment package' {
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
                     'GetAuthorizedTags/function.json'
+                    'ManageDeviceTags/function.json'
+                    'ManageDeviceTags/run.ps1'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
                     'RemoveExpiredImportHistory/function.json'

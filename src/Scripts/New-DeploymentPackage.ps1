@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261006.1
+# Project-Version: 1.3.20261006.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -250,6 +250,7 @@ $packageEntries = @(
     @{ Source = 'src\Installer\Update-AutopilotImport.ps1'; Destination = 'Update-AutopilotImport.ps1' }
     @{ Source = 'src\FunctionApp\ImportDevice'; Destination = 'ImportDevice' }
     @{ Source = 'src\FunctionApp\GetAuthorizedTags'; Destination = 'GetAuthorizedTags' }
+    @{ Source = 'src\FunctionApp\ManageDeviceTags'; Destination = 'ManageDeviceTags' }
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
