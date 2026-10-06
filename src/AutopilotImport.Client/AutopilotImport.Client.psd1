@@ -1,9 +1,9 @@
-# Project-Version: 1.3.20261006.3
+# Project-Version: 1.3.20261006.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.3.20261006.3'
+    ModuleVersion     = '1.3.20261006.4'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@outlook.com (aka Kili)'
     Description       = 'Client commands for the secured Windows Autopilot import Function.'

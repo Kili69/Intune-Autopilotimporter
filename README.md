@@ -600,9 +600,10 @@ For a standard installation, one installing administrator performs the complete 
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 
 The web frontend also lists Windows Autopilot devices whose enrollment state is
-`notContacted` when their current Group Tag belongs to one of the signed-in
-user's authorized rules. Users can select multiple devices and assign another
-authorized Group Tag. The same queued post-processing used after imports updates
+`notContacted` when the signed-in user has at least one authorized Group Tag.
+The current Group Tag may be empty or belong to another rule; authorization is
+enforced on the selected target Group Tag. Users can select multiple devices
+and assign an authorized Group Tag. The same queued post-processing used after imports updates
 the configured Entra extension attribute, removes memberships from other
 administrative units managed by the Tag policy, and adds the target rule's
 administrative unit. Current Entra group and administrative-unit memberships

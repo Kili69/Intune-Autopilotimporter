@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.3
+# Project-Version: 1.3.20261006.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -193,8 +193,8 @@ if ([string] $Request.Method -eq 'GET') {
             -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?$top=100' `
             -AccessToken $graphToken)
         $visibleDevices = @($autopilotDevices | Where-Object {
-            [string] $_.enrollmentState -ieq 'notContacted' -and
-            [string] $_.groupTag -iin $authorizedTags
+            $authorizedTags.Count -gt 0 -and
+            [string] $_.enrollmentState -ieq 'notContacted'
         } | ForEach-Object {
             $autopilotDevice = $_
             $groups = @()
@@ -276,10 +276,6 @@ try {
         -Authentication Bearer `
         -Token $graphToken `
         -ErrorAction Stop
-    [void] (Resolve-AuthorizedGroupTag `
-        -Principal $principal `
-        -Policy $policy `
-        -RequestedGroupTag ([string] $device.groupTag))
     if ([string] $device.enrollmentState -ine 'notContacted') {
         throw [InvalidOperationException]::new(
             'The device is no longer eligible for a Group Tag change.')

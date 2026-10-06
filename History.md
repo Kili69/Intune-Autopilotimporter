@@ -2,11 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261006.3` - 2026-10-06
+## `1.3.20261006.4` - 2026-10-06
 
 - Simplified the import workspace header by removing the redundant new-import label, renaming the registration heading to explicitly reference Microsoft Intune in both supported languages, and moving the workspace content closer to the top of the page.
 - Added the Yeti logo to the right side of the application header with responsive desktop and mobile sizing.
-- Added an authorized multi-device Group Tag change workflow for uninstalled Autopilot devices, including current Group Tag, Entra groups, administrative units, shared progress reporting, synchronized policy-managed administrative-unit membership, and Graph-compatible device enumeration; separated import and re-tagging into accessible tabs while keeping import history permanently visible below the workspace.
+- Added an authorized multi-device Group Tag change workflow for uninstalled Autopilot devices, including devices with empty or differently assigned current tags, target-tag authorization, current Group Tag, Entra groups, administrative units, shared progress reporting, synchronized policy-managed administrative-unit membership, and Graph-compatible device enumeration; separated import and re-tagging into accessible tabs while keeping import history permanently visible below the workspace.
 - Promoted the release line to 1.3, rebuilt the generated web frontend, and synchronized the project version for publication from `dev`.
 
 ## `1.2.20261004.9` - 2026-10-04

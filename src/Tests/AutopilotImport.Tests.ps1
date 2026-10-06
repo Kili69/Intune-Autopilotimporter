@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.3
+# Project-Version: 1.3.20261006.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5184,7 +5184,12 @@ Describe 'Web frontend response types' {
             -Raw
 
         $deviceTagFunction | Should -Match "enrollmentState -ieq 'notContacted'"
-        $deviceTagFunction | Should -Match 'groupTag -iin \$authorizedTags'
+        $deviceTagFunction | Should -Match '\$authorizedTags\.Count -gt 0'
+        $deviceTagFunction | Should -Not -Match `
+            'groupTag -iin \$authorizedTags'
+        ([regex]::Matches(
+            $deviceTagFunction,
+            'Resolve-AuthorizedGroupTag')).Count | Should -Be 1
         $deviceTagFunction | Should -Match `
             'windowsAutopilotDeviceIdentities\?\$top=100'
         $deviceTagFunction | Should -Not -Match `
