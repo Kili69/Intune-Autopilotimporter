@@ -6,7 +6,6 @@ import {
   PublicClientApplication,
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
-import { buildHistoryRequestUrl, formatHashReference } from './history';
 import './style.css';
 
 interface RuntimeConfig {
@@ -45,11 +44,24 @@ interface ExistingAutopilotDevice {
 
 interface ImportHistoryRecord {
   importId?: string;
+  operationType?: string;
   serialNumber?: string;
+  groupTag?: string;
+  previousGroupTag?: string;
   status?: string;
   requestedBy?: string;
   requestedByDisplayName?: string;
-  deviceHashSha256?: string;
+  deviceErrorName?: string;
+  requestReceivedAtUtc?: string;
+  graphImportCreatedAtUtc?: string;
+  queuedAtUtc?: string;
+  processingStartedAtUtc?: string;
+  entraDeviceResolvedAtUtc?: string;
+  autopilotGroupTagUpdatedAtUtc?: string;
+  extensionAttributeUpdatedAtUtc?: string;
+  administrativeUnitAssignedAtUtc?: string;
+  processingCompletedAtUtc?: string;
+  lastUpdatedAtUtc?: string;
 }
 
 type Language = 'de' | 'en';
@@ -69,12 +81,17 @@ const translations = {
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
-    processed: 'Alle Vorgänge wurden verarbeitet.', completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
+    completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
     changeTagsTitle: 'Group Tags vorhandener Geräte ändern', changeTagsIntro: 'Noch nicht installierte Geräte aus Ihren Vorhaben auswählen und gemeinsam einem neuen Tag zuordnen.',
     selectAll: 'Alle auswählen', currentTag: 'Aktueller Tag / OrderID', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
     noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
     devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
     importTab: 'Import', retagTab: 'Re-Tagging',
+    lastUpdated: 'Letzte Aktualisierung', traceTitle: 'Vorgangsverlauf', close: 'Schließen', traceCurrentStatus: 'Aktueller Status',
+    traceRequested: 'Anfrage wurde entgegengenommen', traceCreatedInIntune: 'Gerät wurde an Intune übermittelt', traceQueued: 'Nachbearbeitung wurde eingeplant',
+    traceStarted: 'Nachbearbeitung wurde gestartet', traceDeviceResolved: 'Entra-Gerät wurde gefunden', traceAutopilotTagUpdated: 'Autopilot Group Tag wurde aktualisiert',
+    traceAttributeUpdated: 'Geräteattribut wurde aktualisiert', traceAuUpdated: 'Administrative Unit wurde aktualisiert', traceCompleted: 'Vorgang wurde abgeschlossen',
+    traceError: 'Fehler', groupTagLabel: 'Group Tag', previousGroupTagLabel: 'Vorheriger Group Tag', traceOpen: 'Vorgangsverlauf öffnen',
   },
   en: {
     homeLabel: 'Autopilot Import home', brandSubtitle: 'Device Hash Import', logout: 'Sign out', intro: 'Sign in with your organizational account. Permissions and Group Tags are validated on the server.',
@@ -90,12 +107,17 @@ const translations = {
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
-    processed: 'All operations have been processed.', completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
+    completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
     changeTagsTitle: 'Change Group Tags for existing devices', changeTagsIntro: 'Select devices that have not been installed from your projects and assign a new tag to them.',
     selectAll: 'Select all', currentTag: 'Current tag / OrderID', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
     noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
     devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
     importTab: 'Import', retagTab: 'Re-tagging',
+    lastUpdated: 'Last updated', traceTitle: 'Operation trace', close: 'Close', traceCurrentStatus: 'Current status',
+    traceRequested: 'Request was received', traceCreatedInIntune: 'Device was submitted to Intune', traceQueued: 'Post-processing was queued',
+    traceStarted: 'Post-processing started', traceDeviceResolved: 'Entra device was resolved', traceAutopilotTagUpdated: 'Autopilot Group Tag was updated',
+    traceAttributeUpdated: 'Device attribute was updated', traceAuUpdated: 'Administrative unit was updated', traceCompleted: 'Operation completed',
+    traceError: 'Error', groupTagLabel: 'Group Tag', previousGroupTagLabel: 'Previous Group Tag', traceOpen: 'Open operation trace',
   },
 } as const;
 
@@ -232,38 +254,52 @@ app.innerHTML = `
         </section>
       </div>
 
-      <section id="results-panel" class="panel results-panel hidden">
-        <div class="results-header">
-          <div>
-            <span class="eyebrow">${t('importStatus')}</span>
-            <h2 id="results-title">${t('devicesZero')}</h2>
+      <section class="panel results-panel">
+        <section id="results-panel" class="activity-section hidden">
+          <div class="results-header">
+            <div>
+              <span class="eyebrow">${t('importStatus')}</span>
+              <h2 id="results-title">${t('devicesZero')}</h2>
+            </div>
+            <span id="progress-label" class="progress-label"></span>
           </div>
-          <span id="progress-label" class="progress-label"></span>
-        </div>
-        <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('details')}</th></tr></thead>
-            <tbody id="results-body"></tbody>
-          </table>
-        </div>
+          <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('details')}</th></tr></thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="history-panel" class="activity-section">
+          <div class="results-header">
+            <div>
+              <span class="eyebrow">${t('importStatus')}</span>
+              <h2>${t('historyTitle')}</h2>
+            </div>
+            <span id="history-scope" class="progress-label">${t('historyScopeSelf')}</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>${t('lastUpdated')}</th><th>${t('serialNumber')}</th><th>${t('status')}</th><th>${t('requestedBy')}</th></tr></thead>
+              <tbody id="history-body"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
-      <section id="history-panel" class="panel results-panel">
-        <div class="results-header">
+      <dialog id="history-trace-dialog" class="trace-dialog" aria-labelledby="trace-dialog-title">
+        <div class="trace-dialog-header">
           <div>
             <span class="eyebrow">${t('importStatus')}</span>
-            <h2>${t('historyTitle')}</h2>
+            <h2 id="trace-dialog-title">${t('traceTitle')}</h2>
           </div>
-          <span id="history-scope" class="progress-label">${t('historyScopeSelf')}</span>
+          <button id="close-trace-dialog" class="button button-quiet" type="button">${t('close')}</button>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>${t('hashLabel')}</th><th>${t('serialNumber')}</th><th>${t('status')}</th><th>${t('requestedBy')}</th></tr></thead>
-            <tbody id="history-body"></tbody>
-          </table>
-        </div>
-      </section>
+        <div id="trace-summary" class="trace-summary"></div>
+        <ol id="trace-steps" class="trace-steps"></ol>
+      </dialog>
     </section>
 
     <footer>
@@ -314,6 +350,10 @@ const progressBar = element<HTMLElement>('progress-bar');
 const historyPanel = element<HTMLElement>('history-panel');
 const historyBody = element<HTMLTableSectionElement>('history-body');
 const historyScope = element<HTMLElement>('history-scope');
+const historyTraceDialog = element<HTMLDialogElement>('history-trace-dialog');
+const closeTraceDialog = element<HTMLButtonElement>('close-trace-dialog');
+const traceSummary = element<HTMLElement>('trace-summary');
+const traceSteps = element<HTMLOListElement>('trace-steps');
 
 let config: RuntimeConfig;
 let msal: PublicClientApplication;
@@ -411,13 +451,115 @@ function updateResults(): void {
   progressBar.style.width = results.length === 0 ? '0%' : `${Math.round((finished / results.length) * 100)}%`;
 }
 
+function formatHistoryDate(value?: string): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat(language === 'de' ? 'de-DE' : 'en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(date);
+}
+
+function getHistoryStatus(record: ImportHistoryRecord): 'pending' | 'complete' | 'error' {
+  const normalized = record.status?.toLowerCase();
+  if (record.deviceErrorName || normalized === 'error' || normalized === 'failed') {
+    return 'error';
+  }
+  if (record.processingCompletedAtUtc) return 'complete';
+  return 'pending';
+}
+
+function openHistoryTrace(record: ImportHistoryRecord): void {
+  const status = getHistoryStatus(record);
+  const summaryValues: Array<[TranslationKey, string]> = [
+    ['serialNumber', record.serialNumber ?? '—'],
+    ['operationId', record.importId ?? '—'],
+    ['traceCurrentStatus', t(
+      status === 'complete'
+        ? 'statusComplete'
+        : status === 'error' ? 'statusError' : 'statusPending',
+    )],
+    ['groupTagLabel', record.groupTag ?? '—'],
+  ];
+  if (record.previousGroupTag) {
+    summaryValues.push(['previousGroupTagLabel', record.previousGroupTag]);
+  }
+  traceSummary.replaceChildren(...summaryValues.map(([label, value]) => {
+    const item = document.createElement('div');
+    const term = document.createElement('strong');
+    term.textContent = t(label);
+    const detail = document.createElement('span');
+    detail.textContent = value;
+    item.append(term, detail);
+    return item;
+  }));
+
+  const timeline: Array<[TranslationKey, string | undefined]> = [
+    ['traceRequested', record.requestReceivedAtUtc],
+    ['traceCreatedInIntune', record.graphImportCreatedAtUtc],
+    ['traceQueued', record.queuedAtUtc],
+    ['traceStarted', record.processingStartedAtUtc],
+    ['traceDeviceResolved', record.entraDeviceResolvedAtUtc],
+    ['traceAutopilotTagUpdated', record.autopilotGroupTagUpdatedAtUtc],
+    ['traceAttributeUpdated', record.extensionAttributeUpdatedAtUtc],
+    ['traceAuUpdated', record.administrativeUnitAssignedAtUtc],
+    ['traceCompleted', record.processingCompletedAtUtc],
+  ];
+  traceSteps.replaceChildren(...timeline
+    .filter(([, timestamp]) => Boolean(timestamp))
+    .map(([label, timestamp]) => {
+      const item = document.createElement('li');
+      const marker = document.createElement('span');
+      marker.className = 'trace-marker';
+      marker.setAttribute('aria-hidden', 'true');
+      const content = document.createElement('div');
+      const title = document.createElement('strong');
+      title.textContent = t(label);
+      const time = document.createElement('time');
+      time.dateTime = timestamp ?? '';
+      time.textContent = formatHistoryDate(timestamp);
+      content.append(title, time);
+      item.append(marker, content);
+      return item;
+    }));
+  if (status === 'error') {
+    const item = document.createElement('li');
+    item.className = 'trace-error';
+    const marker = document.createElement('span');
+    marker.className = 'trace-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    const content = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = t('traceError');
+    const detail = document.createElement('span');
+    detail.textContent = record.deviceErrorName ?? t('statusError');
+    content.append(title, detail);
+    item.append(marker, content);
+    traceSteps.append(item);
+  }
+  historyTraceDialog.showModal();
+}
+
 function renderHistory(records: ImportHistoryRecord[]): void {
   historyPanel.classList.remove('hidden');
   historyBody.replaceChildren(...records.map((record) => {
     const row = document.createElement('tr');
-    const hashCell = document.createElement('td');
-    hashCell.textContent = formatHashReference(record.deviceHashSha256);
-    row.append(hashCell);
+    row.className = 'history-row';
+    row.tabIndex = 0;
+    row.setAttribute(
+      'aria-label',
+      `${t('traceOpen')}: ${record.serialNumber ?? t('device')}`,
+    );
+    row.addEventListener('click', () => openHistoryTrace(record));
+    row.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openHistoryTrace(record);
+    });
+    const updatedCell = document.createElement('td');
+    updatedCell.textContent = formatHistoryDate(record.lastUpdatedAtUtc);
+    row.append(updatedCell);
 
     const serialCell = document.createElement('td');
     serialCell.textContent = record.serialNumber ?? '—';
@@ -425,20 +567,18 @@ function renderHistory(records: ImportHistoryRecord[]): void {
 
     const statusCell = document.createElement('td');
     const statusBadge = document.createElement('span');
-    const normalized = record.status ?? 'pending';
-    const statusClass = normalized === 'error' || normalized === 'failed'
+    const normalized = getHistoryStatus(record);
+    const statusClass = normalized === 'error'
       ? 'status-error'
-      : normalized === 'complete' || normalized === 'succeeded'
+      : normalized === 'complete'
         ? 'status-complete'
         : 'status-pending';
     statusBadge.className = `status ${statusClass}`;
-    statusBadge.textContent = normalized === 'error' || normalized === 'failed'
+    statusBadge.textContent = normalized === 'error'
       ? t('statusError')
-      : normalized === 'complete' || normalized === 'succeeded'
+      : normalized === 'complete'
         ? t('statusComplete')
-        : normalized === 'pending'
-          ? t('statusPending')
-          : t('statusReady');
+        : t('statusPending');
     statusCell.append(statusBadge);
     row.append(statusCell);
 
@@ -748,7 +888,6 @@ async function pollResults(): Promise<void> {
     await Promise.all(refreshes);
     updateImportButton();
     updateTagChangeButton();
-    showAlert(t('processed'), 'success');
   }
 }
 
@@ -757,6 +896,10 @@ loginButton.addEventListener('click', () => {
 });
 logoutButton.addEventListener('click', () => {
   void msal.logoutRedirect({ account: account ?? undefined, postLogoutRedirectUri: config.redirectUri });
+});
+closeTraceDialog.addEventListener('click', () => historyTraceDialog.close());
+historyTraceDialog.addEventListener('click', (event) => {
+  if (event.target === historyTraceDialog) historyTraceDialog.close();
 });
 tagSelect.addEventListener('change', updateImportButton);
 importTab.addEventListener('click', () => activateWorkspaceTab('import'));

@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.4
+# Project-Version: 1.3.20261006.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -1373,6 +1373,8 @@ Describe 'Import history endpoint' {
         $historyFunction | Should -Match 'requestedByUserPrincipalName'
         $historyFunction | Should -Match 'extensionAttributeUpdatedAtUtc'
         $historyFunction | Should -Match 'processingCompletedAtUtc'
+        $historyFunction | Should -Match 'lastUpdatedAtUtc'
+        $historyFunction | Should -Match 'autopilotGroupTagUpdatedAtUtc'
         $historyFunction | Should -Not -Match '\.hardwareIdentifier'
         $historyFunction | Should -Not -Match '\.productKey'
     }
@@ -5207,7 +5209,17 @@ Describe 'Web frontend response types' {
         $frontendSource | Should -Match 'role="tablist"'
         $frontendSource | Should -Match 'role="tabpanel"'
         $frontendSource | Should -Match `
-            'id="history-panel" class="panel results-panel"'
+            'id="results-panel" class="activity-section hidden"'
+        $frontendSource | Should -Match `
+            'id="history-panel" class="activity-section"'
+        $frontendSource | Should -Not -Match `
+            "processed:\s*'All operations have been processed\.'"
+        $frontendSource | Should -Match `
+            'id="history-trace-dialog"'
+        $frontendSource | Should -Match `
+            "lastUpdated:\s*'Last updated'"
+        $frontendSource | Should -Match `
+            "row\.addEventListener\('keydown'"
     }
 
     It 'extracts policy rules from Functions dictionary request bodies' {
