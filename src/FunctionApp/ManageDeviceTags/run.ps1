@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.2
+# Project-Version: 1.3.20261006.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -190,7 +190,7 @@ if ([string] $Request.Method -eq 'GET' -and
 if ([string] $Request.Method -eq 'GET') {
     try {
         $autopilotDevices = @(Get-GraphCollection `
-            -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?$select=id,serialNumber,groupTag,enrollmentState,azureActiveDirectoryDeviceId&$top=100' `
+            -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?$top=100' `
             -AccessToken $graphToken)
         $visibleDevices = @($autopilotDevices | Where-Object {
             [string] $_.enrollmentState -ieq 'notContacted' -and
