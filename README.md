@@ -72,7 +72,7 @@ flowchart LR
     EasyAuth[validate user and group membership]
     Authorize{User group authorized<br/>for requested Group Tag?}
     Reject[Reject request<br/>HTTP 403]
-    Function[import devicehash into Intune Autopilot]
+    Function[import device hash into Intune Autopilot]
     Graph[wait for Entra.ID device object synchronization]
     Intune[set Device ExtensionAttribute]
     Queue[assing group membership]
@@ -99,20 +99,13 @@ signs in with a Microsoft Entra account.
 
 The frontend provides the following functions:
 
-- German and English user interface with a persistent language selection
 - Microsoft Entra sign-in using Authorization Code Flow with PKCE
 - Local validation of Autopilot CSV files before any data is transmitted
-- Selection of only those Group Tags authorized for the signed-in user's Entra
-    groups
-- Parallel submission of up to three devices to the secured Function API
-- Display of serial number, import ID, processing status, and error details
-- Automatic monitoring of both the Intune import and the Entra device
-    extension-attribute update
-- Sign-out from the current Entra session
+- Selection of only those Group Tags authorized for the signed-in user's Entra groups
+- Parallel submission of devices
+- Monitoring of both the Intune import and the Entra device extension-attribute update
 
-The hardware hashes are not stored by the frontend. They remain in browser
-memory and are sent only to the secured Function API after validation and user
-confirmation.
+The hardware hashes are not stored by the frontend. They remain in browser memory and are sent only to the secured Function API after validation and user confirmation.
 
 ##### Import Workflow and Status Updates
 

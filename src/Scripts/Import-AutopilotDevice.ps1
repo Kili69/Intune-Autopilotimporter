@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.3.20261007.2
+.VERSION 1.3.20261007.3
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
@@ -33,7 +33,7 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.3.20261007.2
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -549,6 +549,8 @@ function Get-AutoPilotRestErrorMessage {
     )
 
     $response = $null
+    # PowerShell 7 exposes the parsed body through ErrorDetails. Windows
+    # PowerShell 5.1 often leaves it empty, so the raw response is read below.
     $responseText = if ($ErrorRecord.ErrorDetails -and
         $ErrorRecord.ErrorDetails.Message) {
         [string] $ErrorRecord.ErrorDetails.Message
@@ -564,6 +566,9 @@ function Get-AutoPilotRestErrorMessage {
     }
     if ([string]::IsNullOrWhiteSpace($responseText) -and $httpResponse) {
         try {
+            # PowerShell 7 returns an HttpResponseMessage with a Content
+            # property, Windows PowerShell 5.1 a WebResponse with a stream.
+            # Probing for the members keeps both editions supported.
             $contentProperty = $httpResponse.PSObject.Properties['Content']
             if ($contentProperty -and $contentProperty.Value -and
                 $contentProperty.Value.PSObject.Methods['ReadAsStringAsync']) {
@@ -613,6 +618,8 @@ function Get-AutoPilotRestErrorMessage {
         [int] $httpResponse.StatusCode
     }
     elseif ($ErrorRecord.Exception.Message -match '(?<!\d)403(?!\d)') {
+        # Some editions expose no response object. The lookaround ensures that
+        # only a standalone 403 matches, not a longer number containing it.
         403
     }
     else {
@@ -666,6 +673,9 @@ function Get-AutoPilotRestErrorMessage {
     if ([string]::IsNullOrWhiteSpace($correlationId) -and $httpResponse -and
         $httpResponse.PSObject.Properties['Headers']) {
         try {
+            # The correlation ID links a client failure to the service log
+            # entry. PowerShell 7 header collections require TryGetValues,
+            # while Windows PowerShell 5.1 supports indexed access.
             $headerValues = $null
             if ($httpResponse.Headers.PSObject.Methods['TryGetValues'] -and
                 $httpResponse.Headers.TryGetValues(
@@ -817,6 +827,8 @@ while ($pendingImports.Count -gt 0) {
     }
 
     foreach ($pendingImport in @($pendingImports)) {
+        # Iterate over a copy because completed entries are removed from the
+        # original list inside the loop.
         $statusUrl = "$($runtimeConfiguration.ImportUrl)?importId=$($pendingImport.ImportId)"
         try {
             Write-Verbose "Requesting status for import '$($pendingImport.ImportId)' and serial '$($pendingImport.SerialNumber)'."
@@ -833,6 +845,8 @@ while ($pendingImports.Count -gt 0) {
 
         $pendingImport.LastStatus = $status
         Write-AutoPilotImportStatus -Status $status
+        # workflowStatus covers the Intune import and the subsequent Entra
+        # device attribute processing; only these two values are terminal.
         if (([string] $status.workflowStatus) -in @('complete', 'error')) {
             $finalStatuses.Add($status)
             [void] $pendingImports.Remove($pendingImport)
@@ -844,6 +858,8 @@ $failedStatuses = @(
     $finalStatuses |
         Where-Object { [string] $_.workflowStatus -eq 'error' }
 )
+# Emit every final status first so the caller receives complete results even
+# when the terminating error below is raised for failed devices.
 $finalStatuses | Write-Output
 if ($failedStatuses.Count -gt 0) {
     $failedSerials = @($failedStatuses.serialNumber) -join ', '

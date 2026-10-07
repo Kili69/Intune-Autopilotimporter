@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.3.20261007.2
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -60,6 +60,19 @@ param(
 )
 
 $graphApplicationId = '00000003-0000-0000-c000-000000000000'
+# Application permissions required by the Function App at runtime. The managed
+# identity runs without a signed-in user, so every Graph call relies on these
+# application roles:
+# - AdministrativeUnit.ReadWrite.All resolves the optional administrative unit
+#   and adds the imported device as a member.
+# - DeviceManagementServiceConfig.ReadWrite.All imports the Autopilot device
+#   identity into Intune.
+# - DeviceManagementRBAC.Read.All checks Intune role membership before a Group
+#   Tag change is accepted.
+# - Device.ReadWrite.All writes the authorized Group Tag to the configured
+#   Entra device extension attribute.
+# - GroupMember.Read.All and User.ReadBasic.All evaluate the calling user's
+#   group membership against the Group Tag policy.
 $permissionNames = @(
     'AdministrativeUnit.ReadWrite.All'
     'DeviceManagementServiceConfig.ReadWrite.All'
@@ -89,11 +102,15 @@ Connect-MgGraph @connectParameters
 $graphContext = Get-MgContext
 Write-Host "Microsoft Graph account: $($graphContext.Account)"
 
+# Microsoft Graph exposes its application permissions as app roles on its own
+# service principal. Read them to translate permission names into role IDs.
 $filter = [uri]::EscapeDataString("appId eq '$graphApplicationId'")
 $graphResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=$filter&`$select=id,appRoles"
 $graphServicePrincipal = @($graphResponse['value']) | Select-Object -First 1
+# Read the assignments once, so each permission can be checked without an
+# additional request and the script stays safe to run repeatedly.
 $assignmentResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments?`$select=resourceId,appRoleId"
@@ -102,6 +119,9 @@ $existingAssignments = @($assignmentResponse['value']) | Where-Object {
     }
 
 foreach ($permissionName in $permissionNames) {
+    # Restrict the lookup to application roles. Graph publishes delegated
+    # permissions under the same name, but those cannot be assigned to a
+    # managed identity.
     $permission = $graphServicePrincipal.appRoles | Where-Object {
         $_.value -eq $permissionName -and $_.allowedMemberTypes -contains 'Application'
     } | Select-Object -First 1
@@ -119,6 +139,8 @@ foreach ($permissionName in $permissionNames) {
     }
 
     try {
+        # principalId is the managed identity, resourceId is Microsoft Graph,
+        # and appRoleId is the granted application permission.
         Invoke-MgGraphRequest `
             -Method POST `
             -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `

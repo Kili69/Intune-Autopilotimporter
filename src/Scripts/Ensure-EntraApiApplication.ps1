@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.3.20261007.2
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -13,9 +13,19 @@ Creates or updates the Entra application used by the Autopilot import API.
 
 .DESCRIPTION
 Ensures an Entra app registration and enterprise application exist for the
-Function API. Configures a delegated API scope, an application role, security
-group claims, endpoint-level authorization, Azure PowerShell preauthorization, and
-the delegated API scope.
+Function API. The installer uses the returned application and scope identifiers
+to configure the web app registration, Easy Auth, and the Function App's token
+audience.
+
+The script performs the following operations:
+- Finds the app registration by client ID or display name, or creates it.
+- Exposes the DeviceHash.Import delegated permission with an api:// application
+  ID URI and version 2 access tokens.
+- Adds security group claims used for Group Tag authorization.
+- Preauthorizes Azure PowerShell for the delegated permission because the
+  shipped PowerShell clients acquire API tokens through Get-AzAccessToken.
+- Creates the corresponding service principal and permits endpoint-level
+  authorization instead of requiring an enterprise-app role assignment.
 
 The operation is idempotent and preserves unrelated scopes, roles, application
 ID URIs, and preauthorized clients.
@@ -51,8 +61,9 @@ Creates or updates the default API application.
 Previews changes to a specific existing application.
 
 .OUTPUTS
-PSCustomObject describing the app registration, enterprise application, API
-Application ID URI and delegated scope.
+PSCustomObject containing the app registration client and object IDs, enterprise
+application object ID, API Application ID URI, delegated scope name and ID, and
+the installing user's object ID and user principal name.
 
 .NOTES
 Requires Microsoft.Graph.Authentication and delegated permissions
@@ -78,6 +89,15 @@ $azurePowerShellClientId = '1950a258-227b-4e31-a9cf-717495945fc2'
 $scopeValue = 'DeviceHash.Import'
 
 function Get-GraphCollectionItems {
+    <#
+    .SYNOPSIS
+    Normalizes Microsoft Graph collection responses to a PowerShell array.
+
+    .DESCRIPTION
+    Invoke-MgGraphRequest can return a dictionary, a deserialized object with a
+    value property, or a single object depending on module and response shape.
+    This helper gives the discovery queries one consistent collection shape.
+    #>
     param(
         [object] $Response
     )
@@ -94,6 +114,8 @@ function Get-GraphCollectionItems {
     return @($Response)
 }
 
+# Use delegated Graph permissions so the administrator performing installation
+# remains visible and can be passed to the infrastructure deployment.
 $graphConnectParameters = @{
     TenantId  = $TenantId
     Scopes    = @('Application.ReadWrite.All', 'User.Read')
@@ -110,6 +132,9 @@ $installingUser = Invoke-MgGraphRequest `
     -Method GET `
     -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
 
+# Prefer a stable client ID when supplied. Display-name discovery supports the
+# first installation, but rejects duplicates rather than updating an arbitrary
+# app registration.
 if ([string]::IsNullOrWhiteSpace($ClientId)) {
     $escapedDisplayName = $DisplayName.Replace("'", "''")
     $filter = [uri]::EscapeDataString("displayName eq '$escapedDisplayName'")
@@ -158,11 +183,15 @@ else {
     Write-Host "Using existing Entra application '$($application.displayName)' ($($application.appId))."
 }
 
+# Reuse the existing scope ID because changing it would invalidate delegated
+# permission grants held by the web and PowerShell clients.
 $scope = @($application.api.oauth2PermissionScopes | Where-Object value -eq $scopeValue) |
     Select-Object -First 1
 $scopeId = if ($scope) { [string] $scope.id } else { [guid]::NewGuid().ToString() }
 $applicationIdUri = "api://$($application.appId)"
 
+# Microsoft Graph replaces nested API collections during PATCH operations.
+# Retain every scope, preauthorized client, and identifier URI not managed here.
 $otherScopes = @($application.api.oauth2PermissionScopes | Where-Object value -ne $scopeValue |
     ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable })
 $otherPreAuthorizedApplications = @(
@@ -222,6 +251,9 @@ elseif (-not $apiConfigurationNeedsUpdate) {
     Write-Host "Entra application API configuration is already current."
 }
 
+# Azure PowerShell is the public client used by Get-AzAccessToken in the shipped
+# PowerShell tools. Preauthorization avoids an additional interactive consent
+# prompt while still limiting the client to the DeviceHash.Import scope.
 $existingPreAuthorization = @($application.api.preAuthorizedApplications |
     Where-Object appId -eq $azurePowerShellClientId) |
     Select-Object -First 1
@@ -259,6 +291,8 @@ elseif (-not $preAuthorizationNeedsUpdate) {
     Write-Host 'Azure PowerShell is already preauthorized for the API scope.'
 }
 
+# The app registration defines the API. Its tenant-local service principal is
+# the enterprise application evaluated when callers request and present tokens.
 $servicePrincipalFilter = [uri]::EscapeDataString("appId eq '$($application.appId)'")
 $servicePrincipalResponse = Invoke-MgGraphRequest `
     -Method GET `
@@ -273,6 +307,8 @@ if (-not $servicePrincipal -and $PSCmdlet.ShouldProcess($DisplayName, 'Create en
         -Body @{ appId = [string] $application.appId }
 }
 
+# Authorization is enforced by Easy Auth and the Function endpoints. Requiring
+# an enterprise-app assignment here would add a second, unintended access gate.
 if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
     $PSCmdlet.ShouldProcess($DisplayName, 'Allow endpoint-level authorization')) {
     Invoke-MgGraphRequest `

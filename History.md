@@ -2,7 +2,9 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261007.2` - 2026-10-07
+## `1.3.20261007.3` - 2026-10-07
+
+- Expanded the PowerShell script documentation with workflow descriptions, parameter and output help, inline explanations, version consistency guidance, deployment-package checks, change-history validation, and cross-version REST error handling.
 
 - Restructured the README and Developer Guide to separate user installation guidance from deployment, pipeline, testing, versioning, and operational documentation, and added sanitized import and re-tagging workflow screenshots.
 
