@@ -4,22 +4,32 @@
     "azureFunctions.projectRuntime": "~4",
     "debug.internalConsoleOptions": "neverOpen",
     "cSpell.words": [
+        "asuid",
         "authsettings",
         "autoloading",
         "Autopilotimport",
+        "autopilotimporter",
+        "clickjacking",
         "contoso",
         "functionapp",
         "hashtable",
+        "HWID",
         "Intune",
         "Kili",
         "LASTEXITCODE",
         "managedidentity",
+        "MSAL",
+        "noninteractive",
+        "PKCE",
+        "preauthorization",
         "pscustomobject",
         "psmodule",
+        "retagging",
         "RMAU",
         "serverfarms",
         "westeurope",
         "westus",
-        "winget"
+        "winget",
+        "wwwroot"
     ]
 }

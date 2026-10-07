@@ -2,11 +2,14 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261007.1` - 2026-10-07
+## `1.3.20261007.2` - 2026-10-07
+
+- Restructured the README and Developer Guide to separate user installation guidance from deployment, pipeline, testing, versioning, and operational documentation, and added sanitized import and re-tagging workflow screenshots.
 
 - Reworked the README into a GitHub-oriented project page with centered branding, build and platform badges, compact navigation, the project support link, clearer device-import paths for the web frontend, Windows OOBE, the PowerShell module, and direct REST calls, and a dedicated re-tagging guide for every supported client.
 - Replaced the previous Yeti web asset with the new project logo in both the frontend source and generated Function content, including accessible alternative text and versioned frontend output.
 - Added `Get-AutoPilotDeviceTagAssignment` and `Set-AutoPilotDeviceGroupTag` to list eligible uninstalled Autopilot devices and submit authorized Group Tag changes from PowerShell, with pipeline and multi-device input, `WhatIf`, optional completion polling, timeout controls, actionable service errors, and packaged-module exports.
+- Documented the retagging Function contract, required Graph application permissions, and PowerShell client interfaces in `DEVELOPER.md`, and moved the README navigation into an `In this article` section below the branding and support link.
 - Extended client and packaging tests for the new commands and verified the complete PowerShell suite with the project Pester and Azure module dependencies.
 
 ## `1.3.20261006.6` - 2026-10-06
