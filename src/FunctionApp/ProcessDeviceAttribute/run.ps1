@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -14,8 +14,9 @@ Successful updates are idempotent.
 
 .PARAMETER QueueItem
 Message supplied by the Azure Storage Queue trigger. The value may be a JSON
-string or a deserialized object and must contain importId and groupTag. It may
-also contain administrativeUnitName.
+string or a deserialized object and must contain either importId for a new
+import or operationId and registeredDeviceId for a Group Tag change. It must
+also contain groupTag and may contain administrativeUnitName.
 
 .PARAMETER TriggerMetadata
 Metadata supplied by the Azure Functions PowerShell worker for the queue
@@ -61,14 +62,30 @@ else {
 }
 
 # Reject malformed queue data permanently rather than issuing Graph requests
-# with an ambiguous import identity or missing authorized Group Tag.
+# with an ambiguous work-item identity or missing authorized Group Tag.
 $importId = [guid]::Empty
-if (-not [guid]::TryParse([string] $message.importId, [ref] $importId)) {
-    throw 'Queued Autopilot import ID is invalid.'
+$registeredDeviceId = [guid]::Empty
+$operationId = [guid]::Empty
+$isTagChange = [guid]::TryParse(
+    [string] $message.registeredDeviceId,
+    [ref] $registeredDeviceId)
+if ($isTagChange) {
+    if (-not [guid]::TryParse(
+            [string] $message.operationId,
+            [ref] $operationId)) {
+        throw 'Queued Group Tag change operation ID is invalid.'
+    }
+    $auditId = $operationId
+}
+else {
+    if (-not [guid]::TryParse([string] $message.importId, [ref] $importId)) {
+        throw 'Queued Autopilot import ID is invalid.'
+    }
+    $auditId = $importId
 }
 $groupTag = [string] $message.groupTag
 if ([string]::IsNullOrWhiteSpace($groupTag)) {
-    throw "Queued Group Tag is missing for import '$importId'."
+    throw "Queued Group Tag is missing for work item '$auditId'."
 }
 
 $auditToken = Get-ImportAuditAccessToken
@@ -79,15 +96,15 @@ if ($message.PSObject.Properties['audit'] -and $message.audit) {
     }
 }
 $existingAuditRecord = (Get-ImportAuditRecords `
-        -ImportId $importId `
-        -AccessToken $auditToken)[[string] $importId]
+        -ImportId $auditId `
+        -AccessToken $auditToken)[[string] $auditId]
 if (-not $existingAuditRecord -or [string]::IsNullOrWhiteSpace(
         [string] $existingAuditRecord.processingStartedAtUtc)) {
     $initialAuditProperties['processingStartedAtUtc'] = `
         [datetime]::UtcNow.ToString('o')
 }
 Set-ImportAuditRecord `
-    -ImportId $importId `
+    -ImportId $auditId `
     -Properties $initialAuditProperties `
     -AccessToken $auditToken
 
@@ -135,31 +152,57 @@ else {
 }
 $secureToken = ConvertTo-SecureString $accessToken -AsPlainText -Force
 
-# Resolve the asynchronous identity chain: queued import ID -> completed
-# Autopilot registration ID -> Entra device ID. Missing IDs throw deliberately
-# so the Storage Queue retry policy can try again after Intune progresses.
-$importedDevice = Invoke-RestMethod `
-    -Method Get `
-    -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importId" `
-    -Authentication Bearer `
-    -Token $secureToken `
-    -ErrorAction Stop
-$registrationId = Get-AutoPilotDeviceRegistrationId `
-    -ImportedDevice $importedDevice
-$registeredDevice = Invoke-RestMethod `
-    -Method Get `
-    -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registrationId" `
-    -Authentication Bearer `
-    -Token $secureToken `
-    -ErrorAction Stop
+# Resolve either the asynchronous import identity chain or the existing
+# registered Autopilot identity selected for a Group Tag change.
+if ($isTagChange) {
+    $registeredDevice = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registeredDeviceId" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ErrorAction Stop
+    if ([string] $registeredDevice.enrollmentState -ine 'notContacted') {
+        throw "Autopilot device '$registeredDeviceId' is no longer eligible for a Group Tag change."
+    }
+    Invoke-RestMethod `
+        -Method Post `
+        -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registeredDeviceId/updateDeviceProperties" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ContentType 'application/json' `
+        -Body (@{ groupTag = $groupTag } | ConvertTo-Json -Compress) `
+        -ErrorAction Stop | Out-Null
+    Set-ImportAuditRecord `
+        -ImportId $auditId `
+        -Properties @{
+            autopilotGroupTagUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+        } `
+        -AccessToken $auditToken
+}
+else {
+    $importedDevice = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importId" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ErrorAction Stop
+    $registrationId = Get-AutoPilotDeviceRegistrationId `
+        -ImportedDevice $importedDevice
+    $registeredDevice = Invoke-RestMethod `
+        -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registrationId" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ErrorAction Stop
+}
 $entraDeviceId = [guid]::Empty
 if (-not [guid]::TryParse(
         [string] $registeredDevice.azureActiveDirectoryDeviceId,
         [ref] $entraDeviceId)) {
-    throw "Entra device is not available yet for Autopilot import '$importId'."
+    throw "Entra device is not available yet for work item '$auditId'."
 }
 Set-ImportAuditRecord `
-    -ImportId $importId `
+    -ImportId $auditId `
     -Properties @{
         entraDeviceResolvedAtUtc = [datetime]::UtcNow.ToString('o')
         entraDeviceId = $entraDeviceId.ToString()
@@ -169,8 +212,8 @@ Set-ImportAuditRecord `
 # Administrative-unit membership requires the Entra object ID, which differs
 # from the deviceId (azureActiveDirectoryDeviceId) resolved above.
 $deviceObjectId = [guid]::Empty
-if (-not [string]::IsNullOrWhiteSpace(
-        $administrativeUnitName)) {
+if ($isTagChange -or
+    -not [string]::IsNullOrWhiteSpace($administrativeUnitName)) {
     $entraDevice = Invoke-RestMethod `
         -Method Get `
         -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
@@ -181,27 +224,6 @@ if (-not [string]::IsNullOrWhiteSpace(
         throw "Entra device object ID is unavailable for device '$entraDeviceId'."
     }
 
-    # Membership is the completion marker for the optional AU workflow. An
-    # existing membership means a prior delivery already completed both writes.
-    $existingMembership = `
-        Add-EntraDeviceToAdministrativeUnit `
-            -AdministrativeUnitName `
-                $administrativeUnitName `
-            -DeviceObjectId $deviceObjectId `
-            -AccessToken $secureToken `
-            -TestOnly
-    if ($existingMembership.IsMember) {
-        $completedAtUtc = [datetime]::UtcNow.ToString('o')
-        Set-ImportAuditRecord `
-            -ImportId $importId `
-            -Properties @{
-                administrativeUnitAssignedAtUtc = $completedAtUtc
-                processingCompletedAtUtc = $completedAtUtc
-            } `
-            -AccessToken $auditToken
-        Write-Information "Entra device '$entraDeviceId' is already a member of administrative unit '$administrativeUnitName'."
-        return
-    }
 }
 
 # Write the authorized Group Tag before adding optional AU membership. This
@@ -217,7 +239,7 @@ Invoke-RestMethod `
     -ErrorAction Stop | Out-Null
 
 Set-ImportAuditRecord `
-    -ImportId $importId `
+    -ImportId $auditId `
     -Properties @{
         extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
     } `
@@ -225,34 +247,23 @@ Set-ImportAuditRecord `
 
 Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
 
-if (-not [string]::IsNullOrWhiteSpace(
-        $administrativeUnitName)) {
-    # The helper rechecks membership and performs the add only when necessary,
-    # keeping retries and duplicate queue deliveries idempotent.
-    $membershipResult = `
-        Add-EntraDeviceToAdministrativeUnit `
-            -AdministrativeUnitName `
-                $administrativeUnitName `
-            -DeviceObjectId $deviceObjectId `
-            -AccessToken $secureToken
-    $membershipAction = if ($membershipResult.MembershipAdded) {
-        'added to'
-    }
-    else {
-        'already a member of'
-    }
-    Write-Information "Entra device '$entraDeviceId' $membershipAction administrative unit '$administrativeUnitName'."
-
+if ($deviceObjectId -ne [guid]::Empty) {
+    $membershipResult = Sync-EntraDeviceAdministrativeUnits `
+        -Policy $tagAuthorizationPolicy `
+        -AdministrativeUnitName ([string] $administrativeUnitName) `
+        -DeviceObjectId $deviceObjectId `
+        -AccessToken $secureToken
     Set-ImportAuditRecord `
-        -ImportId $importId `
+        -ImportId $auditId `
         -Properties @{
             administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
         } `
         -AccessToken $auditToken
+    Write-Information "Synchronized policy-managed administrative units for Entra device '$entraDeviceId'."
 }
 
 Set-ImportAuditRecord `
-    -ImportId $importId `
+    -ImportId $auditId `
     -Properties @{
         processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
     } `

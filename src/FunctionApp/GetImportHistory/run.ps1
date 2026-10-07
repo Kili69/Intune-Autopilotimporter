@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -337,11 +337,32 @@ $history = @($auditRecords | ForEach-Object {
         else {
             $null
         }
+        $timelineProperties = @(
+            'requestReceivedAtUtc'
+            'graphImportCreatedAtUtc'
+            'queuedAtUtc'
+            'processingStartedAtUtc'
+            'entraDeviceResolvedAtUtc'
+            'autopilotGroupTagUpdatedAtUtc'
+            'extensionAttributeUpdatedAtUtc'
+            'administrativeUnitAssignedAtUtc'
+            'processingCompletedAtUtc'
+            'Timestamp'
+        )
+        $lastUpdated = @($timelineProperties | ForEach-Object {
+            $property = $audit.PSObject.Properties[$_]
+            if ($property -and -not [string]::IsNullOrWhiteSpace(
+                    [string] $property.Value)) {
+                [datetimeoffset] $property.Value
+            }
+        } | Sort-Object -Descending | Select-Object -First 1)
         [pscustomobject][ordered]@{
             importId                         = [string] $audit.RowKey
+            operationType                    = if ($audit.PSObject.Properties['operationType']) { [string] $audit.operationType } else { 'import' }
             batchImportId                    = if ($graphRecord) { [string] $graphRecord.importId } else { [string] $audit.batchImportId }
             serialNumber                     = if ($graphRecord) { [string] $graphRecord.serialNumber } else { [string] $audit.serialNumber }
             groupTag                         = if ($graphRecord) { [string] $graphRecord.groupTag } else { [string] $audit.groupTag }
+            previousGroupTag                 = if ($audit.PSObject.Properties['previousGroupTag']) { [string] $audit.previousGroupTag } else { $null }
             status                           = if ($graphRecord) { [string] $graphRecord.state.deviceImportStatus } else { $null }
             deviceHashSha256                 = if ($audit) { [string] $audit.deviceHashSha256 } else { $null }
             deviceErrorCode                  = if ($graphRecord) { $graphRecord.state.deviceErrorCode } else { $null }
@@ -355,9 +376,11 @@ $history = @($auditRecords | ForEach-Object {
             queuedAtUtc                       = if ($audit) { [string] $audit.queuedAtUtc } else { $null }
             processingStartedAtUtc            = if ($audit) { [string] $audit.processingStartedAtUtc } else { $null }
             entraDeviceResolvedAtUtc          = if ($audit) { [string] $audit.entraDeviceResolvedAtUtc } else { $null }
+            autopilotGroupTagUpdatedAtUtc     = if ($audit.PSObject.Properties['autopilotGroupTagUpdatedAtUtc']) { [string] $audit.autopilotGroupTagUpdatedAtUtc } else { $null }
             extensionAttributeUpdatedAtUtc    = if ($audit) { [string] $audit.extensionAttributeUpdatedAtUtc } else { $null }
             administrativeUnitAssignedAtUtc   = if ($audit) { [string] $audit.administrativeUnitAssignedAtUtc } else { $null }
             processingCompletedAtUtc          = if ($audit) { [string] $audit.processingCompletedAtUtc } else { $null }
+            lastUpdatedAtUtc                  = if ($lastUpdated.Count -gt 0) { $lastUpdated[0].ToUniversalTime().ToString('o') } else { $null }
         }
     })
 

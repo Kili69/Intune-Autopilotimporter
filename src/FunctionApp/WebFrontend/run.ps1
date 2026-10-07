@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -92,6 +92,7 @@ if ($requestedPath -ieq 'config') {
             silentRedirectUri = "$origin/api/ui/auth.html"
             importUrl        = "$origin/api/devices/import"
             tagsUrl          = "$origin/api/devices/tags"
+            deviceTagAssignmentsUrl = "$origin/api/devices/tags/assignments"
             importHistoryUrl = "$origin/api/management/imports"
             functionVersion   = $functionVersion
         } | ConvertTo-Json -Compress)
@@ -122,6 +123,10 @@ $contentTypes = @{
     '.html' = 'text/html; charset=utf-8'
     '.js'   = 'text/javascript; charset=utf-8'
     '.css'  = 'text/css; charset=utf-8'
+    '.png'  = 'image/png'
+    '.jpg'  = 'image/jpeg'
+    '.jpeg' = 'image/jpeg'
+    '.webp' = 'image/webp'
     '.svg'  = 'image/svg+xml'
     '.ico'  = 'image/x-icon'
     '.json' = 'application/json; charset=utf-8'
@@ -140,11 +145,15 @@ else {
     'public, max-age=31536000, immutable'
 }
 $textExtensions = @('.html', '.js', '.css', '.svg', '.json')
-$body = if ($extension -in $textExtensions) {
-    [IO.File]::ReadAllText($resolvedPath, [Text.Encoding]::UTF8)
+$body = $null
+if ($extension -in $textExtensions) {
+    $body = [IO.File]::ReadAllText(
+        $resolvedPath,
+        [Text.Encoding]::UTF8
+    )
 }
 else {
-    [IO.File]::ReadAllBytes($resolvedPath)
+    [byte[]] $body = [IO.File]::ReadAllBytes($resolvedPath)
 }
 
 Send-Response `

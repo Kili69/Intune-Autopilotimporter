@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -80,11 +80,25 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Assert-BuiltWebFrontend {
+    <#
+    .SYNOPSIS
+    Verifies that a complete prebuilt web frontend is present.
+
+    .DESCRIPTION
+    The package ships the compiled frontend so that installation does not
+    require Node.js. Vite generates asset file names with a content hash, so a
+    stale index can reference files that no longer exist. This check therefore
+    validates not only the index but every asset it references.
+
+    .PARAMETER Root
+    Source tree in repository or extracted-package layout.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $Root
     )
 
+    # Support both the repository layout and an already extracted package.
     $sourceWebRoot = Join-Path $Root `
         'src\FunctionApp\WebFrontend\wwwroot'
     $webRoot = if (Test-Path -LiteralPath $sourceWebRoot -PathType Container) {
@@ -99,6 +113,8 @@ function Assert-BuiltWebFrontend {
     }
 
     $index = Get-Content -LiteralPath $indexPath -Raw
+    # The frontend is served under /api/ui, so the index can reference assets
+    # with or without that prefix.
     $assetMatches = [regex]::Matches(
         $index,
         '(?:src|href)=["''](?:/api/ui/)?(?<path>assets/[^"'']+)["'']'
@@ -107,6 +123,8 @@ function Assert-BuiltWebFrontend {
         throw "The prebuilt web frontend index does not reference any assets: $indexPath"
     }
 
+    # An index without a JavaScript bundle would produce an empty page at
+    # runtime, so a stylesheet alone is not sufficient.
     $hasJavaScriptAsset = $false
     foreach ($assetMatch in $assetMatches) {
         $relativePath = $assetMatch.Groups['path'].Value.Replace(
@@ -128,6 +146,21 @@ function Assert-BuiltWebFrontend {
 }
 
 function Assert-ProjectVersionConsistency {
+    <#
+    .SYNOPSIS
+    Verifies that all version markers match VERSION.
+
+    .DESCRIPTION
+    Prevents a package whose files report different versions. Such a package
+    would make the installed version impossible to determine reliably and would
+    break the update path. Run Update-ProjectVersion.ps1 to fix a mismatch.
+
+    .PARAMETER Root
+    Source tree to check.
+
+    .PARAMETER ProjectVersion
+    Expected version from VERSION.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $Root,
@@ -170,6 +203,25 @@ function Assert-ProjectVersionConsistency {
 }
 
 function Resolve-PackageBranchName {
+    <#
+    .SYNOPSIS
+    Determines the branch name used in the package name.
+
+    .DESCRIPTION
+    Resolves the branch from the explicit parameter, then from the GitHub or
+    Azure Pipelines environment, and finally from the local Git checkout. A
+    build agent often works in a detached HEAD state, where Git cannot report a
+    branch, which is why the environment variables take precedence.
+
+    .PARAMETER Name
+    Explicitly supplied branch name.
+
+    .PARAMETER Root
+    Repository directory used for the Git query.
+
+    .OUTPUTS
+    String containing a branch name safe for use in a file name.
+    #>
     param(
         [string] $Name,
         [Parameter(Mandatory)]
@@ -250,6 +302,7 @@ $packageEntries = @(
     @{ Source = 'src\Installer\Update-AutopilotImport.ps1'; Destination = 'Update-AutopilotImport.ps1' }
     @{ Source = 'src\FunctionApp\ImportDevice'; Destination = 'ImportDevice' }
     @{ Source = 'src\FunctionApp\GetAuthorizedTags'; Destination = 'GetAuthorizedTags' }
+    @{ Source = 'src\FunctionApp\ManageDeviceTags'; Destination = 'ManageDeviceTags' }
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }

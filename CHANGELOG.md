@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `Get-AutoPilotDeviceTagAssignment` and
+  `Set-AutoPilotDeviceGroupTag` to list eligible Autopilot devices and submit
+  authorized Group Tag changes from PowerShell, including pipeline input,
+  `WhatIf`, completion polling, and timeout controls.
+- Documented the device retagging PowerShell and REST API interfaces in the
+  developer guide, including authorization, request and response contracts,
+  asynchronous status polling, and client-module usage.
+
+### Changed
+
+- Moved the README navigation into an `In this article` section below the
+  project branding and support link so the logo and header remain at the top.
+
+## [1.2.20261006.1] - 2026-10-06
+
+### Added
+
+- Added a responsive Yeti logo to the right side of the web header.
+
+### Changed
+
+- Removed the redundant new-import label, identified Microsoft Intune directly in the device-registration heading, and reduced the whitespace above the import workspace.
+
 ## [1.2.20261004.9] - 2026-10-04
 
 ### Added
@@ -88,7 +113,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added the initial secured Azure Function workflow for Windows Autopilot imports.
 
 [Unreleased]: https://github.com/Kili69/Intune-Autopilotimporter/compare/dev...HEAD
-[1.2.20261004.9]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.2.20261003.1...dev
+[1.2.20261006.1]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.2.20261004.9...dev
+[1.2.20261004.9]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-10-04&until=2026-10-05
 [1.2.20261003.1]: https://github.com/Kili69/Intune-Autopilotimporter/releases/tag/v1.2.20261003.1
 [1.2.20260929.4]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-09-29&until=2026-09-30
 [1.1.20260918.4]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-09-18&until=2026-09-19

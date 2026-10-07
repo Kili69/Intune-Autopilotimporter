@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -157,6 +157,136 @@ Describe 'Client CSV input validation' {
             -FunctionUrl 'https://func.example/api/devices/import' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Get-ClientAccessToken `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+    }
+}
+
+Describe 'Client device Group Tag changes' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+        $script:clientConnection = @{
+            FunctionUrl = 'https://func.example/api/devices/import'
+            ApiApplicationIdUri = `
+                'api://33333333-3333-3333-3333-333333333333'
+            TenantId = '44444444-4444-4444-4444-444444444444'
+        }
+    }
+
+    BeforeEach {
+        Mock Get-ClientAccessToken {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        } -ModuleName AutopilotImport.Client
+    }
+
+    It 'lists eligible devices from the tag assignments endpoint' {
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                devices = @(
+                    [pscustomobject]@{
+                        id = '11111111-1111-1111-1111-111111111111'
+                        serialNumber = 'SERIAL-001'
+                        groupTag = 'Shared'
+                        groups = @('Autopilot Users')
+                        administrativeUnits = @('Shared Devices')
+                    }
+                )
+                count = 1
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = @(Get-AutoPilotDeviceTagAssignment @clientConnection)
+
+        $result.Count | Should -Be 1
+        $result[0].serialNumber | Should -Be 'SERIAL-001'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Get' -and
+                $Uri -eq `
+                    'https://func.example/api/devices/tags/assignments'
+            }
+    }
+
+    It 'accepts a listed device through the pipeline and queues its new tag' {
+        $deviceId = '11111111-1111-1111-1111-111111111111'
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                operationId = '22222222-2222-2222-2222-222222222222'
+                serialNumber = 'SERIAL-001'
+                groupTag = 'Kiosk'
+                status = 'queued'
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = [pscustomobject]@{ id = $deviceId } |
+            Set-AutoPilotDeviceGroupTag `
+                -GroupTag 'Kiosk' `
+                @clientConnection `
+                -Confirm:$false
+
+        $result.operationId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.isFinal | Should -BeFalse
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $request = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                $Uri -eq `
+                    'https://func.example/api/devices/tags/assignments' -and
+                $request.deviceId -eq $deviceId -and
+                $request.groupTag -eq 'Kiosk'
+            }
+    }
+
+    It 'waits for the queued tag change to complete' {
+        $script:tagChangeRequestCount = 0
+        Mock Invoke-RestMethod {
+            $script:tagChangeRequestCount++
+            if ($Method -eq 'Post') {
+                return [pscustomobject]@{
+                    operationId = '22222222-2222-2222-2222-222222222222'
+                    status = 'queued'
+                }
+            }
+            return [pscustomobject]@{
+                operationId = '22222222-2222-2222-2222-222222222222'
+                serialNumber = 'SERIAL-001'
+                groupTag = 'Kiosk'
+                workflowStatus = 'complete'
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = Set-AutoPilotDeviceGroupTag `
+            -DeviceId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Kiosk' `
+            @clientConnection `
+            -Wait `
+            -Confirm:$false
+
+        $result.workflowStatus | Should -Be 'complete'
+        $result.isFinal | Should -BeTrue
+        $script:tagChangeRequestCount | Should -Be 2
+    }
+
+    It 'does not authenticate or call the service with WhatIf' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client
+
+        Set-AutoPilotDeviceGroupTag `
+            -DeviceId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Kiosk' `
+            @clientConnection `
             -WhatIf
 
         Should -Invoke Get-ClientAccessToken `
@@ -541,6 +671,7 @@ Describe 'Client configuration display' {
         $expectedCommands = @(
             'Add-AutoPilotTagPolicy'
             'Add-AutoPilotTagPolicyManager'
+            'Get-AutoPilotDeviceTagAssignment'
             'Get-AutoPilotImporterClientConfiguration'
             'Get-AutoPilotImportHistory'
             'Get-AutoPilotImportStatus'
@@ -550,6 +681,7 @@ Describe 'Client configuration display' {
             'New-AutoPilotImporterClientConfiguration'
             'Remove-AutoPilotTagPolicy'
             'Remove-AutoPilotTagPolicyManager'
+            'Set-AutoPilotDeviceGroupTag'
             'Set-AutoPilotTagPolicy'
             'Update-AutoPilotTagPolicyManager'
         )
@@ -1373,6 +1505,8 @@ Describe 'Import history endpoint' {
         $historyFunction | Should -Match 'requestedByUserPrincipalName'
         $historyFunction | Should -Match 'extensionAttributeUpdatedAtUtc'
         $historyFunction | Should -Match 'processingCompletedAtUtc'
+        $historyFunction | Should -Match 'lastUpdatedAtUtc'
+        $historyFunction | Should -Match 'autopilotGroupTagUpdatedAtUtc'
         $historyFunction | Should -Not -Match '\.hardwareIdentifier'
         $historyFunction | Should -Not -Match '\.productKey'
     }
@@ -2840,6 +2974,79 @@ Describe 'Administrative unit membership' {
                 -ParameterFilter { $Method -eq 'Post' }
         }
 
+        It 'moves a device between policy-managed administrative units' {
+            $deviceObjectId = [guid] `
+                '11111111-1111-1111-1111-111111111111'
+            $oldUnitId = '22222222-2222-2222-2222-222222222222'
+            $newUnitId = '33333333-3333-3333-3333-333333333333'
+            Mock Invoke-RestMethod {
+                if ($Uri -match '/directory/administrativeUnits\?') {
+                    $name = if ($Uri -match 'RMAU-Old') {
+                        'RMAU-Old'
+                    }
+                    else {
+                        'RMAU-New'
+                    }
+                    $id = if ($name -eq 'RMAU-Old') {
+                        $oldUnitId
+                    }
+                    else {
+                        $newUnitId
+                    }
+                    return @{
+                        value = @([pscustomobject]@{
+                            id = $id
+                            displayName = $name
+                            isMemberManagementRestricted = $true
+                        })
+                    }
+                }
+                if ($Uri -match "$oldUnitId/members\?") {
+                    return @{
+                        value = @([pscustomobject]@{
+                            id = $deviceObjectId.ToString()
+                        })
+                    }
+                }
+                if ($Uri -match "$newUnitId/members\?") {
+                    return @{ value = @() }
+                }
+                return $null
+            }
+            $policy = @(
+                [pscustomobject]@{
+                    groupId = [guid]::NewGuid()
+                    tags = @('Old')
+                    administrativeUnitName = 'RMAU-Old'
+                }
+                [pscustomobject]@{
+                    groupId = [guid]::NewGuid()
+                    tags = @('New')
+                    administrativeUnitName = 'RMAU-New'
+                }
+            )
+
+            $result = Sync-EntraDeviceAdministrativeUnits `
+                -Policy $policy `
+                -AdministrativeUnitName 'RMAU-New' `
+                -DeviceObjectId $deviceObjectId `
+                -AccessToken (ConvertTo-SecureString 'token' `
+                    -AsPlainText -Force)
+
+            $result.RemovedAdministrativeUnits | Should -Be 'RMAU-Old'
+            $result.MembershipAdded | Should -BeTrue
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter {
+                    $Method -eq 'Delete' -and
+                    $Uri -match "$oldUnitId/members/$deviceObjectId/\`$ref$"
+                }
+            Assert-MockCalled Invoke-RestMethod -Times 1 `
+                -ParameterFilter {
+                    $Method -eq 'Post' -and
+                    $Uri -match "$newUnitId/members/\`$ref$"
+                }
+        }
+
         It 'rejects a missing administrative unit' {
             $script:administrativeUnits = @()
 
@@ -3181,6 +3388,12 @@ Describe 'Installer client tools package' {
             Get-Command Get-AutoPilotTagPolicyManager `
                 -Module AutopilotImport.Client `
                 -ErrorAction Stop | Should -Not -BeNullOrEmpty
+            Get-Command Get-AutoPilotDeviceTagAssignment `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
+            Get-Command Set-AutoPilotDeviceGroupTag `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
         }
         finally {
             Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
@@ -3190,7 +3403,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 13
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 15
         Remove-Module AutopilotImport.Client
     }
 }
@@ -4969,11 +5182,15 @@ Describe 'Web frontend response types' {
         $frontendFunction | Should -Match `
             "\$textExtensions = @\('\.html', '\.js', '\.css', '\.svg', '\.json'\)"
         $frontendFunction | Should -Match `
-            '\[IO\.File\]::ReadAllText\(\$resolvedPath, \[Text\.Encoding\]::UTF8\)'
+            '(?s)\[IO\.File\]::ReadAllText\(\s*\$resolvedPath,\s*\[Text\.Encoding\]::UTF8\s*\)'
         $frontendFunction | Should -Match `
             "'\.html' = 'text/html; charset=utf-8'"
         $frontendFunction | Should -Match `
             "'\.js'\s+= 'text/javascript; charset=utf-8'"
+        $frontendFunction | Should -Match `
+            "'\.png'\s+= 'image/png'"
+        $frontendFunction | Should -Match `
+            '\[byte\[\]\]\s+\$body\s*=\s*\[IO\.File\]::ReadAllBytes'
         $frontendFunction | Should -Match `
             'ContentType\s*=\s*\$ContentType'
         $frontendFunction | Should -Not -Match `
@@ -5063,10 +5280,12 @@ Describe 'Web frontend response types' {
         $expectedRoutes = @{
             'ImportDevice'      = 'api/devices/import'
             'GetAuthorizedTags' = 'api/devices/tags'
+            'ManageDeviceTags'  = 'api/devices/tags/assignments'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
             'WebFrontend'       = 'api/ui/{*path}'
         }
+
         foreach ($functionName in $expectedRoutes.Keys) {
             $functionConfiguration = Get-Content `
                 -LiteralPath (Join-Path `
@@ -5091,6 +5310,58 @@ Describe 'Web frontend response types' {
         $rootProxy.responseOverrides.'response.statusCode' | Should -Be '302'
         $rootProxy.responseOverrides.'response.headers.Location' |
             Should -Be '/api/ui/index.html'
+    }
+
+    It 'exposes authorized uninstalled-device Group Tag changes in the web client' {
+        $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $deviceTagFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ManageDeviceTags\run.ps1') `
+            -Raw
+        $processorFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\ProcessDeviceAttribute\run.ps1') `
+            -Raw
+        $frontendFunction = Get-Content `
+            -LiteralPath (Join-Path $projectRoot `
+                'src\FunctionApp\WebFrontend\run.ps1') `
+            -Raw
+
+        $deviceTagFunction | Should -Match "enrollmentState -ieq 'notContacted'"
+        $deviceTagFunction | Should -Match '\$authorizedTags\.Count -gt 0'
+        $deviceTagFunction | Should -Not -Match `
+            'groupTag -iin \$authorizedTags'
+        ([regex]::Matches(
+            $deviceTagFunction,
+            'Resolve-AuthorizedGroupTag')).Count | Should -Be 1
+        $deviceTagFunction | Should -Match `
+            'windowsAutopilotDeviceIdentities\?\$top=100'
+        $deviceTagFunction | Should -Not -Match `
+            'windowsAutopilotDeviceIdentities\?\$select='
+        $deviceTagFunction | Should -Match 'Resolve-AuthorizedGroupTag'
+        $deviceTagFunction | Should -Match 'memberOf'
+        $processorFunction | Should -Match 'updateDeviceProperties'
+        $processorFunction | Should -Match `
+            'Sync-EntraDeviceAdministrativeUnits'
+        $frontendFunction | Should -Match `
+            'deviceTagAssignmentsUrl\s*=\s*"\$origin/api/devices/tags/assignments"'
+        $frontendSource = Get-Content `
+            -LiteralPath (Join-Path $projectRoot 'src\Web\src\main.ts') `
+            -Raw
+        $frontendSource | Should -Match 'role="tablist"'
+        $frontendSource | Should -Match 'role="tabpanel"'
+        $frontendSource | Should -Match `
+            'id="results-panel" class="activity-section hidden"'
+        $frontendSource | Should -Match `
+            'id="history-panel" class="activity-section"'
+        $frontendSource | Should -Not -Match `
+            "processed:\s*'All operations have been processed\.'"
+        $frontendSource | Should -Match `
+            'id="history-trace-dialog"'
+        $frontendSource | Should -Match `
+            "lastUpdated:\s*'Last updated'"
+        $frontendSource | Should -Match `
+            "row\.addEventListener\('keydown'"
     }
 
     It 'extracts policy rules from Functions dictionary request bodies' {
@@ -5328,7 +5599,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should -Match '^1\.2\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^1\.3\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
@@ -5558,6 +5829,8 @@ Describe 'Deployment package' {
                     'scripts/Set-TagAuthorizationPolicy.ps1'
                     'scripts/Set-TagPolicyManagers.ps1'
                     'GetAuthorizedTags/function.json'
+                    'ManageDeviceTags/function.json'
+                    'ManageDeviceTags/run.ps1'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
                     'RemoveExpiredImportHistory/function.json'

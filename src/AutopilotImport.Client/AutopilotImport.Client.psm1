@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -8,10 +8,11 @@ Provides client commands for the secured Windows Autopilot import service.
 
 .DESCRIPTION
 The AutopilotImport.Client module validates and imports Autopilot CSV files,
-queries asynchronous import status, and manages Group Tag authorization and
-manager policies. Commands resolve deployment settings from
-persisted per-user configuration, client.settings.json, or explicit parameters
-and acquire Microsoft Entra access tokens through Az.Accounts.
+changes Group Tags for eligible existing devices, queries asynchronous
+operation status, and manages Group Tag authorization and manager policies.
+Commands resolve deployment settings from persisted per-user configuration,
+client.settings.json, or explicit parameters and acquire Microsoft Entra
+access tokens through Az.Accounts.
 
 The module does not store credentials or access tokens. Administrative commands
 that change policies support WhatIf and confirmation through ShouldProcess.
@@ -1173,6 +1174,340 @@ function Import-AutoPilotDevice {
                     -ErrorRecord $_ `
                     -SerialNumber $device.serialNumber `
                     -GroupTag $GroupTag)
+        }
+    }
+}
+
+function Resolve-ClientDeviceTagAssignmentsUrl {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable] $Configuration
+    )
+
+    $configuredUrl = [string] $Configuration['deviceTagAssignmentsUrl']
+    if (-not [string]::IsNullOrWhiteSpace($configuredUrl)) {
+        $assignmentsUri = [uri] $configuredUrl
+        if (-not $assignmentsUri.IsAbsoluteUri -or
+            $assignmentsUri.Scheme -ne 'https') {
+            throw 'DeviceTagAssignmentsUrl must be an absolute HTTPS URL.'
+        }
+        return $assignmentsUri.AbsoluteUri
+    }
+
+    $functionUrl = Get-ConfigurationValue `
+        -Configuration $Configuration `
+        -Name functionUrl `
+        -Description FunctionUrl
+    $functionUri = [uri] $functionUrl
+    if (-not $functionUri.IsAbsoluteUri -or $functionUri.Scheme -ne 'https') {
+        throw 'FunctionUrl must be an absolute HTTPS URL.'
+    }
+    return "$($functionUri.GetLeftPart([UriPartial]::Authority))/api/devices/tags/assignments"
+}
+
+function Get-ClientTagChangeErrorMessage {
+    param(
+        [Parameter(Mandatory)]
+        [System.Management.Automation.ErrorRecord] $ErrorRecord,
+
+        [Parameter(Mandatory)]
+        [string] $Action
+    )
+
+    $response = $null
+    if ($ErrorRecord.ErrorDetails -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string] $ErrorRecord.ErrorDetails.Message)) {
+        try {
+            $response = $ErrorRecord.ErrorDetails.Message | ConvertFrom-Json
+        }
+        catch {
+            $response = $null
+        }
+    }
+
+    $message = if ($response -and
+        $response.PSObject.Properties['message'] -and
+        -not [string]::IsNullOrWhiteSpace([string] $response.message)) {
+        [string] $response.message
+    }
+    elseif ($response -and $response.PSObject.Properties['error']) {
+        "Service error: $($response.error)."
+    }
+    else {
+        $ErrorRecord.Exception.Message
+    }
+    $result = "$Action failed. $message"
+    if ($response -and $response.PSObject.Properties['correlationId']) {
+        $result += " Correlation ID: $($response.correlationId)."
+    }
+    return $result
+}
+
+function Get-AutoPilotDeviceTagAssignment {
+    <#
+    .SYNOPSIS
+    Lists existing Autopilot devices eligible for a Group Tag change.
+
+    .DESCRIPTION
+    Returns devices that have not contacted the Autopilot deployment service.
+    The result includes the device ID, serial number, current Group Tag, Entra
+    groups, and administrative units.
+
+    .PARAMETER DeviceTagAssignmentsUrl
+    HTTPS URL of the device tag assignments endpoint. When omitted, the command
+    derives the endpoint from FunctionUrl.
+
+    .PARAMETER FunctionUrl
+    HTTPS URL of the Autopilot import Function endpoint.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire an API token.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .EXAMPLE
+    Get-AutoPilotDeviceTagAssignment
+
+    Lists eligible devices using the installed client configuration.
+
+    .OUTPUTS
+    PSCustomObject for each eligible Autopilot device.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidatePattern('^https://')]
+        [string] $DeviceTagAssignmentsUrl,
+        [ValidatePattern('^https://')]
+        [string] $FunctionUrl,
+        [ValidatePattern('^api://')]
+        [string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+
+    $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath `
+        -Overrides @{
+            deviceTagAssignmentsUrl = $DeviceTagAssignmentsUrl
+            functionUrl = $FunctionUrl
+            apiApplicationIdUri = $ApiApplicationIdUri
+            tenantId = $TenantId
+        }
+    $url = Resolve-ClientDeviceTagAssignmentsUrl `
+        -Configuration $configuration
+    $audience = Get-ConfigurationValue `
+        -Configuration $configuration `
+        -Name apiApplicationIdUri `
+        -Description ApiApplicationIdUri
+    $resolvedTenantId = Get-ConfigurationValue `
+        -Configuration $configuration `
+        -Name tenantId `
+        -Description TenantId
+    $token = Get-ClientAccessToken `
+        -TenantId $resolvedTenantId `
+        -ResourceUrl $audience
+
+    try {
+        $response = Invoke-RestMethod `
+            -Method Get `
+            -Uri $url `
+            -Authentication Bearer `
+            -Token $token `
+            -ErrorAction Stop
+    }
+    catch {
+        throw (Get-ClientTagChangeErrorMessage `
+                -ErrorRecord $_ `
+                -Action 'Retrieving eligible Autopilot devices')
+    }
+    if (-not $response.PSObject.Properties['devices']) {
+        throw 'Retrieving eligible Autopilot devices failed. The service response does not contain a devices collection.'
+    }
+    return @($response.devices)
+}
+
+function Set-AutoPilotDeviceGroupTag {
+    <#
+    .SYNOPSIS
+    Assigns an authorized Group Tag to existing Autopilot devices.
+
+    .DESCRIPTION
+    Queues a Group Tag change for one or more eligible Autopilot device IDs.
+    Device objects returned by Get-AutoPilotDeviceTagAssignment can be piped
+    directly to this command. With Wait, each operation is polled until it
+    completes or the timeout expires.
+
+    .PARAMETER DeviceId
+    One or more registered Windows Autopilot device IDs. Accepts the id property
+    from Get-AutoPilotDeviceTagAssignment through the pipeline.
+
+    .PARAMETER GroupTag
+    New Group Tag authorized for the signed-in user's Entra groups.
+
+    .PARAMETER DeviceTagAssignmentsUrl
+    HTTPS URL of the device tag assignments endpoint. When omitted, the command
+    derives the endpoint from FunctionUrl.
+
+    .PARAMETER FunctionUrl
+    HTTPS URL of the Autopilot import Function endpoint.
+
+    .PARAMETER ApiApplicationIdUri
+    Application ID URI exposed by the secured Function API.
+
+    .PARAMETER TenantId
+    Microsoft Entra tenant ID used to acquire an API token.
+
+    .PARAMETER ConfigPath
+    Optional path to client.settings.json.
+
+    .PARAMETER Wait
+    Polls each operation until it completes or TimeoutSeconds expires.
+
+    .PARAMETER PollIntervalSeconds
+    Seconds between status requests when Wait is specified. The default is 15.
+
+    .PARAMETER TimeoutSeconds
+    Maximum wait time per device. The default is 1800 seconds.
+
+    .EXAMPLE
+    Get-AutoPilotDeviceTagAssignment |
+        Where-Object serialNumber -eq 'PC-0001' |
+        Set-AutoPilotDeviceGroupTag -GroupTag 'Autopilot-Kiosk' -Wait
+
+    Assigns the target Group Tag and waits for post-processing to complete.
+
+    .OUTPUTS
+    PSCustomObject containing the queued or completed tag change operation.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Medium')]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('id')]
+        [guid[]] $DeviceId,
+
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 128)]
+        [string] $GroupTag,
+
+        [ValidatePattern('^https://')]
+        [string] $DeviceTagAssignmentsUrl,
+        [ValidatePattern('^https://')]
+        [string] $FunctionUrl,
+        [ValidatePattern('^api://')]
+        [string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath,
+        [switch] $Wait,
+        [ValidateRange(1, 300)]
+        [int] $PollIntervalSeconds = 15,
+        [ValidateRange(1, 86400)]
+        [int] $TimeoutSeconds = 1800
+    )
+
+    begin {
+        $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath `
+            -Overrides @{
+                deviceTagAssignmentsUrl = $DeviceTagAssignmentsUrl
+                functionUrl = $FunctionUrl
+                apiApplicationIdUri = $ApiApplicationIdUri
+                tenantId = $TenantId
+            }
+        $url = Resolve-ClientDeviceTagAssignmentsUrl `
+            -Configuration $configuration
+        $audience = Get-ConfigurationValue `
+            -Configuration $configuration `
+            -Name apiApplicationIdUri `
+            -Description ApiApplicationIdUri
+        $resolvedTenantId = Get-ConfigurationValue `
+            -Configuration $configuration `
+            -Name tenantId `
+            -Description TenantId
+        $token = $null
+    }
+
+    process {
+        foreach ($id in $DeviceId) {
+            if (-not $PSCmdlet.ShouldProcess(
+                    "Autopilot device '$id'",
+                    "Assign Group Tag '$GroupTag'")) {
+                continue
+            }
+            if ($null -eq $token) {
+                $token = Get-ClientAccessToken `
+                    -TenantId $resolvedTenantId `
+                    -ResourceUrl $audience
+            }
+            $body = @{
+                deviceId = $id.ToString()
+                groupTag = $GroupTag
+            } | ConvertTo-Json -Compress
+            try {
+                $result = Invoke-RestMethod `
+                    -Method Post `
+                    -Uri $url `
+                    -Authentication Bearer `
+                    -Token $token `
+                    -ContentType 'application/json' `
+                    -Body $body `
+                    -ErrorAction Stop
+            }
+            catch {
+                throw (Get-ClientTagChangeErrorMessage `
+                        -ErrorRecord $_ `
+                        -Action "Changing the Group Tag for Autopilot device '$id'")
+            }
+
+            if (-not $Wait) {
+                $result | Add-Member `
+                    -NotePropertyName isFinal `
+                    -NotePropertyValue $false `
+                    -Force
+                $result
+                continue
+            }
+
+            $operationId = [guid]::Empty
+            if (-not [guid]::TryParse(
+                    [string] $result.operationId,
+                    [ref] $operationId)) {
+                throw "Changing the Group Tag for Autopilot device '$id' failed. The service returned an invalid operation ID."
+            }
+            $statusUrl = "${url}?operationId=$operationId"
+            $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+            do {
+                try {
+                    $statusResult = Invoke-RestMethod `
+                        -Method Get `
+                        -Uri $statusUrl `
+                        -Authentication Bearer `
+                        -Token $token `
+                        -ErrorAction Stop
+                }
+                catch {
+                    throw (Get-ClientTagChangeErrorMessage `
+                            -ErrorRecord $_ `
+                            -Action "Retrieving Group Tag change '$operationId'")
+                }
+                $status = ([string] $statusResult.workflowStatus).ToLowerInvariant()
+                $isFinal = $status -in @('complete', 'error')
+                $statusResult | Add-Member `
+                    -NotePropertyName isFinal `
+                    -NotePropertyValue $isFinal `
+                    -Force
+                if ($isFinal) {
+                    $statusResult
+                    break
+                }
+                if ($stopwatch.Elapsed.TotalSeconds +
+                    $PollIntervalSeconds -gt $TimeoutSeconds) {
+                    throw "Group Tag change '$operationId' did not complete within $TimeoutSeconds seconds. Last status: $status."
+                }
+                Start-Sleep -Seconds $PollIntervalSeconds
+            } while ($true)
         }
     }
 }
@@ -2845,6 +3180,8 @@ Export-ModuleMember -Function @(
     'New-AutoPilotImporterClientConfiguration',
     'Get-AutoPilotImporterClientConfiguration',
     'Import-AutoPilotDevice',
+    'Get-AutoPilotDeviceTagAssignment',
+    'Set-AutoPilotDeviceGroupTag',
     'Get-AutoPilotImportStatus',
     'Get-AutoPilotImportHistory',
     'Get-AutoPilotTagPolicy',

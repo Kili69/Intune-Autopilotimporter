@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -1864,6 +1864,7 @@ if (-not $SkipPublish) {
                 (Join-Path $functionAppRoot 'ProcessDeviceAttribute'),
                 (Join-Path $functionAppRoot 'ManageTagPolicy'),
                 (Join-Path $functionAppRoot 'GetAuthorizedTags'),
+                (Join-Path $functionAppRoot 'ManageDeviceTags'),
                 (Join-Path $functionAppRoot 'GetImportHistory'),
                 (Join-Path $functionAppRoot 'RemoveExpiredImportHistory'),
                 (Join-Path $functionAppRoot 'WebFrontend'),

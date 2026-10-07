@@ -2,6 +2,26 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261007.3` - 2026-10-07
+
+- Expanded the PowerShell script documentation with workflow descriptions, parameter and output help, inline explanations, version consistency guidance, deployment-package checks, change-history validation, and cross-version REST error handling.
+
+- Restructured the README and Developer Guide to separate user installation guidance from deployment, pipeline, testing, versioning, and operational documentation, and added sanitized import and re-tagging workflow screenshots.
+
+- Reworked the README into a GitHub-oriented project page with centered branding, build and platform badges, compact navigation, the project support link, clearer device-import paths for the web frontend, Windows OOBE, the PowerShell module, and direct REST calls, and a dedicated re-tagging guide for every supported client.
+- Replaced the previous Yeti web asset with the new project logo in both the frontend source and generated Function content, including accessible alternative text and versioned frontend output.
+- Added `Get-AutoPilotDeviceTagAssignment` and `Set-AutoPilotDeviceGroupTag` to list eligible uninstalled Autopilot devices and submit authorized Group Tag changes from PowerShell, with pipeline and multi-device input, `WhatIf`, optional completion polling, timeout controls, actionable service errors, and packaged-module exports.
+- Documented the retagging Function contract, required Graph application permissions, and PowerShell client interfaces in `DEVELOPER.md`, and moved the README navigation into an `In this article` section below the branding and support link.
+- Extended client and packaging tests for the new commands and verified the complete PowerShell suite with the project Pester and Azure module dependencies.
+
+## `1.3.20261006.6` - 2026-10-06
+
+- Simplified the import workspace header by removing the redundant new-import label, renaming the registration heading to explicitly reference Microsoft Intune in both supported languages, and moving the workspace content closer to the top of the page.
+- Added the Yeti logo to the right side of the application header with responsive desktop and mobile sizing.
+- Fixed binary web assets so the Yeti logo is returned as raw PNG data with the correct MIME type instead of a serialized byte array.
+- Added an authorized multi-device Group Tag change workflow for uninstalled Autopilot devices, including devices with empty or differently assigned current tags, target-tag authorization, current Group Tag, Entra groups, administrative units, shared progress reporting, synchronized policy-managed administrative-unit membership, and Graph-compatible device enumeration; separated import and re-tagging into accessible tabs, combined processing status and import history in one activity card, replaced hash references with the last update time, added an accessible per-operation trace dialog, kept history permanently visible, and removed the redundant completion notification.
+- Promoted the release line to 1.3, rebuilt the generated web frontend, and synchronized the project version for publication from `dev`.
+
 ## `1.2.20261004.9` - 2026-10-04
 
 - Replaced the previous Microsoft author address with the author's personal Outlook address across project metadata, documentation, scripts, modules, Functions, installers, and tests.

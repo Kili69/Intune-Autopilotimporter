@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -24,6 +24,16 @@ Last commit in the range to validate. The default is HEAD.
 .\src\Scripts\Test-ChangeHistory.ps1 `
     -BaseCommit 'HEAD~2' `
     -HeadCommit 'HEAD'
+
+Validates the last two commits.
+
+.OUTPUTS
+System.String confirming how many commits were checked. The script throws a
+terminating error when at least one commit is invalid.
+
+.NOTES
+Run from a Git working tree. Azure Pipelines uses this script to reject commits
+without a version or change history update.
 #>
 
 [CmdletBinding()]
@@ -38,6 +48,21 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Invoke-GitCommand {
+    <#
+    .SYNOPSIS
+    Runs git and converts a nonzero exit code into a terminating error.
+
+    .DESCRIPTION
+    Git reports failures through its exit code rather than a PowerShell error.
+    This helper makes every failed call fail the validation immediately instead
+    of silently continuing with empty output.
+
+    .PARAMETER ArgumentList
+    Arguments passed to git.
+
+    .OUTPUTS
+    String array containing the output lines of the command.
+    #>
     param(
         [Parameter(Mandatory)]
         [string[]] $ArgumentList
@@ -54,6 +79,9 @@ Invoke-GitCommand -ArgumentList @('rev-parse', '--verify', $HeadCommit) |
     Out-Null
 
 $commits = @(
+    # Git reports an all-zero SHA as the base when a branch is pushed for the
+    # first time. There is no predecessor to compare against, so only the head
+    # commit is validated.
     if ($BaseCommit -match '^0{40}$') {
         $HeadCommit
     }
@@ -61,6 +89,9 @@ $commits = @(
         Invoke-GitCommand -ArgumentList @(
             'rev-parse', '--verify', $BaseCommit
         ) | Out-Null
+        # --first-parent evaluates merge commits as a single change and skips
+        # the individual commits of a merged branch, which were already
+        # validated on that branch.
         Invoke-GitCommand -ArgumentList @(
             'rev-list', '--reverse', '--first-parent',
             "$BaseCommit..$HeadCommit"
@@ -68,15 +99,20 @@ $commits = @(
     }
 )
 
+# Collect all violations instead of stopping at the first one, so a single run
+# reports every invalid commit.
 $invalidCommits = @(
     foreach ($commit in $commits) {
         $message = Invoke-GitCommand -ArgumentList @(
             'show', '--no-patch', '--format=%B', $commit
         )
+        # Pipeline commits, for example an automated version bump, carry no
+        # separate change history entry.
         if (($message -join [Environment]::NewLine) -match '\[skip ci\]') {
             continue
         }
 
+        # --root also lists the files of an initial commit, which has no parent.
         $changedPaths = @(
             Invoke-GitCommand -ArgumentList @(
                 'diff-tree', '--root', '--no-commit-id', '--name-only',
@@ -104,6 +140,9 @@ $invalidCommits = @(
                     "invalid VERSION: $version"
                 }
                 else {
+                    # Read VERSION and History.md from the commit itself, not
+                    # from the working tree, so each commit is validated in the
+                    # state in which it was created.
                     $versionDate = [datetime]::ParseExact(
                         $versionMatch.Groups['date'].Value,
                         'yyyyMMdd',
@@ -120,6 +159,8 @@ $invalidCommits = @(
                             $_.EndsWith(" - $versionDate")
                         }
                     )
+                    # Several same-day changes belong in one section. Its
+                    # heading must carry the current version.
                     if ($dateHeadings.Count -ne 1) {
                         "History.md must contain exactly one section for $versionDate"
                     }

@@ -1,4 +1,4 @@
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -858,6 +858,89 @@ function Add-EntraDeviceToAdministrativeUnit {
     }
 }
 
+function Sync-EntraDeviceAdministrativeUnits {
+    <#
+    .SYNOPSIS
+    Synchronizes policy-managed administrative-unit membership for a device.
+
+    .DESCRIPTION
+    Removes the device from administrative units referenced by other policy
+    rules and adds it to the target administrative unit when one is configured.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Policy,
+
+        [AllowEmptyString()]
+        [string] $AdministrativeUnitName,
+
+        [Parameter(Mandatory)]
+        [guid] $DeviceObjectId,
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $targetName = $AdministrativeUnitName.Trim()
+    $managedNames = @($Policy | ForEach-Object {
+        if ($_.PSObject.Properties['administrativeUnitName'] -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string] $_.administrativeUnitName)) {
+            ([string] $_.administrativeUnitName).Trim()
+        }
+    } | Sort-Object -Unique)
+    $deviceId = $DeviceObjectId.ToString()
+    $removedNames = @()
+
+    foreach ($managedName in $managedNames) {
+        if ([string]::Equals(
+                $managedName,
+                $targetName,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $administrativeUnit = Resolve-EntraAdministrativeUnit `
+            -AdministrativeUnitName $managedName `
+            -AccessToken $AccessToken
+        $memberFilter = [uri]::EscapeDataString("id eq '$deviceId'")
+        $memberResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($administrativeUnit.id)/members?`$filter=$memberFilter&`$count=true&`$select=id" `
+            -Headers @{ ConsistencyLevel = 'eventual' } `
+            -Authentication Bearer `
+            -Token $AccessToken `
+            -ErrorAction Stop
+        $isMember = @($memberResponse.value | Where-Object {
+            [string] $_.id -eq $deviceId
+        }).Count -gt 0
+        if ($isMember) {
+            Invoke-RestMethod `
+                -Method Delete `
+                -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($administrativeUnit.id)/members/$deviceId/`$ref" `
+                -Authentication Bearer `
+                -Token $AccessToken `
+                -ErrorAction Stop | Out-Null
+            $removedNames += $managedName
+        }
+    }
+
+    $targetResult = $null
+    if (-not [string]::IsNullOrWhiteSpace($targetName)) {
+        $targetResult = Add-EntraDeviceToAdministrativeUnit `
+            -AdministrativeUnitName $targetName `
+            -DeviceObjectId $DeviceObjectId `
+            -AccessToken $AccessToken
+    }
+
+    return [pscustomobject]@{
+        RemovedAdministrativeUnits = $removedNames
+        TargetAdministrativeUnit   = $targetName
+        MembershipAdded            = $targetResult -and
+            $targetResult.MembershipAdded
+    }
+}
+
 function ConvertTo-EntraDeviceExtensionAttributes {
     <#
     .SYNOPSIS
@@ -1477,6 +1560,7 @@ Export-ModuleMember -Function @(
     'Resolve-EffectiveAdministrativeUnitName',
     'Resolve-EntraAdministrativeUnit',
     'Add-EntraDeviceToAdministrativeUnit',
+    'Sync-EntraDeviceAdministrativeUnits',
     'Get-AutoPilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',

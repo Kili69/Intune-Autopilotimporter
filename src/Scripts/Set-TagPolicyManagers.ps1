@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.2.20261004.9
+# Project-Version: 1.3.20261007.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -75,6 +75,11 @@ param(
     [string] $ConfigPath
 )
 
+# Locate AutopilotImport.Client in the layouts the script can be started from.
+# The first match wins:
+# 1. Installed client tools directory, newest module version first.
+# 2. Extracted deployment package.
+# 3. Repository checkout.
 $moduleManifest = @(
     Get-ChildItem `
         -Path (Join-Path $PSScriptRoot '..\Modules\AutopilotImport.Client\*\AutopilotImport.Client.psd1') `
@@ -92,10 +97,14 @@ if (-not $moduleManifest) {
 }
 Import-Module $moduleManifest.FullName -Force
 
+# Forward only the parameters the caller actually supplied. Unbound parameters
+# stay absent, so the module resolves them from the client configuration file.
 $parameters = @{}
 foreach ($name in $PSBoundParameters.Keys) {
     $parameters[$name] = $PSBoundParameters[$name]
 }
+# -WhatIf is a common parameter and is therefore not part of PSBoundParameters.
+# Forward it explicitly so a preview is not silently executed.
 if ($WhatIfPreference) {
     $parameters.WhatIf = $true
 }
