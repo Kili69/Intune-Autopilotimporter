@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261007.3
+# Project-Version: 1.3.20261007.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5725,16 +5725,13 @@ Describe 'Project metadata entries' {
 }
 
 Describe 'Deployment package' {
-    It 'uses a self-hosted Linux runner for the GitHub package workflow' {
+    It 'uses a GitHub-hosted Linux runner for the GitHub package workflow' {
         $workflowPath = Join-Path $PSScriptRoot `
             '..\..\.github\workflows\deployment-package.yml'
         $workflow = Get-Content -LiteralPath $workflowPath -Raw
 
-        $workflow | Should -Match '(?m)^\s+- self-hosted\s*$'
-        $workflow | Should -Match '(?m)^\s+- Linux\s*$'
-        $workflow | Should -Match '(?m)^\s+- X64\s*$'
-        $workflow | Should -Not -Match `
-            '(?m)^\s*runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$'
+        $workflow | Should -Match '(?m)^\s+runs-on:\s+ubuntu-latest\s*$'
+        $workflow | Should -Not -Match 'self-hosted'
         $workflow | Should -Match 'RequiredVersion 5\.7\.1'
         $workflow | Should -Match `
             '(?s)- name: Run tests.*?Import-Module Pester -RequiredVersion 5\.7\.1.*?Invoke-Pester'
@@ -5748,7 +5745,7 @@ Describe 'Deployment package' {
         }
     }
 
-    It 'requires History.md and VERSION in every pushed first-parent commit' {
+    It 'requires CHANGELOG.md, History.md, and VERSION in every pushed first-parent commit' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $historyCheck = Get-Content `
             -LiteralPath (Join-Path $projectRoot `
@@ -5760,7 +5757,7 @@ Describe 'Deployment package' {
         $historyCheck | Should -Match `
             "'diff-tree', '--root', '--no-commit-id', '--name-only'"
         $historyCheck | Should -Match `
-            "'History.md', 'VERSION'"
+            "'CHANGELOG.md', 'History.md', 'VERSION'"
         $historyCheck | Should -Match `
             '\$changedPaths -notcontains \$_'
         $historyCheck | Should -Match `
@@ -5769,6 +5766,12 @@ Describe 'Deployment package' {
             '\$_\.EndsWith\(" - \$versionDate"\)'
         $historyCheck | Should -Match `
             '\$dateHeadings\[0\] -cne \$expectedHeading'
+        $historyCheck | Should -Match `
+            'CHANGELOG\.md must contain exactly one section for'
+        $historyCheck | Should -Match `
+            '\$_\.EndsWith\("\] - \$versionDate"\)'
+        $historyCheck | Should -Match `
+            '\$changelogDateHeadings\[0\] -cne'
         $historyCheck | Should -Match '\\\[skip ci\\\]'
     }
 

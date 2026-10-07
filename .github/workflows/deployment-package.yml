@@ -11,10 +11,7 @@ permissions:
 
 jobs:
   package:
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository

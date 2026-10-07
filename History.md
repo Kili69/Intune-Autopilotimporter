@@ -2,7 +2,7 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261007.3` - 2026-10-07
+## `1.3.20261007.4` - 2026-10-07
 
 - Expanded the PowerShell script documentation with workflow descriptions, parameter and output help, inline explanations, version consistency guidance, deployment-package checks, change-history validation, and cross-version REST error handling.
 
@@ -13,6 +13,8 @@ This file describes the development of the project by released or recorded proje
 - Added `Get-AutoPilotDeviceTagAssignment` and `Set-AutoPilotDeviceGroupTag` to list eligible uninstalled Autopilot devices and submit authorized Group Tag changes from PowerShell, with pipeline and multi-device input, `WhatIf`, optional completion polling, timeout controls, actionable service errors, and packaged-module exports.
 - Documented the retagging Function contract, required Graph application permissions, and PowerShell client interfaces in `DEVELOPER.md`, and moved the README navigation into an `In this article` section below the branding and support link.
 - Extended client and packaging tests for the new commands and verified the complete PowerShell suite with the project Pester and Azure module dependencies.
+- Replaced the repository-managed self-hosted Linux runner with GitHub-hosted
+  `ubuntu-latest` execution for deployment-package validation and publication.
 
 ## `1.3.20261006.6` - 2026-10-06
 
