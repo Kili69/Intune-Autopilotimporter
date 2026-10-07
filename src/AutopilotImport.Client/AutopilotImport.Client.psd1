@@ -1,17 +1,19 @@
-# Project-Version: 1.3.20261006.6
+# Project-Version: 1.3.20261007.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.3.20261006.6'
+    ModuleVersion     = '1.3.20261007.1'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@outlook.com (aka Kili)'
-    Description       = 'Client commands for the secured Windows Autopilot import Function.'
+    Description       = 'Client commands for secured Windows Autopilot imports and Group Tag changes.'
     PowerShellVersion = '7.2'
     FunctionsToExport = @(
         'New-AutoPilotImporterClientConfiguration'
         'Get-AutoPilotImporterClientConfiguration'
         'Import-AutoPilotDevice'
+        'Get-AutoPilotDeviceTagAssignment'
+        'Set-AutoPilotDeviceGroupTag'
         'Get-AutoPilotImportStatus'
         'Get-AutoPilotImportHistory'
         'Get-AutoPilotTagPolicy'

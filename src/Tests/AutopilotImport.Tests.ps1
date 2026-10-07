@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261006.6
+# Project-Version: 1.3.20261007.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -157,6 +157,136 @@ Describe 'Client CSV input validation' {
             -FunctionUrl 'https://func.example/api/devices/import' `
             -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
             -TenantId '44444444-4444-4444-4444-444444444444' `
+            -WhatIf
+
+        Should -Invoke Get-ClientAccessToken `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 0
+    }
+}
+
+Describe 'Client device Group Tag changes' {
+    BeforeAll {
+        $clientModulePath = Join-Path $PSScriptRoot `
+            '..\AutopilotImport.Client\AutopilotImport.Client.psd1'
+        Import-Module $clientModulePath -Force
+        $script:clientConnection = @{
+            FunctionUrl = 'https://func.example/api/devices/import'
+            ApiApplicationIdUri = `
+                'api://33333333-3333-3333-3333-333333333333'
+            TenantId = '44444444-4444-4444-4444-444444444444'
+        }
+    }
+
+    BeforeEach {
+        Mock Get-ClientAccessToken {
+            ConvertTo-SecureString 'token' -AsPlainText -Force
+        } -ModuleName AutopilotImport.Client
+    }
+
+    It 'lists eligible devices from the tag assignments endpoint' {
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                devices = @(
+                    [pscustomobject]@{
+                        id = '11111111-1111-1111-1111-111111111111'
+                        serialNumber = 'SERIAL-001'
+                        groupTag = 'Shared'
+                        groups = @('Autopilot Users')
+                        administrativeUnits = @('Shared Devices')
+                    }
+                )
+                count = 1
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = @(Get-AutoPilotDeviceTagAssignment @clientConnection)
+
+        $result.Count | Should -Be 1
+        $result[0].serialNumber | Should -Be 'SERIAL-001'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $Method -eq 'Get' -and
+                $Uri -eq `
+                    'https://func.example/api/devices/tags/assignments'
+            }
+    }
+
+    It 'accepts a listed device through the pipeline and queues its new tag' {
+        $deviceId = '11111111-1111-1111-1111-111111111111'
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{
+                operationId = '22222222-2222-2222-2222-222222222222'
+                serialNumber = 'SERIAL-001'
+                groupTag = 'Kiosk'
+                status = 'queued'
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = [pscustomobject]@{ id = $deviceId } |
+            Set-AutoPilotDeviceGroupTag `
+                -GroupTag 'Kiosk' `
+                @clientConnection `
+                -Confirm:$false
+
+        $result.operationId | Should -Be `
+            '22222222-2222-2222-2222-222222222222'
+        $result.isFinal | Should -BeFalse
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -Times 1 `
+            -ParameterFilter {
+                $request = $Body | ConvertFrom-Json
+                $Method -eq 'Post' -and
+                $Uri -eq `
+                    'https://func.example/api/devices/tags/assignments' -and
+                $request.deviceId -eq $deviceId -and
+                $request.groupTag -eq 'Kiosk'
+            }
+    }
+
+    It 'waits for the queued tag change to complete' {
+        $script:tagChangeRequestCount = 0
+        Mock Invoke-RestMethod {
+            $script:tagChangeRequestCount++
+            if ($Method -eq 'Post') {
+                return [pscustomobject]@{
+                    operationId = '22222222-2222-2222-2222-222222222222'
+                    status = 'queued'
+                }
+            }
+            return [pscustomobject]@{
+                operationId = '22222222-2222-2222-2222-222222222222'
+                serialNumber = 'SERIAL-001'
+                groupTag = 'Kiosk'
+                workflowStatus = 'complete'
+            }
+        } -ModuleName AutopilotImport.Client
+
+        $result = Set-AutoPilotDeviceGroupTag `
+            -DeviceId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Kiosk' `
+            @clientConnection `
+            -Wait `
+            -Confirm:$false
+
+        $result.workflowStatus | Should -Be 'complete'
+        $result.isFinal | Should -BeTrue
+        $script:tagChangeRequestCount | Should -Be 2
+    }
+
+    It 'does not authenticate or call the service with WhatIf' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client
+
+        Set-AutoPilotDeviceGroupTag `
+            -DeviceId '11111111-1111-1111-1111-111111111111' `
+            -GroupTag 'Kiosk' `
+            @clientConnection `
             -WhatIf
 
         Should -Invoke Get-ClientAccessToken `
@@ -541,6 +671,7 @@ Describe 'Client configuration display' {
         $expectedCommands = @(
             'Add-AutoPilotTagPolicy'
             'Add-AutoPilotTagPolicyManager'
+            'Get-AutoPilotDeviceTagAssignment'
             'Get-AutoPilotImporterClientConfiguration'
             'Get-AutoPilotImportHistory'
             'Get-AutoPilotImportStatus'
@@ -550,6 +681,7 @@ Describe 'Client configuration display' {
             'New-AutoPilotImporterClientConfiguration'
             'Remove-AutoPilotTagPolicy'
             'Remove-AutoPilotTagPolicyManager'
+            'Set-AutoPilotDeviceGroupTag'
             'Set-AutoPilotTagPolicy'
             'Update-AutoPilotTagPolicyManager'
         )
@@ -3256,6 +3388,12 @@ Describe 'Installer client tools package' {
             Get-Command Get-AutoPilotTagPolicyManager `
                 -Module AutopilotImport.Client `
                 -ErrorAction Stop | Should -Not -BeNullOrEmpty
+            Get-Command Get-AutoPilotDeviceTagAssignment `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
+            Get-Command Set-AutoPilotDeviceGroupTag `
+                -Module AutopilotImport.Client `
+                -ErrorAction Stop | Should -Not -BeNullOrEmpty
         }
         finally {
             Remove-Module AutopilotImport.Client -ErrorAction SilentlyContinue
@@ -3265,7 +3403,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 13
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 15
         Remove-Module AutopilotImport.Client
     }
 }

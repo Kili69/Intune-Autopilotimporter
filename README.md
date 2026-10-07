@@ -1,9 +1,30 @@
-<!-- markdownlint-disable-next-line MD033 -->
-<h1 align="center">Intune AutoPilot Importer</h1>
+# Intune Autopilot Importer
 
-This Azure Function imports Windows Autopilot hardware hashes from a CSV file. The user authenticates to the Function API with their Entra account. Microsoft Graph is called exclusively through the system-assigned managed identity of the Function.
+<p align="center"><img src="./src/Web/public/kjitlogo.png" alt="Intune Autopilot Importer logo" width="180"></p>
+<p align="center"><strong>Secure, policy-based Windows Autopilot hardware hash imports</strong></p>
+<p align="center"><a href="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml"><img src="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml/badge.svg?branch=main" alt="Deployment package"></a> <a href="./VERSION"><img src="https://img.shields.io/badge/version-1.3.20261007.1-0A66C2" alt="Version 1.3.20261007.1"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2C3E50" alt="Apache License 2.0"></a> <img src="https://img.shields.io/badge/platform-Azure%20Functions-0078D4?logo=microsoftazure" alt="Azure Functions"> <img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white" alt="PowerShell 5.1 or newer"></p>
+<p align="center"><a href="#overview">Overview</a> &bull; <a href="#the-solution">How it works</a> &bull; <a href="#how-to-use-the-autopilot-importer">Usage</a> &bull; <a href="#re-tag-existing-autopilot-devices">Re-Tagging</a> &bull; <a href="#installation">Installation</a> &bull; <a href="#rest-api-reference">REST API</a> &bull; <a href="#troubleshooting">Troubleshooting</a></p>
 
-The client requests a Device Tag. The Function accepts it only when the server-side policy permits that tag for at least one Entra security group in the caller's token. After Intune creates the Entra device, the Function also writes the authorized tag to a configured Entra device extension attribute. The default is `extensionAttribute1`. Optionally, the Function adds the device to a configured Entra administrative unit (MAU) or restricted management administrative unit (RMAU).
+---
+
+<p align="center"><a href="https://buymeacoffee.com/andreaslmuz"><img src="https://img.shields.io/badge/%E2%98%95-Buy_me_a_coffee-FFDD00?style=for-the-badge&logoColor=000000" alt="Buy me a coffee"></a></p>
+
+<br>
+
+## Overview
+
+This Azure Function imports Windows Autopilot hardware hashes from a CSV file.
+The user authenticates to the Function API with their Entra account. Microsoft
+Graph is called exclusively through the system-assigned managed identity of the
+Function.
+
+The client requests a Device Tag. The Function accepts it only when the
+server-side policy permits that tag for at least one Entra security group in
+the caller's token. After Intune creates the Entra device, the Function also
+writes the authorized tag to a configured Entra device extension attribute.
+The default is `extensionAttribute1`. Optionally, the Function adds the device
+to a configured Entra administrative unit (MAU) or restricted management
+administrative unit (RMAU).
 
 ## The Problem
 
@@ -12,7 +33,7 @@ device into an unintended dynamic group and its associated deployment profile, a
 
 This project closes that authorization gap by validating the requested Group Tag server-side and allowing the import only when the authenticated user belongs to an Entra security group mapped to that tag.
 
-## The solution
+## The Solution
 
 The client script reads the serial number and hardware hash from an Autopilot CSV supplied as a parameter.
 
@@ -42,9 +63,11 @@ flowchart TB
     Authorize -- Yes --> Function --> Graph --> Intune --> Queue --> Entra
 ```
 
-## Howto use the AutopilotImporter
+## How to Use the Autopilot Importer
 
-### Web frontend
+### Importing a New Device Hash
+
+#### Use the Web Frontend
 
 After installation, open the `webUrl` reported by the installer or stored in
 `client.settings.json`. The page itself contains no tenant data and may load
@@ -67,6 +90,24 @@ The frontend provides the following functions:
 The hardware hashes are not stored by the frontend. They remain in browser
 memory and are sent only to the secured Function API after validation and user
 confirmation.
+
+##### Import Workflow and Status Updates
+
+1. Sign in with an Entra account that belongs to an authorized importer group.
+2. Select or drop an Autopilot CSV containing `Device Serial Number` and
+   `Hardware Hash`.
+3. Select one of the Group Tags returned for the signed-in account.
+4. Start the import and keep the page open while processing continues.
+
+The frontend performs the first status request immediately after submission.
+While at least one device is pending, it refreshes the status every 15 seconds.
+Polling stops when every device has reached `complete` or `error`. Temporary
+status-request errors are displayed and retried during the next polling cycle.
+
+Import IDs and status rows are kept only in the current page's memory. Closing
+or reloading the page ends monitoring and clears the displayed results. The
+import itself continues in Azure and can be checked later with
+`Get-AutoPilotImportStatus -ImportId '<import-id>'`.
 
 #### Import a Device During Windows OOBE
 
@@ -119,41 +160,34 @@ available and has no dependency on `Get-WindowsAutopilotInfo`. Do not change the
 execution policy to `Unrestricted`; use the execution policy approved by your
 organization.
 
-#### Import Workflow and Status Updates
+#### Import a Device Hash with the PowerShell Module
 
-1. Sign in with an Entra account that belongs to an authorized importer group.
-2. Select or drop an Autopilot CSV containing `Device Serial Number` and
-     `Hardware Hash`.
-3. Select one of the Group Tags returned for the signed-in account.
-4. Start the import and keep the page open while processing continues.
+Use the `Import-AutoPilotDevice` command to submit one or more device hashes
+from a CSV file to Intune. Before you begin, make sure that:
 
-The frontend performs the first status request immediately after submission.
-While at least one device is pending, it refreshes the status every 15 seconds.
-Polling stops when every device has reached `complete` or `error`. Temporary
-status-request errors are displayed and retried during the next polling cycle.
-
-Import IDs and status rows are kept only in the current page's memory. Closing
-or reloading the page ends monitoring and clears the displayed results. The
-import itself continues in Azure and can be checked later with
-`Get-AutoPilotImportStatus -ImportId '<import-id>'`.
-
-The PowerShell module remains available and uses the same authorization policy.
-
-The installer deploys `AutopilotImport.Client`. On first use, initialize the
-module with the Function URL. The module stores the public, non-secret runtime
-configuration in the current user's profile and reuses it for later commands.
-
-### Import a device hash
-
-Use the `Import-AutoPilotDevice` command to submit one or more device hashes from a CSV file to Intune. Before you begin, make sure that:
-
-- `AutopilotImport.Client` has been installed and initialized once with the
-    Function URL.
+- `AutopilotImport.Client` has been installed.
 - Your account belongs to an Entra security group that is authorized for the
-    Group Tag you want to use.
+  Group Tag you want to use.
 - The CSV contains the columns `Device Serial Number` and `Hardware Hash`.
 
-The selected Group Tag is applied to every device in the CSV. First, validate the file locally without signing in or sending data to the Azure Function:
+The installer deploys `AutopilotImport.Client`. Initialize the module once for
+the current Windows user:
+
+```powershell
+Get-AutoPilotImporterClientConfiguration `
+    -FunctionUrl 'https://<function-app>.azurewebsites.net'
+```
+
+The command retrieves `/api/ui/config` over HTTPS and stores the resulting
+non-secret settings in
+`$HOME\.autopilotimporter\client.settings.json`. Subsequent commands load that
+file automatically. Use `-ConfigPath` to select another configuration file.
+Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values on the
+operational commands override file settings, allowing one computer to target
+multiple environments.
+
+The selected Group Tag is applied to every device in the CSV. First, validate
+the file locally without signing in or sending data to the Azure Function:
 
 ```powershell
 Import-AutoPilotDevice `
@@ -170,42 +204,54 @@ Import-AutoPilotDevice `
     -GroupTag 'PAW'
 ```
 
-PowerShell signs you in with your Entra account when an access token is needed. The Azure Function then verifies that your account is authorized for the requested Group Tag before submitting each device to Intune. No Azure role, Microsoft Graph permission, client secret, or direct Intune role is required on the importing computer.
+PowerShell signs you in with your Entra account when an access token is needed.
+The Azure Function then verifies that your account is authorized for the
+requested Group Tag before submitting each device to Intune. No Azure role,
+Microsoft Graph permission, client secret, or direct Intune role is required on
+the importing computer.
 
-The client package also contains the standalone REST client
-`Import-AutopilotDevice.ps1`. It reads the public runtime configuration from
-the application URL and does not require `AutopilotImport.Client`. Supply a CSV
-to import one or more devices, or omit `-CsvPath` to collect the serial number
-and hardware hash from the local Windows device in an elevated session:
+#### Import a Device Hash through the REST API
 
-```powershell
-powershell.exe -NoProfile -File .\Import-AutopilotDevice.ps1 `
-    -ApplicationUrl 'https://autopilot.contoso.com' `
-    -GroupTag 'PAW'
-```
+Use PowerShell 7 and `Az.Accounts` to request a token for the deployed API and
+submit a device directly. The account must belong to an Entra group authorized
+for the requested Group Tag.
 
-The script validates the data and submits the hash through the REST API without
-a confirmation prompt. It displays the import and device-attribute status every
-10 seconds until the complete workflow succeeds or fails. Use `-Verbose` for
-additional configuration, authentication, request, and polling details. Use
-`-ValidateOnly` to validate configuration and device data without
-authentication, or `-WhatIf` to preview the import without requesting a token
-or submitting data.
-
-Initialize the module once for the current Windows user:
+Set the deployment values and load a device from an Autopilot CSV:
 
 ```powershell
-Get-AutoPilotImporterClientConfiguration `
-    -FunctionUrl 'https://<function-app>.azurewebsites.net'
+$tenantId = '<tenant-id>'
+$apiAudience = 'api://<application-client-id>'
+$applicationUrl = 'https://<function-app>.azurewebsites.net'
+$groupTag = 'PAW'
+$device = Import-Csv -LiteralPath '.\devices.csv' | Select-Object -First 1
 ```
 
-The command retrieves `/api/ui/config` over HTTPS and stores the resulting
-non-secret settings in
-`$HOME\.autopilotimporter\client.settings.json`. Subsequent commands load that
-file automatically. Use `-ConfigPath` to select another configuration file.
-Explicit `-FunctionUrl`, `-ApiApplicationIdUri`, and `-TenantId` values on the
-operational commands override file settings, allowing one computer to target
-multiple environments.
+Sign in, request an API token, and submit the serial number and Base64-encoded
+hardware hash:
+
+```powershell
+Connect-AzAccount -Tenant $tenantId
+$accessToken = Get-AzAccessToken -ResourceUrl $apiAudience
+$body = @{
+    serialNumber = $device.'Device Serial Number'
+    hardwareIdentifier = $device.'Hardware Hash'
+    groupTag = $groupTag
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$applicationUrl/api/devices/import" `
+    -Authentication Bearer `
+    -Token $accessToken.Token `
+    -ContentType 'application/json' `
+    -Body $body
+$response
+```
+
+A successful request returns HTTP `202` and an `importId`. Send one request per
+device when importing multiple CSV rows. See the
+[REST API Reference](#rest-api-reference) for response fields, status polling,
+authorization details, and error formats.
 
 ### Display Client Configuration
 
@@ -241,7 +287,163 @@ Get-AutoPilotImportStatus `
 
 The default timeout is 30 minutes with a 15-second polling interval. Override these values with `-TimeoutSeconds` and `-PollIntervalSeconds`. Only `workflowStatus: complete` confirms that both the Intune import and the Entra extension-attribute update succeeded.
 
-## Autopilot-importer management
+## Re-Tag Existing Autopilot Devices
+
+The web frontend can assign a new Group Tag to existing Windows Autopilot
+devices without importing their hardware hashes again. This is useful when an
+uninstalled device must move to another deployment profile, device population,
+or policy scope.
+
+> [!IMPORTANT]
+> Re-tagging is available only while the Autopilot device has not contacted the
+> deployment service. Devices whose enrollment state is no longer
+> `notContacted` are not displayed and cannot be changed through this workflow.
+> The service checks eligibility again when the change is submitted and during
+> asynchronous processing.
+
+### Change Group Tags in the Web Frontend
+
+1. Open the web frontend and sign in with your Microsoft Entra account.
+2. Select the **Re-Tagging** tab.
+3. Select one or more eligible devices. The table displays each serial number,
+   current Group Tag or Order ID, Entra group memberships, and administrative
+   units.
+4. Select the new Group Tag. Only tags authorized through your Entra group
+   memberships are available.
+5. Select **Change tag** and keep the page open while processing continues.
+
+Devices with an empty current Group Tag or a tag different from the authorized
+target tag can be selected. Devices that already use the selected target tag
+are not submitted. The frontend processes up to three selected devices in
+parallel and refreshes pending operations every 15 seconds.
+
+### Change Group Tags with the PowerShell Module
+
+The `AutopilotImport.Client` module can list eligible devices and submit Group
+Tag changes through the same secured API used by the web frontend. Initialize
+the client configuration once, as described under
+[Import a Device Hash with the PowerShell Module](#import-a-device-hash-with-the-powershell-module).
+
+List devices that are still eligible for re-tagging:
+
+```powershell
+$devices = Get-AutoPilotDeviceTagAssignment
+$devices |
+    Select-Object id, serialNumber, groupTag, groups, administrativeUnits |
+    Format-Table
+```
+
+Select a device by serial number, assign an authorized Group Tag, and wait for
+the complete workflow:
+
+```powershell
+$devices |
+    Where-Object serialNumber -eq 'PC-0001' |
+    Set-AutoPilotDeviceGroupTag `
+        -GroupTag 'Autopilot-Kiosk' `
+        -Wait
+```
+
+Multiple devices can be passed through the pipeline or supplied through
+`-DeviceId`. Omit `-Wait` to return as soon as the service has queued each
+operation. Use `-WhatIf` to preview the selected device IDs and target Group Tag
+without authenticating or submitting changes:
+
+```powershell
+Set-AutoPilotDeviceGroupTag `
+    -DeviceId @(
+        '11111111-1111-1111-1111-111111111111'
+        '22222222-2222-2222-2222-222222222222'
+    ) `
+    -GroupTag 'Autopilot-Kiosk' `
+    -WhatIf
+```
+
+The default wait timeout is 30 minutes with a 15-second polling interval.
+Override these values with `-TimeoutSeconds` and `-PollIntervalSeconds`.
+
+### Change Group Tags via the REST API
+
+Use PowerShell 7 and `Az.Accounts` to acquire a token for the configured API.
+Set the deployment values, sign in, and retrieve eligible devices:
+
+```powershell
+$tenantId = '<tenant-id>'
+$apiAudience = 'api://<application-client-id>'
+$applicationUrl = 'https://<function-app>.azurewebsites.net'
+
+Connect-AzAccount -Tenant $tenantId
+$accessToken = Get-AzAccessToken -ResourceUrl $apiAudience
+$headers = @{
+    Authentication = 'Bearer'
+    Token = $accessToken.Token
+}
+$assignmentsUrl = "$applicationUrl/api/devices/tags/assignments"
+$eligibleDevices = (Invoke-RestMethod `
+        -Method Get `
+        -Uri $assignmentsUrl `
+        @headers).devices
+```
+
+Select one device and submit its new authorized Group Tag:
+
+```powershell
+$device = $eligibleDevices |
+    Where-Object serialNumber -eq 'PC-0001' |
+    Select-Object -First 1
+$body = @{
+    deviceId = $device.id
+    groupTag = 'Autopilot-Kiosk'
+} | ConvertTo-Json
+
+$operation = Invoke-RestMethod `
+    -Method Post `
+    -Uri $assignmentsUrl `
+    @headers `
+    -ContentType 'application/json' `
+    -Body $body
+$operation
+```
+
+A successful submission returns HTTP `202` and an `operationId`. Poll the same
+endpoint until `workflowStatus` is `complete`:
+
+```powershell
+do {
+    Start-Sleep -Seconds 15
+    $status = Invoke-RestMethod `
+        -Method Get `
+        -Uri "$assignmentsUrl?operationId=$($operation.operationId)" `
+        @headers
+    $status
+} while ($status.workflowStatus -eq 'pending')
+```
+
+The service validates the target Group Tag and device eligibility for every
+request. Submit one POST request per device.
+
+### Re-Tagging Workflow
+
+For every selected device, the Function:
+
+1. Confirms that the target Group Tag is authorized for the signed-in user.
+2. Verifies that the device still has the `notContacted` enrollment state.
+3. Records the previous and requested Group Tags and queues the change.
+4. Updates the Autopilot Group Tag through Microsoft Graph.
+5. Writes the new tag to the configured Entra device extension attribute.
+6. Synchronizes membership in the administrative unit defined by the target
+   tag policy.
+
+Each request returns an operation ID. The shared activity table shows the
+current state, and the operation trace shows when the request was accepted,
+queued, applied to Autopilot, written to the Entra device attribute, synchronized
+with the administrative unit, and completed. Re-tagging operations also remain
+available in the import history with their previous and new Group Tags.
+
+Closing or reloading the page stops live polling but does not cancel queued
+changes. Sign in again and use the history view to inspect the final result.
+
+## Autopilot Importer Management
 
 ### Check Installed and Deployed Versions
 
@@ -1242,10 +1444,10 @@ The project module dependency is included in the installed package.
 
 ## REST API Reference
 
-The Azure Function exposes REST endpoints for importing devices, reading
-authorized Group Tags, inspecting import history, and managing the Group Tag
-policy. Replace `<function-app>` in the paths below with the deployed Function
-App hostname:
+The Azure Function exposes REST endpoints for importing and re-tagging devices,
+reading authorized Group Tags, inspecting import history, and managing the
+Group Tag policy. Replace `<function-app>` in the paths below with the deployed
+Function App hostname:
 
 ```text
 https://<function-app>.azurewebsites.net
@@ -1279,6 +1481,9 @@ errors with Application Insights logs.
 | `GET` | `/api/devices/tags` | Authorized importer | List Group Tags available to the caller |
 | `POST` | `/api/devices/import` | Authorized importer | Submit an Autopilot device identity |
 | `GET` | `/api/devices/import?importId=<guid>` | Authorized importer | Read import and post-processing status |
+| `GET` | `/api/devices/tags/assignments` | Authorized importer | List devices eligible for a Group Tag change |
+| `POST` | `/api/devices/tags/assignments` | Authorized importer | Queue a Group Tag change |
+| `GET` | `/api/devices/tags/assignments?operationId=<guid>` | Requesting importer | Read Group Tag change status |
 | `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |

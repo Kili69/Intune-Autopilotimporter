@@ -151,7 +151,7 @@ app.innerHTML = `
           <span id="account-upn" class="account-upn"></span>
         </span>
         <button id="logout" class="button button-quiet hidden" type="button">${t('logout')}</button>
-        <img class="header-logo" src="/api/ui/yeti-logo.png" alt="Yeti Logo">
+        <img class="header-logo" src="/api/ui/kjitlogo.png" alt="Intune Autopilot Importer logo">
       </div>
     </header>
 
