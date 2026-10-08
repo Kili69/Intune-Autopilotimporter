@@ -953,7 +953,9 @@ for 30 days. Branch characters that are not portable in file names, such as
 
 The workflows rebuild and test the web frontend only when files under `src/Web`
 changed. Other changes reuse the committed frontend bundle. The GitHub workflow
-does not require a repository-managed runner.
+does not require a repository-managed runner and does not push generated ZIP
+files directly to the protected `main` branch. Download the package from the
+workflow run or from the versioned GitHub release.
 
 The package contains `README.md`, `CHANGELOG.md`, `History.md`, `LICENSE`, the
 installer and updater, Function runtime files, Bicep infrastructure,
