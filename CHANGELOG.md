@@ -8,12 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.20261008.1] - 2026-10-08
+
+### Changed
+
+- Removed the protected-branch-incompatible package publication push from
+  GitHub Actions; generated ZIPs remain available as workflow artifacts and
+  versioned GitHub release assets.
+
 ## [1.3.20261007.4] - 2026-10-07
 
 ### Changed
 
 - Replaced the repository-managed self-hosted Linux runner with GitHub-hosted
   `ubuntu-latest` for deployment-package validation and publication.
+- Kept generated deployment packages as workflow artifacts instead of pushing
+  ZIP files directly to the protected `main` branch.
 
 ### Added
 

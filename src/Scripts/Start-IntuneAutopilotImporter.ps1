@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.3.20261007.4
+.VERSION 1.3.20261008.1
 .GUID 8f3a78b6-8c87-4a89-b8cf-fb20f90ef96d
 .AUTHOR andreas.lucas@outlook.com (aka Kili)
 .COMPANYNAME Community
@@ -14,7 +14,7 @@ Creates an Autopilot hardware hash CSV and opens the secured web importer.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.3.20261007.4
+# Project-Version: 1.3.20261008.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#

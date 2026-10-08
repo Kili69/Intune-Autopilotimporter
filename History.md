@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261008.1` - 2026-10-08
+
+- Removed the direct GitHub Actions push of generated deployment packages to
+  protected `main`; packages remain available as workflow artifacts and
+  versioned GitHub release assets.
+
 ## `1.3.20261007.4` - 2026-10-07
 
 - Expanded the PowerShell script documentation with workflow descriptions, parameter and output help, inline explanations, version consistency guidance, deployment-package checks, change-history validation, and cross-version REST error handling.
@@ -15,6 +21,8 @@ This file describes the development of the project by released or recorded proje
 - Extended client and packaging tests for the new commands and verified the complete PowerShell suite with the project Pester and Azure module dependencies.
 - Replaced the repository-managed self-hosted Linux runner with GitHub-hosted
   `ubuntu-latest` execution for deployment-package validation and publication.
+- Changed GitHub Actions to retain generated deployment packages as workflow
+  artifacts instead of pushing directly to protected `main`.
 
 ## `1.3.20261006.6` - 2026-10-06
 
