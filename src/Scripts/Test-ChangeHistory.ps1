@@ -1,17 +1,17 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261007.3
+# Project-Version: 1.3.20261007.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
 .SYNOPSIS
-Verifies the change history and version in every commit in a range.
+Verifies the changelog, change history, and version in every commit in a range.
 
 .DESCRIPTION
 Checks every first-parent commit after BaseCommit through HeadCommit and fails
-when History.md or VERSION is not part of a commit, or when the version date
-has more than one history section. The section for that date must use the
-current VERSION as its heading. Automation commits whose message contains
-[skip ci] are ignored.
+when CHANGELOG.md, History.md, or VERSION is not part of a commit, or when the
+version date has more than one changelog or history section. Both sections for
+that date must use the current VERSION in their headings. Automation commits
+whose message contains [skip ci] are ignored.
 
 .PARAMETER BaseCommit
 Commit before the range to validate. An all-zero Git SHA validates HeadCommit
@@ -33,7 +33,7 @@ terminating error when at least one commit is invalid.
 
 .NOTES
 Run from a Git working tree. Azure Pipelines uses this script to reject commits
-without a version or change history update.
+without changelog, change history, and version updates.
 #>
 
 [CmdletBinding()]
@@ -120,7 +120,7 @@ $invalidCommits = @(
             )
         )
         $missingFiles = @(
-            'History.md', 'VERSION' | Where-Object {
+            'CHANGELOG.md', 'History.md', 'VERSION' | Where-Object {
                 $changedPaths -notcontains $_
             }
         )
@@ -167,6 +167,27 @@ $invalidCommits = @(
                     elseif ($dateHeadings[0] -cne $expectedHeading) {
                         "history heading must be: $expectedHeading"
                     }
+
+                    $expectedChangelogHeading = "## [$version] - $versionDate"
+                    $changelogHeadings = @(
+                        Invoke-GitCommand -ArgumentList @(
+                            'show', "${commit}:CHANGELOG.md"
+                        ) | Where-Object { $_.StartsWith('## [') }
+                    )
+                    $changelogDateHeadings = @(
+                        $changelogHeadings | Where-Object {
+                            $_.EndsWith("] - $versionDate")
+                        }
+                    )
+                    # Keep one condensed public release summary per date and
+                    # move its heading to the current same-day version.
+                    if ($changelogDateHeadings.Count -ne 1) {
+                        "CHANGELOG.md must contain exactly one section for $versionDate"
+                    }
+                    elseif ($changelogDateHeadings[0] -cne
+                        $expectedChangelogHeading) {
+                        "changelog heading must be: $expectedChangelogHeading"
+                    }
                 }
             }
         )
@@ -180,7 +201,7 @@ $invalidCommits = @(
 )
 
 if ($invalidCommits.Count -gt 0) {
-    throw "Every commit must update History.md and VERSION and use one history section per version date. Invalid commits:$([Environment]::NewLine)$($invalidCommits -join [Environment]::NewLine)"
+    throw "Every commit must update CHANGELOG.md, History.md, and VERSION and use one changelog and history section per version date. Invalid commits:$([Environment]::NewLine)$($invalidCommits -join [Environment]::NewLine)"
 }
 
-Write-Output "History.md and VERSION were valid in all $($commits.Count) checked commit(s)."
+Write-Output "CHANGELOG.md, History.md, and VERSION were valid in all $($commits.Count) checked commit(s)."

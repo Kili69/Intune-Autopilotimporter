@@ -95,10 +95,13 @@ The version format is `major.minor.yyyymmdd.revision`. The date identifies the
 UTC release day and the final component increments when another change is
 published on the same day. `History.md` must contain exactly one section for
 the current version date. Consolidate same-day changes in that section instead
-of creating multiple sections for the same date.
+of creating multiple sections for the same date. `CHANGELOG.md` must contain a
+condensed public summary under the matching version and date. Every regular
+commit must update `CHANGELOG.md`, `History.md`, and `VERSION`; only automation
+commits marked with `[skip ci]` are exempt.
 
-Before a change is committed, verify that the version and history are
-consistent:
+After a change is committed, verify that the changelog, version, and history
+are consistent:
 
 ```powershell
 .\src\Scripts\Test-ChangeHistory.ps1 `
@@ -943,14 +946,14 @@ Reading and preserving the Function configuration requires `Microsoft.Web/sites/
 GitHub Actions and Azure Pipelines build a deployment package for every commit
 pushed to any branch. Both workflows run the test suite and publish
 `Intune-autopilotImporter-<branch><version>` as a pipeline artifact. GitHub
-Actions uses a self-hosted Linux x64 runner and retains its artifact for 30
-days. Branch characters that are not portable in file names, such as `/`, are
-replaced with `-`. The Azure deployment stage remains restricted to `main`.
+Actions uses the GitHub-hosted `ubuntu-latest` runner and retains its artifact
+for 30 days. Branch characters that are not portable in file names, such as
+`/`, are replaced with `-`. The Azure deployment stage remains restricted to
+`main`.
 
 The workflows rebuild and test the web frontend only when files under `src/Web`
 changed. Other changes reuse the committed frontend bundle. The GitHub workflow
-requires a runner registered with the standard `self-hosted`, `Linux`, and
-`X64` labels; it does not request a GitHub-hosted runner.
+does not require a repository-managed runner.
 
 The package contains `README.md`, `CHANGELOG.md`, `History.md`, `LICENSE`, the
 installer and updater, Function runtime files, Bicep infrastructure,
@@ -1161,15 +1164,17 @@ Do not copy the complete repository into the package.
 
 ## 13. CI Build Process
 
-Azure Pipelines is the repository's only automated build system. No GitHub
-Actions workflows are defined, so repository activity does not request GitHub
-hosted or self-hosted runners. Before each commit, run
-`src\Scripts\Update-ProjectVersion.ps1` and update `History.md`.
+GitHub Actions and Azure Pipelines provide the repository's automated build
+systems. GitHub Actions uses the GitHub-hosted `ubuntu-latest` runner; the
+repository does not require a self-hosted runner. Before each commit, run
+`src\Scripts\Update-ProjectVersion.ps1` and update `CHANGELOG.md` and
+`History.md`.
 
 Azure Pipelines:
 
 1. Checks out the complete Git history.
-2. Verifies that the source commit updates `VERSION` and `History.md`.
+2. Verifies that the source commit updates `CHANGELOG.md`, `VERSION`, and
+   `History.md`.
 3. Uses Node.js 22 and runs `npm run check` only when `src/Web` changed.
 4. Runs the Pester suite.
 5. Creates the versioned installation ZIP.

@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261007.3
+# Project-Version: 1.3.20261007.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 # Azure Functions PowerShell managed dependencies.
 #

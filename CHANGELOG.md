@@ -8,20 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.20261007.4] - 2026-10-07
+
+### Changed
+
+- Replaced the repository-managed self-hosted Linux runner with GitHub-hosted
+  `ubuntu-latest` for deployment-package validation and publication.
+
 ### Added
 
 - Added `Get-AutoPilotDeviceTagAssignment` and
   `Set-AutoPilotDeviceGroupTag` to list eligible Autopilot devices and submit
   authorized Group Tag changes from PowerShell, including pipeline input,
   `WhatIf`, completion polling, and timeout controls.
-- Documented the device retagging PowerShell and REST API interfaces in the
-  developer guide, including authorization, request and response contracts,
-  asynchronous status polling, and client-module usage.
 
 ### Changed
 
-- Moved the README navigation into an `In this article` section below the
-  project branding and support link so the logo and header remain at the top.
+- Restructured the README and Developer Guide with clearer installation,
+  re-tagging, interface, packaging, testing, versioning, deployment, and
+  operational guidance plus sanitized workflow screenshots.
+- Replaced the previous web asset with the new project logo and refreshed the
+  generated Function frontend.
+- Expanded the PowerShell script documentation with workflow descriptions,
+  complete help, and explanations of non-obvious behavior.
 
 ## [1.2.20261006.1] - 2026-10-06
 
@@ -112,7 +121,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Added the initial secured Azure Function workflow for Windows Autopilot imports.
 
-[Unreleased]: https://github.com/Kili69/Intune-Autopilotimporter/compare/dev...HEAD
+[Unreleased]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.3.20261007.3...dev
+[1.3.20261007.3]: https://github.com/Kili69/Intune-Autopilotimporter/releases/tag/v1.3.20261007.3
 [1.2.20261006.1]: https://github.com/Kili69/Intune-Autopilotimporter/compare/v1.2.20261004.9...dev
 [1.2.20261004.9]: https://github.com/Kili69/Intune-Autopilotimporter/commits/main/?since=2026-10-04&until=2026-10-05
 [1.2.20261003.1]: https://github.com/Kili69/Intune-Autopilotimporter/releases/tag/v1.2.20261003.1
