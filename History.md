@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261015.1` - 2026-10-15
+
+- Fixed the stale re-tagging table refresh after successful Group Tag changes by disabling browser caching for dynamic device-list requests and reloading the current device list immediately after queue completion.
+- Added a frontend regression test covering the no-cache request behavior for live dashboard data so the stale tag display cannot regress.
+- Advanced the project version and refreshed the generated web frontend artifacts for the latest release.
+
 ## `1.3.20261008.1` - 2026-10-08
 
 - Removed the direct GitHub Actions push of generated deployment packages to
