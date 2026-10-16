@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261015.1
+# Project-Version: 1.3.20261016.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -111,8 +111,82 @@ function Resolve-ClientConfiguration {
         }
     }
 
+    if ($configuration.ContainsKey('managementUrl') -and
+        -not [string]::IsNullOrWhiteSpace([string] $configuration['managementUrl'])) {
+        $configuration['managementUrl'] = Resolve-ClientManagementUrl `
+            -ManagementUrl $configuration['managementUrl']
+    }
+
     $configuration.ConfigPath = $ConfigPath
     return $configuration
+}
+
+function Resolve-ClientManagementUrl {
+    <#
+    .SYNOPSIS
+    Resolves a site URL or a management endpoint to the exact API route.
+
+    .DESCRIPTION
+    Accepts either a management endpoint such as
+    https://example.com/api/management/tag-policy or a website/root URL such as
+    https://example.com or https://example.com/api/ui/index.html and normalizes
+    the value to the canonical API endpoint used by the client.
+
+    .PARAMETER ManagementUrl
+    Value supplied to a client command or persisted in client settings.
+
+    .PARAMETER Route
+    Optional route relative to /api/management. Defaults to tag-policy.
+
+    .OUTPUTS
+    String. The resolved API endpoint URL.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string] $ManagementUrl,
+
+        [string] $Route = 'tag-policy'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ManagementUrl)) {
+        return $ManagementUrl
+    }
+
+    $trimmedUrl = $ManagementUrl.Trim()
+    try {
+        $uri = [uri] $trimmedUrl
+    }
+    catch {
+        return $trimmedUrl
+    }
+
+    $normalizedRoute = if ([string]::IsNullOrWhiteSpace($Route)) {
+        'tag-policy'
+    }
+    else {
+        $Route.Trim('/')
+    }
+    $path = ($uri.AbsolutePath ?? '').TrimEnd('/')
+    $authority = $uri.GetLeftPart([UriPartial]::Authority)
+    if ([string]::IsNullOrWhiteSpace($authority)) {
+        return $trimmedUrl
+    }
+
+    if ($path -match '(?i)^/api/management/?$') {
+        return "$authority/api/management/$normalizedRoute"
+    }
+    if ($path -match '(?i)^/api/management/.*$') {
+        return $uri.AbsoluteUri.TrimEnd('/')
+    }
+    if ($path -match '(?i)^/api/ui(?:/.*)?$') {
+        return "$authority/api/management/$normalizedRoute"
+    }
+    if ([string]::IsNullOrWhiteSpace($path) -or $path -eq '/') {
+        return "$authority/api/management/$normalizedRoute"
+    }
+
+    return $uri.AbsoluteUri.TrimEnd('/')
 }
 
 function Get-DefaultClientConfigurationPath {
@@ -2034,14 +2108,26 @@ function ConvertTo-ClientTagPolicyResult {
         [string] $GroupName,
 
         [AllowNull()]
+        [string] $ExtensionAttribute,
+
+        [AllowNull()]
         [string] $CorrelationId
     )
+
+    $resolvedExtensionAttribute = if (
+        -not [string]::IsNullOrWhiteSpace([string] $ExtensionAttribute)) {
+        [string] $ExtensionAttribute.Trim()
+    }
+    else {
+        'extensionAttribute1'
+    }
 
     $result = [pscustomobject][ordered]@{
         PSTypeName = 'AutopilotImport.TagPolicyRule'
         GroupId = [string] $Rule.groupId
         GroupName = $GroupName
         Tags = @($Rule.tags)
+        ExtensionAttribute = $resolvedExtensionAttribute
         AdministrativeUnitName = if (
             $Rule.PSObject.Properties[
                 'administrativeUnitName']) {
@@ -2058,6 +2144,7 @@ function ConvertTo-ClientTagPolicyResult {
             'GroupId'
             'GroupName'
             'Tags'
+            'ExtensionAttribute'
             'AdministrativeUnitName'
         )
     )
@@ -2121,15 +2208,32 @@ function Get-AutoPilotTagPolicy {
         [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
         [string] $TenantId,
         [string] $ConfigPath,
+        [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
+        [string] $DeviceTagExtensionAttribute,
         [switch] $Raw
     )
 
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
-        managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
+        managementUrl = $ManagementUrl
+        apiApplicationIdUri = $ApiApplicationIdUri
+        tenantId = $TenantId
+        deviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     }
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $resolvedExtensionAttribute = if (
+        $PSBoundParameters.ContainsKey('DeviceTagExtensionAttribute') -and
+        -not [string]::IsNullOrWhiteSpace([string] $DeviceTagExtensionAttribute)) {
+        [string] $DeviceTagExtensionAttribute.Trim()
+    }
+    elseif ($configuration.ContainsKey('deviceTagExtensionAttribute') -and
+        -not [string]::IsNullOrWhiteSpace([string] $configuration['deviceTagExtensionAttribute'])) {
+        [string] $configuration['deviceTagExtensionAttribute'].Trim()
+    }
+    else {
+        'extensionAttribute1'
+    }
     $token = Get-ClientAccessToken $resolvedTenantId $audience
     $response = Invoke-RestMethod -Method Get -Uri $url.TrimEnd('/') `
         -Authentication Bearer -Token $token
@@ -2170,6 +2274,7 @@ function Get-AutoPilotTagPolicy {
         ConvertTo-ClientTagPolicyResult `
             -Rule $rule `
             -GroupName $groupName `
+            -ExtensionAttribute $resolvedExtensionAttribute `
             -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
                 [string] $response.correlationId
             })
@@ -2359,8 +2464,17 @@ function Add-AutoPilotTagPolicy {
     $updatedRule = @($responsePolicy | Where-Object {
         ([guid] $_.groupId).ToString() -eq $resolvedGroupId
     }) | Select-Object -First 1
+    $resolvedExtensionAttribute = if (
+        $configuration.ContainsKey('deviceTagExtensionAttribute') -and
+        -not [string]::IsNullOrWhiteSpace([string] $configuration['deviceTagExtensionAttribute'])) {
+        [string] $configuration['deviceTagExtensionAttribute'].Trim()
+    }
+    else {
+        'extensionAttribute1'
+    }
     ConvertTo-ClientTagPolicyResult `
         -Rule $updatedRule `
+        -ExtensionAttribute $resolvedExtensionAttribute `
         -CorrelationId $(if ($response.PSObject.Properties['correlationId']) {
             [string] $response.correlationId
         })
@@ -2680,7 +2794,10 @@ function Set-AutoPilotTagPolicy {
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
     param(
-        [Parameter(Mandatory)][object[]] $TagAuthorizationRule,
+        [object[]] $TagAuthorizationRule,
+        [string] $GroupName,
+        [Alias('Tag')]
+        [string[]] $Tags,
         [Alias('Mau')]
         [string] $AdministrativeUnitName,
         [ValidatePattern('^https://')][string] $ManagementUrl,
@@ -2689,10 +2806,121 @@ function Set-AutoPilotTagPolicy {
         [string] $ConfigPath
     )
 
+    $groupUpdateMode = $PSBoundParameters.ContainsKey('GroupName') -or
+        $PSBoundParameters.ContainsKey('Tags')
+    if ($groupUpdateMode -and $PSBoundParameters.ContainsKey('TagAuthorizationRule')) {
+        throw 'Use either -TagAuthorizationRule or -GroupName with -Tags, not both.'
+    }
+    if ($groupUpdateMode -and (
+            -not $PSBoundParameters.ContainsKey('GroupName') -or
+            -not $PSBoundParameters.ContainsKey('Tags'))) {
+        throw 'Specify both -GroupName and -Tags when updating a single rule.'
+    }
+    if (-not $groupUpdateMode -and -not $PSBoundParameters.ContainsKey('TagAuthorizationRule')) {
+        throw 'Specify either -TagAuthorizationRule or -GroupName with -Tags.'
+    }
+
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
     }
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $token = Get-ClientAccessToken $resolvedTenantId $audience
+
+    if ($groupUpdateMode) {
+        $normalizedTags = @($Tags | ForEach-Object { $_.Split(',') } |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        if ($normalizedTags.Count -eq 0) {
+            throw 'Specify at least one tag in -Tags.'
+        }
+
+        $resolvedGroupId = $null
+        $parsedGroupId = [guid]::Empty
+        if ([guid]::TryParse($GroupName.Trim(), [ref] $parsedGroupId)) {
+            $resolvedGroupId = $parsedGroupId.ToString()
+        }
+        else {
+            $graphToken = Get-ClientAccessToken $resolvedTenantId 'https://graph.microsoft.com/'
+            $escapedName = $GroupName.Trim().Replace("'", "''")
+            $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+            $groupResponse = Invoke-RestMethod `
+                -Method Get `
+                -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
+                -Authentication Bearer `
+                -Token $graphToken `
+                -ErrorAction Stop
+            $matchingGroups = if ($groupResponse.PSObject.Properties['value']) {
+                @($groupResponse.value)
+            }
+            else {
+                @($groupResponse)
+            }
+            if ($matchingGroups.Count -eq 0) {
+                throw "Entra group '$GroupName' was not found. Specify its exact display name or object ID."
+            }
+            if ($matchingGroups.Count -gt 1) {
+                throw "Multiple Entra groups are named '$GroupName'. Specify the group object ID instead."
+            }
+            $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
+        }
+
+        $currentResponse = Invoke-RestMethod `
+            -Method Get `
+            -Uri $url.TrimEnd('/') `
+            -Authentication Bearer `
+            -Token $token `
+            -ErrorAction Stop
+        $currentPolicy = @($currentResponse.policy)
+        $matchingRule = @($currentPolicy | Where-Object {
+            ([guid] $_.groupId).ToString() -eq $resolvedGroupId
+        })
+        if ($matchingRule.Count -eq 0) {
+            throw "Entra group '$GroupName' does not have a Group Tag policy rule."
+        }
+
+        $updatedPolicy = @($currentPolicy | ForEach-Object {
+            $ruleGroupId = ([guid] $_.groupId).ToString()
+            if ($ruleGroupId -ne $resolvedGroupId) {
+                return $_
+            }
+
+            $policyEntry = [ordered]@{
+                groupId = $resolvedGroupId
+                tags = @($normalizedTags)
+            }
+            if ($PSBoundParameters.ContainsKey('AdministrativeUnitName') -and
+                -not [string]::IsNullOrWhiteSpace([string] $AdministrativeUnitName)) {
+                $policyEntry.administrativeUnitName = $AdministrativeUnitName.Trim()
+            }
+            elseif ($_.PSObject.Properties['administrativeUnitName'] -and
+                -not [string]::IsNullOrWhiteSpace([string] $_.administrativeUnitName)) {
+                $policyEntry.administrativeUnitName = ([string] $_.administrativeUnitName).Trim()
+            }
+
+            [pscustomobject] $policyEntry
+        })
+
+        $body = @{
+            policy = $updatedPolicy
+        } | ConvertTo-Json -Depth 4 -Compress
+        if (-not $PSCmdlet.ShouldProcess(
+                $resolvedGroupId,
+                "Update Group Tags '$($normalizedTags -join ', ')' for the Autopilot policy")) {
+            return
+        }
+
+        Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
+            -Token $token -ContentType 'application/json' -Body $body
+        $freshPolicy = Get-AutoPilotTagPolicy `
+            -ManagementUrl $url `
+            -ApiApplicationIdUri $audience `
+            -TenantId $resolvedTenantId
+        return $freshPolicy
+    }
+
     # Reuse the runtime module's policy parser so client-side validation stays
     # identical to the Function's accepted rule format.
     $coreModulePath = Get-CoreModulePath
@@ -2704,14 +2932,16 @@ function Set-AutoPilotTagPolicy {
     if (-not $PSCmdlet.ShouldProcess($url, "Replace tag authorization policy with $($policy.Count) group rule(s)")) {
         return
     }
-    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
-    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
-    $token = Get-ClientAccessToken $resolvedTenantId $audience
     $body = @{
         policy = $policy
     } | ConvertTo-Json -Depth 4 -Compress
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body
+    $freshPolicy = Get-AutoPilotTagPolicy `
+        -ManagementUrl $url `
+        -ApiApplicationIdUri $audience `
+        -TenantId $resolvedTenantId
+    return $freshPolicy
 }
 
 function Get-AutoPilotTagPolicyManager {

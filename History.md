@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261016.1` - 2026-10-16
+
+- Clarified the operational difference between `Get-AutoPilotImportHistory` and `Get-AutoPilotImportStatus` so support and automation can distinguish the retained audit record from the live import workflow state.
+- Documented the live workflow fields returned by the status endpoint, including `workflowStatus`, `extensionAttributeStatus`, and the final-state interpretation used by the client.
+- Refreshed the project release metadata and README guidance for the current version so the public documentation matches the behavior of the shipped client and service.
+
 ## `1.3.20261015.1` - 2026-10-15
 
 - Fixed the stale re-tagging table refresh after successful Group Tag changes by disabling browser caching for dynamic device-list requests and reloading the current device list immediately after queue completion.

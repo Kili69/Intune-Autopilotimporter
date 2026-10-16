@@ -6,7 +6,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [Unreleased]
+## [1.3.20261016.1] - 2026-10-16
+
+### Changed
+
+- Clarified the operational difference between `Get-AutoPilotImportHistory` and `Get-AutoPilotImportStatus` so support and automation can distinguish the retained audit record from the live import workflow state.
+- Documented the live workflow fields returned by the status endpoint, including `workflowStatus`, `extensionAttributeStatus`, and the final-state interpretation used by the client.
+- Refreshed the project release metadata and README guidance for the current version so the public documentation matches the shipped service behavior.
 
 ## [1.3.20261008.1] - 2026-10-08
 
