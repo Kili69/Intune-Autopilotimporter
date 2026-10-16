@@ -6,9 +6,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261016.3] - 2026-10-16
+## [1.4.20261016.4] - 2026-10-16
+
+### Added
+
+- Named device policies with a web editor (collapsible rules, per-rule saves, confirmed deletion, tag validation, attribute-slot selectors and modal Entra group/AU pickers with selectable named lists), Group/Scope Tag fallback, automatic Scope Tag creation and post-enrollment assignment, explicit single-line extension-attribute values (max. 1024 characters, no control characters; no rows means no writes), and policy-owned Entra device-group synchronization. Additional Graph write permissions are required; legacy authorization-only rules retain compatibility.
 
 ### Changed
+
+- Regular updates preserve complete named policy actions and serialize single-rule policies as arrays, supporting upgrades from 1.3 and repeated 1.4 updates without losing attribute/group configuration.
 
 - Started the nextversion development cycle at 1.4 without advancing the dev or main release line.
 - Added guarded nextversion/dev/main promotion and dev sync PRs, preserving future release lines until explicitly promoted; version tooling now supports minor/major advances without resetting subsequent updates.

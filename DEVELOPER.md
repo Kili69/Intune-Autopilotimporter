@@ -391,6 +391,117 @@ each referenced administrative unit is resolved through Microsoft Graph before
 the policy is persisted. The policy is stored in the private blob
 `configuration/tag-authorization-policy.json`.
 
+Named device-action rules use this schema:
+
+```json
+{
+  "name": "Sales Berlin",
+  "groupId": "11111111-1111-1111-1111-111111111111",
+  "groupTag": "Sales",
+  "scopeTag": "Sales",
+  "extensionAttributes": {
+    "extensionAttribute1": "Sales",
+    "extensionAttribute5": "Berlin"
+  },
+  "deviceGroupIds": ["22222222-2222-2222-2222-222222222222"],
+  "administrativeUnitName": "RMAU-Sales"
+}
+```
+
+`name` is required for action rules (1..128 characters). `groupId` identifies
+the **user authorization group**, not a device target group. Supply at least one
+of `groupTag` and `scopeTag`; an omitted/blank tag receives the other tag's name.
+Each rule has one Group Tag; several named rules may authorize the same user
+group. Identical Group Tags must have identical device actions across rules,
+otherwise saving fails before scope-tag creation. Tags are still exposed as
+`tags` for existing import clients. Legacy string/multi-tag rules receive a
+stable display name but do not start scope-tag/group assignment automatically.
+
+`extensionAttributes` supports string values for extensionAttribute1..15,
+up to 1024 characters each. Unspecified attributes are untouched. Omitting the
+map on a named device-action rule is normalized to an empty map and skips
+attribute writes. The web editor always persists explicit maps; no attribute
+rows means no writes. Only legacy authorization-only rules retain the old
+deployment-wide Group-Tag attribute behavior. Scope Tags are resolved by exact display name, not by
+treating a Group Tag as an Intune ID. Missing tags are created on manager PUT;
+ambiguous names fail. This uses Microsoft Graph **beta** for roleScopeTags and
+managedDevice.roleScopeTagIds; Microsoft may change these APIs.
+
+`deviceGroupIds` must reference cloud-managed, static, non-role-assignable Entra
+security groups. Target groups are validated on save and before membership
+changes. Import and re-tagging add the selected targets and remove memberships
+in other policy-managed targets, preserving unrelated groups. Durable
+`devicePolicies` entities in the existing audit table retain device ownership
+across the normal audit-retention period, including previous targets removed
+from the policy. Ownership is persisted before Graph writes to allow safe
+retries after partial updates. Do not use this partition as expiring import
+history.
+
+Before enrollment, `scopeTagStatus=pendingEnrollment` is recorded without
+holding the import queue open. The existing hourly
+`RemoveExpiredImportHistory` timer completes pending Scope Tags after Intune
+creates a managed device. Other scope tags are preserved; only policy-managed
+tags are replaced. Older pending operations are superseded when re-tagging
+starts applying a newer request. Pending records are retained beyond 30 days
+until completion/supersession, then normal retention applies. Timer failures
+are logged and fail the invocation; records remain pending for the next run.
+The history API, PowerShell result and web trace expose policy, group-sync and
+scope-tag progress separately. Import `workflowStatus=complete` means the
+pre-enrollment workflow has finished, not that enrollment has occurred.
+
+The web **TagPolicies** tab uses the same manager-authorized GET/PUT endpoint,
+but exposes per-rule saves. Before saving or deleting one rule it fetches the
+latest server policy, checks that the original rule has not changed, and merges
+only that rule. Other local drafts are never serialized. The API still replaces
+the whole blob, so this is not an atomic compare-and-swap across concurrent
+clients. Local writes are serialized; stale edits fail visibly. Deletions require
+confirmation, and the last server rule cannot be deleted. Save buttons appear
+only for changed/new rules; new entries are scrolled into view and focused.
+Non-managers receive the normal forbidden response and cannot load/edit rules.
+Saving may create Intune Scope Tags. The PowerShell full-rule setter supports the same
+schema. Legacy group-based add/remove/update shortcuts preserve action fields
+or reject ambiguous multi-rule updates; use the full-rule setter for these.
+The regular updater preserves name, Group/Scope Tags, attribute maps (including
+explicit empty maps), device-group IDs and the per-rule AU. Installer policy
+serialization always uses an array and sufficient JSON depth, including when
+upgrading a deployment with only one rule.
+
+The authorized-user-group object picker calls
+`GET /api/management/tag-policy?groupSearch=<text>` after the same manager
+authorization checks. The search accepts 2..128 characters and returns
+`{ groups: [{ id, displayName }], hasMore, correlationId }`. It uses Graph v1.0
+`startswith(displayName,...)` or an exact GUID filter, escapes OData literals,
+and limits each request to 25 results with a prompt to refine the search.
+Only basic group properties are read using the existing `GroupMember.Read.All`
+application permission. Selecting a result writes its ID to `groupId`; group
+names are display-only, not policy identifiers.
+**Add group** opens a modal picker; selected lists show Graph-resolved names,
+with lookup errors explicitly reported. A shared remove button is enabled only
+when a list entry is selected. The same picker supports multiple device targets.
+`auSearch=<text>` on the same manager endpoint searches Administrative Units.
+Because the AU list API documents `eq`, not `startswith`, AU prefix matching is
+performed locally over its paginated collection; results are capped at 25.
+The existing `AdministrativeUnit.ReadWrite.All` permission covers this lookup.
+Only one AU is allowed, so adding is disabled while one is assigned; removal
+requires selection. The existing name-based policy schema is preserved.
+Rules use native `details`/`summary` disclosure controls, existing rules start
+collapsed, and invalid rules are expanded on save. Extension-attribute rows use
+unique selectors for slots 1..15 and always persist an explicit attribute map.
+No rows means no writes, with no deployment-default switch. Tag inputs use the same existing
+128-character/comma/fallback policy-format checks as the backend, with inline
+feedback and no invented Microsoft character whitelist.
+Attribute values use single-line text inputs with a 1024 UTF-16 code-unit
+limit. Both the TypeScript parser and PowerShell normalizer reject Unicode
+categories Cc, Zl and Zp. Invalid pasted line breaks are reported rather than
+silently joined; invalid stored values require correction before saving.
+
+Before enabling these features on an existing deployment, an administrator must
+grant `DeviceManagementRBAC.ReadWrite.All`,
+`DeviceManagementManagedDevices.ReadWrite.All`, and `GroupMember.ReadWrite.All`
+to the Function managed identity using the updated permission script.
+Existing device, administrative-unit and user/group-read permissions remain
+required. No permissions are granted merely by editing code or policies.
+
 ### 6.7. Web Frontend Interface
 
 `WebFrontend` serves `/api/ui/{*path}` from the compiled bundle under
@@ -486,7 +597,8 @@ actually consumes it, and cover authorization-relevant changes in
 The Function managed identity requires the Microsoft Graph application
 permissions `AdministrativeUnit.ReadWrite.All`,
 `DeviceManagementServiceConfig.ReadWrite.All`,
-`DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`,
+`DeviceManagementRBAC.ReadWrite.All`, `DeviceManagementManagedDevices.ReadWrite.All`,
+`GroupMember.ReadWrite.All`, `Device.ReadWrite.All`,
 `GroupMember.Read.All`, and `User.ReadBasic.All`. The installer assigns these
 permissions. Clients receive only the delegated `DeviceHash.Import` scope and
 therefore cannot call Microsoft Graph on behalf of the Function.
@@ -601,7 +713,7 @@ By default, the installer searches the selected tenant for an app registration n
 The installer compares the existing application with the desired configuration before writing. A user with read access can therefore reuse an already compliant application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, and `User.ReadBasic.All` permissions.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, `DeviceManagementRBAC.ReadWrite.All`, `DeviceManagementManagedDevices.ReadWrite.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, and `User.ReadBasic.All`.
 
 The installer configures:
 
@@ -1040,7 +1152,7 @@ exposed through these paths.
 
 ### 9.3. Assign the Graph Permission
 
-This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
+This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.ReadWrite.All`, `DeviceManagementManagedDevices.ReadWrite.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser

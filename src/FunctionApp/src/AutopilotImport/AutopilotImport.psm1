@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -460,18 +460,24 @@ function Remove-ExpiredImportAuditRecords {
         'x-ms-version' = '2019-02-02'
     }
     $removedCount = 0
+    $continuation = ''
 
     do {
-        $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))&`$top=1000"
+        $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))&`$top=1000$continuation"
+        $pageHeaders = $null
         $response = Invoke-RestMethod `
             -Method Get `
             -Uri $requestUri `
             -Authentication Bearer `
             -Token $AccessToken `
             -Headers $headers `
+            -ResponseHeadersVariable pageHeaders `
             -ErrorAction Stop
         $expiredRecords = @($response.value)
         foreach ($record in $expiredRecords) {
+            if ($record.PSObject.Properties['scopeTagStatus'] -and $record.scopeTagStatus -eq 'pendingEnrollment') {
+                continue
+            }
             $rowKey = [uri]::EscapeDataString([string] $record.RowKey)
             Invoke-RestMethod `
                 -Method Delete `
@@ -482,7 +488,10 @@ function Remove-ExpiredImportAuditRecords {
                 -ErrorAction Stop | Out-Null
             $removedCount++
         }
-    } while ($expiredRecords.Count -eq 1000)
+        $continuation = if ($pageHeaders -and $pageHeaders['x-ms-continuation-NextPartitionKey']) {
+            "&NextPartitionKey=$([uri]::EscapeDataString([string] $pageHeaders['x-ms-continuation-NextPartitionKey']))&NextRowKey=$([uri]::EscapeDataString([string] $pageHeaders['x-ms-continuation-NextRowKey']))"
+        } else { '' }
+    } while ($continuation)
 
     return $removedCount
 }
@@ -494,7 +503,10 @@ function ConvertTo-TagAuthorizationPolicy {
 
     .PARAMETER Rules
     Rules in the form <group-object-id>=<tag1>,<tag2>, or rule objects with
-    groupId, tags, and an optional administrativeUnitName.
+    groupId, tags, and an optional administrativeUnitName. Named device-action
+    objects use name, groupId, groupTag and/or scopeTag, optional extensionAttributes
+    (extensionAttribute1 through extensionAttribute15), and deviceGroupIds.
+    A missing Group/Scope Tag inherits the other tag's name.
 
     .PARAMETER AdministrativeUnitName
     Optional display name of the administrative unit to associate with every
@@ -503,7 +515,7 @@ function ConvertTo-TagAuthorizationPolicy {
     device becomes available. Leave empty to disable automatic membership.
 
     .OUTPUTS
-    PSCustomObject entries with groupId and tags properties.
+    Normalized policy entries, preserving legacy multi-tag authorization rules.
     #>
     [CmdletBinding()]
     param(
@@ -526,7 +538,74 @@ function ConvertTo-TagAuthorizationPolicy {
 
     $rulesByGroup = @{}
     $mauByGroup = @{}
+    $settingsByGroup = @{}
+    $groupIdsByRule = @{}
     foreach ($rule in $enteredRules) {
+        $settings = [ordered]@{}
+        $extended = $false
+        if ($rule -isnot [string]) {
+            $data = if ($rule -is [Collections.IDictionary]) { $rule } else {
+                $map = @{}
+                foreach ($property in $rule.PSObject.Properties) { $map[$property.Name] = $property.Value }
+                $map
+            }
+            $name = ([string] $data['name']).Trim()
+            $groupTag = ([string] $data['groupTag']).Trim()
+            $scopeTag = ([string] $data['scopeTag']).Trim()
+            $extended = $data.Contains('groupTag') -or $data.Contains('scopeTag') -or
+                $data.Contains('extensionAttributes') -or $data.Contains('deviceGroupIds')
+            if ($extended -and ($name.Length -eq 0 -or $name.Length -gt 128)) {
+                throw 'Named policy rules require a name of 1..128 characters.'
+            }
+            if ($data.Contains('groupTag') -or $data.Contains('scopeTag')) {
+                if (-not $groupTag -and -not $scopeTag) { throw 'At least one Group Tag or Scope Tag is required.' }
+                if (-not $groupTag) { $groupTag = $scopeTag }
+                if (-not $scopeTag) { $scopeTag = $groupTag }
+                if ($groupTag.Length -gt 128 -or $scopeTag.Length -gt 128 -or $groupTag.Contains(',')) {
+                    throw 'Group Tag and Scope Tag names must be at most 128 characters; Group Tag must not contain commas.'
+                }
+                $settings.groupTag = $groupTag
+                $settings.scopeTag = $scopeTag
+                $data['tags'] = @($groupTag)
+            }
+            if ($extended -and -not $settings.Contains('groupTag')) {
+                throw 'Named action rules require a Group Tag or Scope Tag.'
+            }
+            if ($name) { $settings.name = $name }
+            if ($data.Contains('extensionAttributes')) {
+                $attributes = $data['extensionAttributes']
+                if ($attributes -isnot [Collections.IDictionary] -and $attributes -isnot [pscustomobject]) {
+                    throw 'extensionAttributes must be an object of attribute/value pairs.'
+                }
+                $attributeMap = [ordered]@{}
+                $keys = if ($attributes -is [Collections.IDictionary]) { $attributes.Keys } else { $attributes.PSObject.Properties.Name }
+                foreach ($key in @($keys | Sort-Object)) {
+                    $value = if ($attributes -is [Collections.IDictionary]) { $attributes[$key] } else { $attributes.$key }
+                    if ($key -cnotmatch '^extensionAttribute(?:[1-9]|1[0-5])$' -or
+                        $value -isnot [string] -or $value.Length -gt 1024 -or
+                        $value -match '[\p{Cc}\p{Zl}\p{Zp}]') {
+                        throw 'Extension attributes must be extensionAttribute1..15 with single-line string values of at most 1024 characters, without control characters.'
+                    }
+                    $attributeMap[$key] = $value
+                }
+                $settings.extensionAttributes = $attributeMap
+            }
+            elseif ($extended) {
+                $settings.extensionAttributes = [ordered]@{}
+            }
+            if ($data.Contains('deviceGroupIds')) {
+                $ids = @()
+                foreach ($id in @($data['deviceGroupIds'])) {
+                    $parsed = [guid]::Empty
+                    if (-not [guid]::TryParse([string] $id, [ref] $parsed) -or $parsed -eq [guid]::Empty) {
+                        throw "Device group ID '$id' must be a non-empty GUID."
+                    }
+                    $ids += $parsed.ToString()
+                }
+                $settings.deviceGroupIds = @($ids | Sort-Object -Unique)
+            }
+            $rule = $data
+        }
         if ($rule -is [string]) {
             $separatorIndex = $rule.IndexOf('=')
             if ($separatorIndex -lt 1 -or $separatorIndex -eq $rule.Length - 1) {
@@ -571,6 +650,15 @@ function ConvertTo-TagAuthorizationPolicy {
             throw "Group Object ID '$groupId' must be a GUID."
         }
         $normalizedGroupId = $parsedGroupId.ToString()
+        if (-not $settings.Contains('name')) { $settings.name = "Policy $normalizedGroupId" }
+        $policyKey = if ($extended) { "$normalizedGroupId|$($settings.name)" } else { $normalizedGroupId }
+        $groupIdsByRule[$policyKey] = $normalizedGroupId
+        if ($settingsByGroup.ContainsKey($policyKey) -and
+            ($settingsByGroup[$policyKey] | ConvertTo-Json -Depth 6 -Compress) -cne
+            ($settings | ConvertTo-Json -Depth 6 -Compress)) {
+            throw "Group '$normalizedGroupId' has conflicting policy settings."
+        }
+        $settingsByGroup[$policyKey] = $settings
 
         $tags = @($tags | ForEach-Object {
             $_.Trim()
@@ -593,22 +681,23 @@ function ConvertTo-TagAuthorizationPolicy {
         if ($normalizedMauName.Length -gt 256) {
             throw 'Administrative unit name must not exceed 256 characters.'
         }
-        if ($mauByGroup.ContainsKey($normalizedGroupId) -and
-            $mauByGroup[$normalizedGroupId] -ne $normalizedMauName) {
+        if ($mauByGroup.ContainsKey($policyKey) -and
+            $mauByGroup[$policyKey] -ne $normalizedMauName) {
             throw "Group '$normalizedGroupId' has conflicting administrative units."
         }
 
-        $rulesByGroup[$normalizedGroupId] = @(
-            @($rulesByGroup[$normalizedGroupId]) + $tags | Select-Object -Unique
+        $rulesByGroup[$policyKey] = @(
+            @($rulesByGroup[$policyKey]) + $tags | Select-Object -Unique
         )
-        $mauByGroup[$normalizedGroupId] = $normalizedMauName
+        $mauByGroup[$policyKey] = $normalizedMauName
     }
 
     return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
         $policyEntry = [ordered]@{
-            groupId = $_
+            groupId = $groupIdsByRule[$_]
             tags    = @($rulesByGroup[$_] | Sort-Object)
         }
+        foreach ($key in $settingsByGroup[$_].Keys) { $policyEntry[$key] = $settingsByGroup[$_][$key] }
         if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
             $policyEntry.administrativeUnitName =
             $mauByGroup[$_]
@@ -968,6 +1057,214 @@ function ConvertTo-EntraDeviceExtensionAttributes {
             $ExtensionAttribute = $GroupTag
         }
     }
+}
+
+function Get-PolicyGraphCollection {
+    param(
+        [Parameter(Mandatory)][string] $Uri,
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    do {
+        $page = Invoke-RestMethod -Method Get -Uri $Uri -Authentication Bearer -Token $AccessToken -ErrorAction Stop
+        foreach ($item in @($page.value)) { $item }
+        $Uri = if ($page.PSObject.Properties['@odata.nextLink']) { [string] $page.'@odata.nextLink' } else { '' }
+    } while ($Uri)
+}
+
+function Get-DevicePolicyActions {
+    param(
+        [Parameter(Mandatory)][object[]] $Policy,
+        [Parameter(Mandatory)][string] $GroupTag
+    )
+    $matching = @($Policy | Where-Object { $GroupTag -in @($_.tags) })
+    $actions = @($matching | ForEach-Object {
+        $rule = $_
+        $result = [ordered]@{}
+        foreach ($key in @('scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+            if ($rule.PSObject.Properties[$key]) { $result[$key] = $rule.$key }
+            elseif ($key -eq 'extensionAttributes' -and $rule.PSObject.Properties['groupTag']) {
+                $result[$key] = [ordered]@{}
+            }
+        }
+        $result | ConvertTo-Json -Depth 6 -Compress
+    } | Select-Object -Unique)
+    if ($actions.Count -gt 1) {
+        throw "Group Tag '$GroupTag' has conflicting device actions across authorization rules."
+    }
+    if ($matching.Count -eq 0) { return [pscustomobject]@{} }
+    if ($matching[0].PSObject.Properties['groupTag'] -and -not $matching[0].PSObject.Properties['extensionAttributes']) {
+        $copy = $matching[0].PSObject.Copy()
+        $copy | Add-Member -NotePropertyName extensionAttributes -NotePropertyValue ([pscustomobject]@{})
+        return $copy
+    }
+    return $matching[0]
+}
+
+function Assert-DevicePolicyGroups {
+    param(
+        [string[]] $GroupIds = @(),
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    foreach ($id in @($GroupIds | Sort-Object -Unique)) {
+        $group = Invoke-RestMethod -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/groups/${id}?`$select=id,securityEnabled,groupTypes,onPremisesSyncEnabled,isAssignableToRole" `
+            -Authentication Bearer -Token $AccessToken -ErrorAction Stop
+        if (-not $group.securityEnabled -or 'DynamicMembership' -in @($group.groupTypes) -or
+            $group.onPremisesSyncEnabled -eq $true -or $group.isAssignableToRole -eq $true) {
+            throw "Device target group '$id' must be a cloud-managed, static, non-role-assignable security group."
+        }
+    }
+}
+
+function Resolve-PolicyScopeTag {
+    param(
+        [Parameter(Mandatory)][string] $Name,
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken,
+        [switch] $Create
+    )
+    $tags = @(Get-PolicyGraphCollection -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
+        -AccessToken $AccessToken | Where-Object { $_.displayName -ieq $Name })
+    if ($tags.Count -gt 1) { throw "Scope Tag '$Name' is ambiguous." }
+    if ($tags.Count -eq 1) { return $tags[0] }
+    if (-not $Create) { throw "Scope Tag '$Name' was not found. Save the policy again to create it." }
+    return Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
+        -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
+        -Body (@{ displayName = $Name; description = 'Managed by Autopilot Import tag policy' } | ConvertTo-Json -Compress) `
+        -ErrorAction Stop
+}
+
+function Sync-DevicePolicyGroups {
+    param(
+        [Parameter(Mandatory)][object[]] $Policy,
+        [string[]] $TargetGroupIds = @(),
+        [string[]] $PreviousGroupIds = @(),
+        [Parameter(Mandatory)][guid] $DeviceObjectId,
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    $managedIds = @(@($Policy | ForEach-Object {
+        if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+    }) + $PreviousGroupIds | Sort-Object -Unique)
+    $memberships = @(Get-PolicyGraphCollection `
+        -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectId/memberOf?`$select=id" -AccessToken $AccessToken)
+    $memberIds = @($memberships | ForEach-Object { [string] $_.id })
+    $removeIds = @($managedIds | Where-Object { $_ -in $memberIds -and $_ -notin $TargetGroupIds })
+    Assert-DevicePolicyGroups -GroupIds @($removeIds + $TargetGroupIds | Sort-Object -Unique) -AccessToken $AccessToken
+    foreach ($id in $TargetGroupIds) {
+        if ($id -notin $memberIds) {
+            Invoke-RestMethod -Method Post -Uri "https://graph.microsoft.com/v1.0/groups/$id/members/`$ref" `
+                -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
+                -Body (@{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$DeviceObjectId" } | ConvertTo-Json -Compress) `
+                -ErrorAction Stop | Out-Null
+        }
+    }
+    foreach ($id in $removeIds) {
+            Invoke-RestMethod -Method Delete -Uri "https://graph.microsoft.com/v1.0/groups/$id/members/$DeviceObjectId/`$ref" `
+                -Authentication Bearer -Token $AccessToken -ErrorAction Stop | Out-Null
+    }
+}
+
+function Get-DevicePolicyState {
+    param(
+        [Parameter(Mandatory)][guid] $DeviceId,
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    $filter = [uri]::EscapeDataString("PartitionKey eq 'devicePolicies' and RowKey eq '$DeviceId'")
+    $response = Invoke-RestMethod -Method Get -Uri "$(Get-ImportAuditTableUri)()?`$filter=$filter" `
+        -Authentication Bearer -Token $AccessToken -Headers @{
+            Accept = 'application/json;odata=nometadata'
+            'x-ms-version' = '2019-02-02'
+        } -ErrorAction Stop
+    $rows = @($response.value)
+    if ($rows.Count -eq 0) { return [pscustomobject]@{ groupIdsJson = '[]'; scopeTagNamesJson = '[]' } }
+    return $rows[0]
+}
+
+function Set-DevicePolicyState {
+    param(
+        [Parameter(Mandatory)][guid] $DeviceId,
+        [string[]] $GroupIds = @(),
+        [string[]] $ScopeTagNames = @(),
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    $body = @{
+        PartitionKey = 'devicePolicies'
+        RowKey = $DeviceId.ToString()
+        groupIdsJson = ConvertTo-Json -InputObject @($GroupIds) -Compress
+        scopeTagNamesJson = ConvertTo-Json -InputObject @($ScopeTagNames) -Compress
+    } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Method Put -Uri "$(Get-ImportAuditTableUri)(PartitionKey='devicePolicies',RowKey='$DeviceId')" `
+        -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
+        -Headers @{ Accept = 'application/json;odata=nometadata'; 'x-ms-version' = '2019-02-02' } `
+        -Body $body -ErrorAction Stop | Out-Null
+}
+
+function Set-DevicePolicyScopeTag {
+    param(
+        [Parameter(Mandatory)][guid] $EntraDeviceId,
+        [Parameter(Mandatory)][string] $ScopeTag,
+        [string[]] $ManagedScopeTagNames = @(),
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+    )
+    $filter = [uri]::EscapeDataString("azureADDeviceId eq '$EntraDeviceId'")
+    $devices = @(Get-PolicyGraphCollection `
+        -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=$filter&`$select=id,roleScopeTagIds" `
+        -AccessToken $AccessToken)
+    if ($devices.Count -eq 0) { return $false }
+    $target = Resolve-PolicyScopeTag -Name $ScopeTag -AccessToken $AccessToken
+    $managedIds = @(Get-PolicyGraphCollection -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
+        -AccessToken $AccessToken | Where-Object { $_.displayName -in $ManagedScopeTagNames } | ForEach-Object { [string] $_.id })
+    foreach ($device in $devices) {
+        $ids = @(@($device.roleScopeTagIds | Where-Object { $_ -notin $managedIds }) + @([string] $target.id) | Sort-Object -Unique)
+        Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$($device.id)" `
+            -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
+            -Body (@{ roleScopeTagIds = $ids } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
+    }
+    return $true
+}
+
+function Complete-PendingDeviceScopeTags {
+    param(
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken,
+        [Parameter(Mandatory)][Security.SecureString] $AuditToken
+    )
+    $tableUri = Get-ImportAuditTableUri
+    $filter = [uri]::EscapeDataString("PartitionKey eq 'imports' and scopeTagStatus eq 'pendingEnrollment'")
+    $headers = @{
+        Accept = 'application/json;odata=nometadata'
+        'x-ms-date' = [datetime]::UtcNow.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $continuation = ''
+    $failures = 0
+    do {
+        $pageHeaders = $null
+        $page = Invoke-RestMethod -Method Get -Uri "$tableUri()?`$filter=$filter&`$top=1000$continuation" `
+            -Authentication Bearer -Token $AuditToken -Headers $headers `
+            -ResponseHeadersVariable pageHeaders -ErrorAction Stop
+        foreach ($record in @($page.value)) {
+            try {
+                $scopeNames = @($record.managedScopeTagNamesJson | ConvertFrom-Json)
+                $complete = Set-DevicePolicyScopeTag -EntraDeviceId ([guid] $record.entraDeviceId) `
+                    -ScopeTag $record.scopeTagName -ManagedScopeTagNames $scopeNames -AccessToken $AccessToken
+                if ($complete) {
+                    Set-ImportAuditRecord -ImportId ([guid] $record.RowKey) -AccessToken $AuditToken -Properties @{
+                        scopeTagStatus = 'complete'
+                        scopeTagUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+                    }
+                }
+            }
+            catch {
+                $failures++
+                Write-Error "Scope Tag processing failed for '$($record.RowKey)': $($_.Exception.Message)" -ErrorAction Continue
+            }
+        }
+        $nextPartition = if ($pageHeaders) { $pageHeaders['x-ms-continuation-NextPartitionKey'] } else { $null }
+        $nextRow = if ($pageHeaders) { $pageHeaders['x-ms-continuation-NextRowKey'] } else { $null }
+        $continuation = if ($nextPartition) {
+            "&NextPartitionKey=$([uri]::EscapeDataString([string] $nextPartition))&NextRowKey=$([uri]::EscapeDataString([string] $nextRow))"
+        } else { '' }
+    } while ($continuation)
+    if ($failures) { throw "$failures pending Scope Tag operation(s) failed; they remain pending and will be retried." }
 }
 
 function Get-AutoPilotDeviceRegistrationId {
@@ -1544,7 +1841,58 @@ function ConvertTo-AutoPilotImportPayload {
     }
 }
 
+function Find-EntraPolicyGroups {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(2, 128)]
+        [string] $SearchText,
+
+        [ValidateSet('groups', 'administrativeUnits')]
+        [string] $ObjectType = 'groups',
+
+        [Parameter(Mandatory)]
+        [Security.SecureString] $AccessToken
+    )
+
+    $query = $SearchText.Trim()
+    if ($query.Length -lt 2) { throw 'Group search requires at least two characters.' }
+    $groupId = [guid]::Empty
+    if ($ObjectType -eq 'administrativeUnits') {
+        $isId = [guid]::TryParse($query, [ref] $groupId)
+        # AU list supports eq, not startswith; filter names locally across all pages.
+        $units = @(Get-PolicyGraphCollection `
+            -Uri 'https://graph.microsoft.com/v1.0/directory/administrativeUnits?$select=id,displayName' `
+            -AccessToken $AccessToken | Where-Object {
+                if ($isId) { [string] $_.id -eq $groupId.ToString() }
+                else { ([string] $_.displayName).StartsWith($query, [StringComparison]::OrdinalIgnoreCase) }
+            } | Sort-Object displayName, id)
+        return [pscustomobject]@{
+            groups = @($units | Select-Object -First 25 | ForEach-Object {
+                [pscustomobject]@{ id = [string] $_.id; displayName = [string] $_.displayName }
+            })
+            hasMore = $units.Count -gt 25
+        }
+    }
+    $filter = if ([guid]::TryParse($query, [ref] $groupId)) {
+        "id eq '$($groupId.ToString())'"
+    } else {
+        "startswith(displayName,'$($query.Replace("'", "''"))')"
+    }
+    $response = Invoke-RestMethod -Method Get `
+        -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$([uri]::EscapeDataString($filter))&`$select=id,displayName&`$top=25" `
+        -Authentication Bearer -Token $AccessToken -ErrorAction Stop
+    [pscustomobject]@{
+        groups = @($response.value | Sort-Object displayName, id | ForEach-Object {
+            [pscustomobject]@{ id = [string] $_.id; displayName = [string] $_.displayName }
+        })
+        hasMore = $null -ne $response.PSObject.Properties['@odata.nextLink'] -and
+            -not [string]::IsNullOrWhiteSpace([string] $response.'@odata.nextLink')
+    }
+}
+
 Export-ModuleMember -Function @(
+    'Find-EntraPolicyGroups',
     'ConvertFrom-BlobBindingContent',
     'Get-ImportAuditTableUri',
     'Get-ImportAuditAccessToken',
@@ -1556,6 +1904,15 @@ Export-ModuleMember -Function @(
     'Remove-ExpiredImportAuditRecords',
     'ConvertTo-TagAuthorizationPolicy',
     'ConvertTo-EntraDeviceExtensionAttributes',
+    'Get-PolicyGraphCollection',
+    'Get-DevicePolicyActions',
+    'Assert-DevicePolicyGroups',
+    'Resolve-PolicyScopeTag',
+    'Sync-DevicePolicyGroups',
+    'Get-DevicePolicyState',
+    'Set-DevicePolicyState',
+    'Set-DevicePolicyScopeTag',
+    'Complete-PendingDeviceScopeTags',
     'Resolve-AdministrativeUnitName',
     'Resolve-EffectiveAdministrativeUnitName',
     'Resolve-EntraAdministrativeUnit',

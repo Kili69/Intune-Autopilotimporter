@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -1500,7 +1500,7 @@ $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy `
     -Rules $TagAuthorizationRule `
     -AdministrativeUnitName `
         $AdministrativeUnitName
-$tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
+$tagAuthorizationPolicyJson = ConvertTo-Json -InputObject @($tagAuthorizationPolicy) -Depth 8 -Compress
 
 $parsedGuid = [guid]::Empty
 if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)) {

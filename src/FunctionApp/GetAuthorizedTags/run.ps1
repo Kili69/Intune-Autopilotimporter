@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -64,6 +64,15 @@ try {
         -Policy $policy `
         -AccessToken $graphToken
     $tags = @(Get-AuthorizedGroupTags -Principal $principal -Policy $policy)
+    $callerGroups = @($principal.claims | Where-Object {
+        $_.typ -in 'groups', 'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
+    } | ForEach-Object { [string] $_.val })
+    $namedPolicies = @($policy | Where-Object { $_.groupId -in $callerGroups } | ForEach-Object {
+        [pscustomobject]@{
+            name = if ($_.PSObject.Properties['name']) { [string] $_.name } else { "Policy $($_.groupId)" }
+            tags = @($_.tags)
+        }
+    })
 }
 catch [System.ArgumentException] {
     Send-JsonResponse -StatusCode Unauthorized -Body @{
@@ -83,5 +92,6 @@ catch {
 
 Send-JsonResponse -StatusCode OK -Body @{
     tags          = $tags
+    policies      = $namedPolicies
     correlationId = $correlationId
 }

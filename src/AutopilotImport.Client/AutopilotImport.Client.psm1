@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2061,6 +2061,11 @@ function Get-AutoPilotImportHistory {
             SerialNumber                     = [string] $importProperties['serialNumber']
             GroupTag                         = [string] $importProperties['groupTag']
             Status                           = [string] $importProperties['status']
+            PolicyName                       = [string] $importProperties['policyName']
+            ScopeTagStatus                   = [string] $importProperties['scopeTagStatus']
+            ScopeTagName                     = [string] $importProperties['scopeTagName']
+            ScopeTagUpdatedAtUtc             = [string] $importProperties['scopeTagUpdatedAtUtc']
+            DeviceGroupsUpdatedAtUtc         = [string] $importProperties['deviceGroupsUpdatedAtUtc']
             DeviceHashSha256                 = [string] $importProperties['deviceHashSha256']
             DeviceErrorCode                  = $importProperties['deviceErrorCode']
             DeviceErrorName                  = [string] $importProperties['deviceErrorName']
@@ -2124,6 +2129,7 @@ function ConvertTo-ClientTagPolicyResult {
 
     $result = [pscustomobject][ordered]@{
         PSTypeName = 'AutopilotImport.TagPolicyRule'
+        Name = if ($Rule.PSObject.Properties['name']) { [string] $Rule.name } else { "Policy $($Rule.groupId)" }
         GroupId = [string] $Rule.groupId
         GroupName = $GroupName
         Tags = @($Rule.tags)
@@ -2138,9 +2144,15 @@ function ConvertTo-ClientTagPolicyResult {
         }
         CorrelationId = $CorrelationId
     }
+    foreach ($key in @('groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+        if ($Rule.PSObject.Properties[$key]) {
+            $result | Add-Member -NotePropertyName $key -NotePropertyValue $Rule.$key
+        }
+    }
     $displayPropertySet = [Management.Automation.PSPropertySet]::new(
         'DefaultDisplayPropertySet',
         [string[]] @(
+            'Name'
             'GroupId'
             'GroupName'
             'Tags'
@@ -2404,8 +2416,17 @@ function Add-AutoPilotTagPolicy {
     # discarding unrelated groups or their individual RMAU assignments.
     $rulesByGroup = [ordered]@{}
     $mauByGroup = @{}
+    $sourceRules = @{}
+    if (@($currentPolicy | Group-Object groupId | Where-Object Count -gt 1).Count -gt 0) {
+        throw 'Multiple named rules share a user group. Use Set-AutoPilotTagPolicy with complete rule objects to avoid ambiguous updates.'
+    }
     foreach ($rule in $currentPolicy) {
         $currentGroupId = ([guid] $rule.groupId).ToString()
+        $sourceRules[$currentGroupId] = $rule
+        if ($currentGroupId -eq $resolvedGroupId -and $rule.PSObject.Properties['groupTag'] -and
+            @($tags | Where-Object { $_ -ine $rule.groupTag }).Count -gt 0) {
+            throw 'A named device-action rule has one Group Tag. Use Set-AutoPilotTagPolicy with complete rule objects to change it.'
+        }
         $rulesByGroup[$currentGroupId] = @($rule.tags)
         $mauByGroup[$currentGroupId] = if ($rule.PSObject.Properties[
                 'administrativeUnitName']) {
@@ -2431,6 +2452,11 @@ function Add-AutoPilotTagPolicy {
             groupId = $_
             tags = @($rulesByGroup[$_])
         }
+        if ($sourceRules.ContainsKey($_)) {
+            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+                if ($sourceRules[$_].PSObject.Properties[$key]) { $policyEntry[$key] = $sourceRules[$_].$key }
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($mauByGroup[$_])) {
             $policyEntry.administrativeUnitName =
                 $mauByGroup[$_].Trim()
@@ -2439,7 +2465,7 @@ function Add-AutoPilotTagPolicy {
     })
     $body = @{
         policy = $updatedPolicy
-    } | ConvertTo-Json -Depth 4 -Compress
+    } | ConvertTo-Json -Depth 8 -Compress
 
     if (-not $PSCmdlet.ShouldProcess(
             $resolvedGroupId,
@@ -2602,6 +2628,9 @@ function Remove-AutoPilotTagPolicy {
     if ($matchingRule.Count -eq 0) {
         throw "Entra group '$Group' does not have a Group Tag policy rule."
     }
+    if ($matchingRule.Count -gt 1) {
+        throw 'Multiple named rules match this group. Use Set-AutoPilotTagPolicy with complete rule objects.'
+    }
 
     # Supplying GroupTag means a partial update; omitting it removes the entire
     # group rule while still preserving every unrelated rule.
@@ -2647,6 +2676,9 @@ function Remove-AutoPilotTagPolicy {
                 groupId = $ruleGroupId
                 tags = @($ruleTags)
             }
+            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+                if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
+            }
             if ($_.PSObject.Properties[
                     'administrativeUnitName'] -and
                 -not [string]::IsNullOrWhiteSpace(
@@ -2667,7 +2699,7 @@ function Remove-AutoPilotTagPolicy {
     }
     $body = @{
         policy = $remainingPolicy
-    } | ConvertTo-Json -Depth 4 -Compress
+    } | ConvertTo-Json -Depth 8 -Compress
 
     $target = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
         $resolvedGroupId
@@ -2748,6 +2780,10 @@ function Set-AutoPilotTagPolicy {
     with groupId, tags, and an optional
     administrativeUnitName. Each group object ID must be a
     GUID and each rule must contain at least one Group Tag.
+    Named device-action rules accept name, groupId, groupTag and/or scopeTag,
+    extensionAttributes as an attribute-to-value map, and deviceGroupIds as
+    target device group object IDs. At least one tag is required; a missing
+    tag inherits the other name. Missing Intune Scope Tags are created.
 
     .PARAMETER AdministrativeUnitName
     Optional fallback administrative unit applied to string rules. Rule
@@ -2880,6 +2916,9 @@ function Set-AutoPilotTagPolicy {
         if ($matchingRule.Count -eq 0) {
             throw "Entra group '$GroupName' does not have a Group Tag policy rule."
         }
+        if ($matchingRule.Count -gt 1) {
+            throw 'Multiple named rules match this group. Use Set-AutoPilotTagPolicy with complete rule objects.'
+        }
 
         $updatedPolicy = @($currentPolicy | ForEach-Object {
             $ruleGroupId = ([guid] $_.groupId).ToString()
@@ -2890,6 +2929,13 @@ function Set-AutoPilotTagPolicy {
             $policyEntry = [ordered]@{
                 groupId = $resolvedGroupId
                 tags = @($normalizedTags)
+            }
+            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+                if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
+            }
+            if ($policyEntry.Contains('groupTag')) {
+                if ($normalizedTags.Count -ne 1) { throw 'Named device-action rules require exactly one Group Tag.' }
+                $policyEntry.groupTag = $normalizedTags[0]
             }
             if ($PSBoundParameters.ContainsKey('AdministrativeUnitName') -and
                 -not [string]::IsNullOrWhiteSpace([string] $AdministrativeUnitName)) {
@@ -2905,7 +2951,7 @@ function Set-AutoPilotTagPolicy {
 
         $body = @{
             policy = $updatedPolicy
-        } | ConvertTo-Json -Depth 4 -Compress
+        } | ConvertTo-Json -Depth 8 -Compress
         if (-not $PSCmdlet.ShouldProcess(
                 $resolvedGroupId,
                 "Update Group Tags '$($normalizedTags -join ', ')' for the Autopilot policy")) {
@@ -2934,7 +2980,7 @@ function Set-AutoPilotTagPolicy {
     }
     $body = @{
         policy = $policy
-    } | ConvertTo-Json -Depth 4 -Compress
+    } | ConvertTo-Json -Depth 8 -Compress
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body
     $freshPolicy = Get-AutoPilotTagPolicy `

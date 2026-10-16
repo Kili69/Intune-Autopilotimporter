@@ -7,6 +7,8 @@ import {
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
 import { buildApiRequestOptions } from './api';
+import { mountPolicyEditor } from './policy';
+import type { GroupSearchResult } from './group-picker';
 import './style.css';
 
 interface RuntimeConfig {
@@ -19,6 +21,7 @@ interface RuntimeConfig {
   tagsUrl: string;
   deviceTagAssignmentsUrl: string;
   importHistoryUrl: string;
+  tagPolicyUrl: string;
 }
 
 interface ApiError {
@@ -62,6 +65,11 @@ interface ImportHistoryRecord {
   extensionAttributeUpdatedAtUtc?: string;
   administrativeUnitAssignedAtUtc?: string;
   processingCompletedAtUtc?: string;
+  policyName?: string;
+  scopeTagName?: string;
+  scopeTagStatus?: string;
+  scopeTagUpdatedAtUtc?: string;
+  deviceGroupsUpdatedAtUtc?: string;
   lastUpdatedAtUtc?: string;
 }
 
@@ -88,6 +96,9 @@ const translations = {
     noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
     devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
     importTab: 'Import', retagTab: 'Re-Tagging',
+    policyTab: 'TagPolicies',
+    scopeTagLabel: 'Intune Scope Tag', policyNameLabel: 'Policy', scopeStatusLabel: 'Scope-Tag-Status',
+    traceGroupsUpdated: 'Entra-Zielgruppen wurden synchronisiert', traceScopeUpdated: 'Intune Scope Tag wurde zugewiesen',
     lastUpdated: 'Letzte Aktualisierung', traceTitle: 'Vorgangsverlauf', close: 'Schließen', traceCurrentStatus: 'Aktueller Status',
     traceRequested: 'Anfrage wurde entgegengenommen', traceCreatedInIntune: 'Gerät wurde an Intune übermittelt', traceQueued: 'Nachbearbeitung wurde eingeplant',
     traceStarted: 'Nachbearbeitung wurde gestartet', traceDeviceResolved: 'Entra-Gerät wurde gefunden', traceAutopilotTagUpdated: 'Autopilot Group Tag wurde aktualisiert',
@@ -114,6 +125,9 @@ const translations = {
     noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
     devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
     importTab: 'Import', retagTab: 'Re-tagging',
+    policyTab: 'Tag policies',
+    scopeTagLabel: 'Intune Scope Tag', policyNameLabel: 'Policy', scopeStatusLabel: 'Scope Tag status',
+    traceGroupsUpdated: 'Entra target groups synchronized', traceScopeUpdated: 'Intune Scope Tag assigned',
     lastUpdated: 'Last updated', traceTitle: 'Operation trace', close: 'Close', traceCurrentStatus: 'Current status',
     traceRequested: 'Request was received', traceCreatedInIntune: 'Device was submitted to Intune', traceQueued: 'Post-processing was queued',
     traceStarted: 'Post-processing started', traceDeviceResolved: 'Entra device was resolved', traceAutopilotTagUpdated: 'Autopilot Group Tag was updated',
@@ -187,6 +201,7 @@ app.innerHTML = `
       <div class="workspace-tabs" role="tablist" aria-label="${t('register')}">
         <button id="import-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="import-tab-panel">${t('importTab')}</button>
         <button id="retag-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="retag-tab-panel" tabindex="-1">${t('retagTab')}</button>
+        <button id="policy-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="policy-tab-panel" tabindex="-1">${t('policyTab')}</button>
       </div>
 
       <div id="import-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="import-tab">
@@ -254,6 +269,8 @@ app.innerHTML = `
           </div>
         </section>
       </div>
+
+      <section id="policy-tab-panel" class="tab-panel panel hidden" role="tabpanel" aria-labelledby="policy-tab"></section>
 
       <section class="panel results-panel">
         <section id="results-panel" class="activity-section hidden">
@@ -327,6 +344,8 @@ const importTab = element<HTMLButtonElement>('import-tab');
 const retagTab = element<HTMLButtonElement>('retag-tab');
 const importTabPanel = element<HTMLElement>('import-tab-panel');
 const retagTabPanel = element<HTMLElement>('retag-tab-panel');
+const policyTab = element<HTMLButtonElement>('policy-tab');
+const policyTabPanel = element<HTMLElement>('policy-tab-panel');
 const loginButton = element<HTMLButtonElement>('login');
 const logoutButton = element<HTMLButtonElement>('logout');
 const accountName = element<HTMLElement>('account-name');
@@ -367,14 +386,17 @@ let results: ImportResult[] = [];
 let pollTimer: number | undefined;
 let processing = false;
 
-function activateWorkspaceTab(tab: 'import' | 'retag'): void {
+function activateWorkspaceTab(tab: 'import' | 'retag' | 'policy'): void {
   const showImport = tab === 'import';
   importTab.setAttribute('aria-selected', String(showImport));
   importTab.tabIndex = showImport ? 0 : -1;
-  retagTab.setAttribute('aria-selected', String(!showImport));
-  retagTab.tabIndex = showImport ? -1 : 0;
+  retagTab.setAttribute('aria-selected', String(tab === 'retag'));
+  retagTab.tabIndex = tab === 'retag' ? 0 : -1;
+  policyTab.setAttribute('aria-selected', String(tab === 'policy'));
+  policyTab.tabIndex = tab === 'policy' ? 0 : -1;
   importTabPanel.classList.toggle('hidden', !showImport);
-  retagTabPanel.classList.toggle('hidden', showImport);
+  retagTabPanel.classList.toggle('hidden', tab !== 'retag');
+  policyTabPanel.classList.toggle('hidden', tab !== 'policy');
 }
 
 document.querySelectorAll<HTMLButtonElement>('[data-language]').forEach((button) => {
@@ -486,6 +508,9 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
   if (record.previousGroupTag) {
     summaryValues.push(['previousGroupTagLabel', record.previousGroupTag]);
   }
+  if (record.policyName) summaryValues.push(['policyNameLabel', record.policyName]);
+  if (record.scopeTagName) summaryValues.push(['scopeTagLabel', record.scopeTagName]);
+  if (record.scopeTagStatus) summaryValues.push(['scopeStatusLabel', record.scopeTagStatus]);
   traceSummary.replaceChildren(...summaryValues.map(([label, value]) => {
     const item = document.createElement('div');
     const term = document.createElement('strong');
@@ -505,6 +530,8 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
     ['traceAutopilotTagUpdated', record.autopilotGroupTagUpdatedAtUtc],
     ['traceAttributeUpdated', record.extensionAttributeUpdatedAtUtc],
     ['traceAuUpdated', record.administrativeUnitAssignedAtUtc],
+    ['traceGroupsUpdated', record.deviceGroupsUpdatedAtUtc],
+    ['traceScopeUpdated', record.scopeTagUpdatedAtUtc],
     ['traceCompleted', record.processingCompletedAtUtc],
   ];
   traceSteps.replaceChildren(...timeline
@@ -653,7 +680,7 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function loadTags(): Promise<void> {
-  const response = await apiRequest<{ tags: string[] }>(config.tagsUrl);
+  const response = await apiRequest<{ tags: string[]; policies?: Array<{ name: string; tags: string[] }> }>(config.tagsUrl);
   for (const select of [tagSelect, newTagSelect]) {
     select.replaceChildren();
     const placeholder = document.createElement('option');
@@ -663,7 +690,8 @@ async function loadTags(): Promise<void> {
     for (const tag of response.tags) {
       const option = document.createElement('option');
       option.value = tag;
-      option.textContent = tag;
+      const names = [...new Set(response.policies?.filter(rule => rule.tags.includes(tag)).map(rule => rule.name))];
+      option.textContent = names.length ? `${names.join(' / ')} — ${tag}` : tag;
       select.append(option);
     }
     select.disabled = response.tags.length === 0;
@@ -758,6 +786,19 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   logoutButton.classList.remove('hidden');
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');
+  policyTabPanel.replaceChildren();
+  mountPolicyEditor(policyTabPanel, <T>(init?: RequestInit) => apiRequest<T>(config.tagPolicyUrl, init),
+    language, async () => { await Promise.all([loadTags(), loadExistingDevices()]); },
+    query => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('groupSearch', query);
+      return apiRequest<GroupSearchResult>(url.toString());
+    },
+    query => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('auSearch', query);
+      return apiRequest<GroupSearchResult>(url.toString());
+    });
   try {
     await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices()]);
   } catch (error) {
@@ -905,13 +946,20 @@ historyTraceDialog.addEventListener('click', (event) => {
 tagSelect.addEventListener('change', updateImportButton);
 importTab.addEventListener('click', () => activateWorkspaceTab('import'));
 retagTab.addEventListener('click', () => activateWorkspaceTab('retag'));
-for (const tab of [importTab, retagTab]) {
+policyTab.addEventListener('click', () => activateWorkspaceTab('policy'));
+const workspaceTabs = [importTab, retagTab, policyTab];
+for (const tab of workspaceTabs) {
   tab.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const showImport = event.key === 'ArrowLeft' || event.key === 'Home';
-    activateWorkspaceTab(showImport ? 'import' : 'retag');
-    (showImport ? importTab : retagTab).focus();
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? 2
+      : (workspaceTabs.indexOf(tab) + (event.key === 'ArrowLeft' ? 2 : 1)) % 3;
+    const target = (['import', 'retag', 'policy'] as const)[index];
+    const button = workspaceTabs[index];
+    if (target && button) {
+      activateWorkspaceTab(target);
+      button.focus();
+    }
   });
 }
 newTagSelect.addEventListener('change', updateTagChangeButton);

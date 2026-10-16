@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -1616,6 +1616,7 @@ Describe 'Client Group Tag policy display' {
             'AutopilotImport.TagPolicyRule'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
             Should -Be @(
+                'Name'
                 'GroupId'
                 'GroupName'
                 'Tags'
@@ -3848,6 +3849,37 @@ Describe 'Update script deployment discovery' {
 
         $assignmentAst.Extent.Text | Should -Match `
             '(?s)\$tagAuthorizationRules\s*=\s*@\('
+    }
+
+    It 'preserves named actions and explicit empty attribute maps through updates' {
+        $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
+            [pscustomobject]@{
+                name = 'Sales'
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Sales')
+                groupTag = 'Sales'
+                scopeTag = 'Sales scope'
+                extensionAttributes = [pscustomobject]@{ extensionAttribute5 = 'Berlin' }
+                deviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                administrativeUnitName = 'Berlin Devices'
+            }
+            [pscustomobject]@{
+                name = 'No attributes'
+                groupId = '33333333-3333-3333-3333-333333333333'
+                tags = @('Other')
+                groupTag = 'Other'
+                scopeTag = 'Other'
+                extensionAttributes = [pscustomobject]@{}
+                deviceGroupIds = @()
+            }
+        ))
+        $rules[0].name | Should -Be 'Sales'
+        $rules[0].groupTag | Should -Be 'Sales'
+        $rules[0].scopeTag | Should -Be 'Sales scope'
+        $rules[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $rules[0].deviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
+        $rules[0].administrativeUnitName | Should -Be 'Berlin Devices'
+        @($rules[1].extensionAttributes.PSObject.Properties).Count | Should -Be 0
     }
 
     It 'requests the raw policy response for deployment preservation' {

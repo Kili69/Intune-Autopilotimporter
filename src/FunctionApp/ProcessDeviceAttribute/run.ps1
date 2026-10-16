@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -7,8 +7,11 @@ Completes the Entra configuration of an imported Autopilot device.
 
 .DESCRIPTION
 Processes queued Autopilot imports after Intune has created the Entra device.
-It writes the authorized Group Tag to an extension attribute and optionally
-adds the device to a regular or restricted management administrative unit. An incomplete
+It writes the policy's extension attribute values, synchronizes policy-managed
+device groups, and optionally adds the device to an administrative unit.
+Intune Scope Tags are applied immediately if enrolled, otherwise retried by the
+hourly timer. Legacy rules retain the deployment-selected extension attribute.
+An incomplete
 import throws so the Storage Queue trigger retries it according to host.json.
 Successful updates are idempotent.
 
@@ -138,6 +141,16 @@ else {
 $payload = ConvertTo-EntraDeviceExtensionAttributes `
     -ExtensionAttribute $extensionAttribute `
     -GroupTag $groupTag
+$policyActions = Get-DevicePolicyActions -Policy $tagAuthorizationPolicy -GroupTag $groupTag
+if ($policyActions.PSObject.Properties['name']) {
+    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{ policyName = [string] $policyActions.name }
+}
+if ($policyActions.PSObject.Properties['extensionAttributes']) {
+    $payload = @{ extensionAttributes = $policyActions.extensionAttributes }
+}
+$targetGroups = if ($policyActions.PSObject.Properties['deviceGroupIds']) {
+    @($policyActions.deviceGroupIds)
+} else { @() }
 
 # Acquire a Microsoft Graph token through the managed Azure context initialized
 # by profile.ps1 and normalize Az.Accounts token formats to SecureString.
@@ -229,23 +242,74 @@ if ($isTagChange -or
 # Write the authorized Group Tag before adding optional AU membership. This
 # ordering ensures membership only marks a workflow whose attribute PATCH has
 # already succeeded; repeating the PATCH after a transient failure is harmless.
-Invoke-RestMethod `
-    -Method Patch `
-    -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')" `
-    -Authentication Bearer `
-    -Token $secureToken `
-    -ContentType 'application/json' `
-    -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
-    -ErrorAction Stop | Out-Null
-
-Set-ImportAuditRecord `
-    -ImportId $auditId `
-    -Properties @{
+$attributeNames = if ($payload.extensionAttributes -is [Collections.IDictionary]) {
+    @($payload.extensionAttributes.Keys)
+} else { @($payload.extensionAttributes.PSObject.Properties.Name) }
+if ($attributeNames.Count -gt 0) {
+    Invoke-RestMethod `
+        -Method Patch `
+        -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ContentType 'application/json' `
+        -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
+        -ErrorAction Stop | Out-Null
+    Set-ImportAuditRecord -ImportId $auditId -Properties @{
         extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
-    } `
-    -AccessToken $auditToken
+    } -AccessToken $auditToken
+    Write-Information "Updated $($attributeNames -join ', ') on Entra device '$entraDeviceId'."
+}
+else {
+    Write-Information "Policy explicitly skips extension attributes on Entra device '$entraDeviceId'."
+}
 
-Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
+$managedGroups = @($tagAuthorizationPolicy | ForEach-Object {
+    if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+})
+$priorPending = if ($existingAuditRecord -and $existingAuditRecord.PSObject.Properties['requestReceivedAtUtc'] -and
+    -not [string]::IsNullOrWhiteSpace([string] $registeredDevice.serialNumber)) {
+@(Get-ImportAuditHistory -SerialNumber @([string] $registeredDevice.serialNumber) `
+    -SinceUtc ([datetimeoffset]'2000-01-01T00:00:00Z') -Top 1000 -AccessToken $auditToken | Where-Object {
+        $_.RowKey -ne [string] $auditId -and $_.PSObject.Properties['scopeTagStatus'] -and
+        $_.scopeTagStatus -eq 'pendingEnrollment' -and
+        [datetimeoffset] $_.requestReceivedAtUtc -lt [datetimeoffset] $existingAuditRecord.requestReceivedAtUtc
+    })
+} else { @() }
+foreach ($prior in $priorPending) {
+    Set-ImportAuditRecord -ImportId ([guid] $prior.RowKey) -AccessToken $auditToken -Properties @{ scopeTagStatus = 'superseded' }
+}
+$state = Get-DevicePolicyState -DeviceId $entraDeviceId -AccessToken $auditToken
+$previousGroupIds = @($state.groupIdsJson | ConvertFrom-Json)
+$scopeNames = @(@($tagAuthorizationPolicy | ForEach-Object {
+    if ($_.PSObject.Properties['scopeTag']) { $_.scopeTag }
+}) + @($state.scopeTagNamesJson | ConvertFrom-Json) | Sort-Object -Unique)
+if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 0 -or $previousGroupIds.Count -gt 0) {
+    if ($deviceObjectId -eq [guid]::Empty) {
+        $entraDevice = Invoke-RestMethod -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
+            -Authentication Bearer -Token $secureToken -ErrorAction Stop
+        $deviceObjectId = [guid] $entraDevice.id
+    }
+    # Persist the union before Graph writes so retries retain ownership after partial changes.
+    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds @($previousGroupIds + $targetGroups | Sort-Object -Unique) `
+        -ScopeTagNames $scopeNames -AccessToken $auditToken
+    Sync-DevicePolicyGroups -Policy $tagAuthorizationPolicy -TargetGroupIds $targetGroups -PreviousGroupIds $previousGroupIds `
+        -DeviceObjectId $deviceObjectId -AccessToken $secureToken
+    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds $targetGroups -ScopeTagNames $scopeNames -AccessToken $auditToken
+    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
+        deviceGroupsUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+    }
+}
+if ($policyActions.PSObject.Properties['scopeTag']) {
+    $scopeComplete = Set-DevicePolicyScopeTag -EntraDeviceId $entraDeviceId `
+        -ScopeTag $policyActions.scopeTag -ManagedScopeTagNames $scopeNames -AccessToken $secureToken
+    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
+        entraDeviceId = $entraDeviceId.ToString()
+        scopeTagName = [string] $policyActions.scopeTag
+        managedScopeTagNamesJson = ConvertTo-Json -InputObject @($scopeNames) -Compress
+        scopeTagStatus = if ($scopeComplete) { 'complete' } else { 'pendingEnrollment' }
+    }
+}
 
 if ($deviceObjectId -ne [guid]::Empty) {
     $membershipResult = Sync-EntraDeviceAdministrativeUnits `

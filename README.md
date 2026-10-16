@@ -703,6 +703,90 @@ updated policy is saved. Both units with and without
 `isMemberManagementRestricted` enabled are supported. Without a configured
 unit on the matching rule, imports continue without automatic membership.
 
+#### Named Device Policies and Web Editor
+
+Use the **TagPolicies** tab after signing in as a configured policy manager.
+Load the existing rules, edit their names, tags, attribute/value pairs and Entra
+device target groups. Each new or changed rule has its own **Save rule** button.
+Saving one rule leaves other local drafts unsaved. Removing a rule requires
+confirmation and persists its deletion immediately; the last rule cannot be
+deleted. Adding a rule scrolls to and focuses the new entry.
+
+Rules are initially collapsed; select the rule name to expand its fields.
+For **Authorized user group** and **Entra device target groups**, select
+**Add group** to open an Entra object picker. Enter at least two
+characters from the start of the group name (or an exact object ID), select
+**Search**, then choose a result. Selected groups display their Entra names;
+IDs remain the stored identifiers. Select a list entry to enable **Remove group**.
+Searches return up to 25 groups; refine the name
+prefix if more results are available. The search uses the managed identity's
+existing `GroupMember.Read.All` permission and is restricted to policy managers.
+Device target groups support multiple selections and individual removal.
+Administrative Units use the same dialog pattern: **Add AU** is available only
+when no AU is assigned, and **Remove AU** requires selecting the assigned entry.
+The API still stores one AU display name and rejects ambiguous AU names on save.
+
+Extension attributes use individual rows: select `extensionAttribute1` through
+`extensionAttribute15`, enter the value, and add or remove rows as needed.
+Already-selected attributes cannot be selected again. No rows means no extension
+attributes are written: new/edited device-action rules persist an explicit empty
+map and never automatically copy the Group Tag into an attribute. Previously
+existing legacy authorization-only rules retain their compatibility behavior
+until explicitly converted to a device-action rule.
+Attribute values are single-line strings of at most 1024 UTF-16 code units
+(the Microsoft Graph limit). Line breaks, Unicode line/paragraph separators and
+control characters are rejected by both editor and backend. Unicode and
+punctuation are otherwise allowed; Microsoft publishes no narrower character
+whitelist for these string properties. Empty values remain supported.
+
+Tag fields validate the existing project limits (128 characters, at least one
+tag, and no comma in the Group Tag) before saving. These are project/format
+constraints, not a Microsoft character whitelist. The Graph property documents
+for [Autopilot groupTag](https://learn.microsoft.com/en-us/graph/api/resources/intune-enrollment-windowsautopilotdeviceidentity?view=graph-rest-1.0)
+and [roleScopeTag displayName](https://learn.microsoft.com/en-us/graph/api/resources/intune-rbac-rolescopetag?view=graph-rest-beta)
+do not publish a complete allowed-character list. No additional ASCII-only or
+punctuation whitelist is imposed; service-side validation errors are surfaced.
+
+The same configuration can be supplied through PowerShell:
+
+```powershell
+Set-AutoPilotTagPolicy -TagAuthorizationRule @(
+    @{
+        name = 'Sales Berlin'
+        groupId = '11111111-1111-1111-1111-111111111111'
+        groupTag = 'Sales'
+        scopeTag = ''
+        extensionAttributes = @{
+            extensionAttribute1 = 'Sales'
+            extensionAttribute5 = 'Berlin'
+        }
+        deviceGroupIds = @(
+            '22222222-2222-2222-2222-222222222222'
+            '33333333-3333-3333-3333-333333333333'
+        )
+    }
+) -WhatIf
+```
+
+Supply at least a Group Tag or Scope Tag. The omitted name defaults to the
+other tag's name (in this example both become `Sales`). Missing Intune Scope
+Tags are created when a manager saves the policy. The authorization group
+(`groupId`) and device target groups (`deviceGroupIds`) have different purposes.
+Only static, cloud-managed Entra security groups can be device targets.
+
+On import/re-tagging, configured attribute values are applied and policy-owned
+device group memberships are synchronized; unrelated groups remain untouched.
+Scope Tags are applied to the Intune managed device **after enrollment**,
+with an hourly retry while enrollment is pending. Check the operation trace's
+Scope Tag status separately from import completion. An omitted attribute map
+keeps the existing deployment-wide extension-attribute behavior.
+
+Existing rules remain compatible. For named rules, prefer full-rule replacement
+over group-based shortcuts, particularly if one user group has several rules.
+These features require the additional Graph application permissions documented
+in [the developer policy interface](./DEVELOPER.md#66-group-tag-policy-management-interface);
+upgrading application code alone does not grant them.
+
 ### Change Group Tag Managers
 
 List the installing manager and all additionally configured managers:
@@ -908,7 +992,9 @@ For a standard installation, one installing administrator performs the complete 
 | Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
-| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.ReadWrite.All` | Checks Intune role membership and creates missing Scope Tags for named policies. |
+| Function App managed identity | Microsoft Graph, application | `DeviceManagementManagedDevices.ReadWrite.All` | Assigns Scope Tags after enrollment. |
+| Function App managed identity | Microsoft Graph, application | `GroupMember.ReadWrite.All` | Synchronizes policy-owned Entra device group memberships. |
 | Function App managed identity | Microsoft Graph, application | `GroupMember.Read.All`, `User.ReadBasic.All` | Checks the importing user's current membership in the Entra groups configured by the Group Tag policy. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
 | Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |

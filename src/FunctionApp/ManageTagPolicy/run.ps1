@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -15,6 +15,9 @@ GET returns the complete normalized policy. PUT accepts the replacement rules
 in either a top-level "policy" or "rules" property, normalizes and validates the
 rules, verifies referenced administrative units through Microsoft Graph, and
 writes the resulting JSON to configuration/tag-authorization-policy.json.
+GET with groupSearch instead returns up to 25 Entra groups whose names start
+with the supplied text, or an exact object-ID match. Requires 2..128 characters.
+GET with auSearch performs the equivalent lookup for Administrative Units.
 
 The current policy is read from the blob input binding. If the blob is empty,
 TAG_AUTHORIZATION_POLICY is used as the fallback for reads. Responses include
@@ -292,6 +295,39 @@ if (-not $isManager) {
     return
 }
 
+$searchKey = if ($null -ne $Request.Query -and $null -ne $Request.Query['auSearch']) { 'auSearch' } else { 'groupSearch' }
+if ($Request.Method -ieq 'GET' -and $null -ne $Request.Query -and $null -ne $Request.Query[$searchKey]) {
+    $searchText = ([string] $Request.Query[$searchKey]).Trim()
+    if ($searchText.Length -lt 2 -or $searchText.Length -gt 128) {
+        Send-JsonResponse -StatusCode BadRequest -Body @{
+            error = 'invalidGroupSearch'
+            correlationId = $correlationId
+        }
+        return
+    }
+    try {
+        $tokenResult = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com/' -ErrorAction Stop
+        $graphToken = if ($tokenResult.Token -is [Security.SecureString]) { $tokenResult.Token } else {
+            ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
+        }
+        $objectType = if ($searchKey -eq 'auSearch') { 'administrativeUnits' } else { 'groups' }
+        $result = Find-EntraPolicyGroups -SearchText $searchText -ObjectType $objectType -AccessToken $graphToken
+        Send-JsonResponse -StatusCode OK -Body @{
+            groups = @($result.groups)
+            hasMore = $result.hasMore
+            correlationId = $correlationId
+        }
+    }
+    catch {
+        Write-Error "[$correlationId] Entra group search failed: $($_.Exception.Message)"
+        Send-JsonResponse -StatusCode BadGateway -Body @{
+            error = 'groupSearchFailed'
+            correlationId = $correlationId
+        }
+    }
+    return
+}
+
 $currentPolicyJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
 if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
     # Preserve the deployment-provided policy until the first successful PUT
@@ -302,7 +338,7 @@ if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
 # GET is read-only and returns the policy exactly as stored or deployed.
 if ($Request.Method -ieq 'GET') {
     try {
-        $currentPolicy = @($currentPolicyJson | ConvertFrom-Json)
+        $currentPolicy = @(ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json))
     }
     catch {
         Send-JsonResponse -StatusCode InternalServerError -Body @{
@@ -335,7 +371,16 @@ try {
         -not [string]::IsNullOrWhiteSpace(
             [string] $_.administrativeUnitName)
     })
-    if ($configuredAdministrativeUnits.Count -gt 0) {
+    $deviceGroupIds = @($updatedPolicy | ForEach-Object {
+        if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+    } | Sort-Object -Unique)
+    $scopeTagNames = @($updatedPolicy | ForEach-Object {
+        if ($_.PSObject.Properties['scopeTag']) { $_.scopeTag }
+    } | Sort-Object -Unique)
+    foreach ($tag in @($updatedPolicy | ForEach-Object { $_.tags } | Sort-Object -Unique)) {
+        $null = Get-DevicePolicyActions -Policy $updatedPolicy -GroupTag $tag
+    }
+    if ($configuredAdministrativeUnits.Count -gt 0 -or $deviceGroupIds.Count -gt 0 -or $scopeTagNames.Count -gt 0) {
         # Az.Accounts versions differ in whether Token is already a
         # SecureString; downstream Graph helpers consistently require one.
         $tokenResult = Get-AzAccessToken `
@@ -349,13 +394,18 @@ try {
                 -AsPlainText `
                 -Force
         }
-        Assert-SubmittedAdministrativeUnitsExist `
-            -Policy $updatedPolicy `
-            -AccessToken $graphToken
+        if ($configuredAdministrativeUnits.Count -gt 0) {
+            Assert-SubmittedAdministrativeUnitsExist -Policy $updatedPolicy -AccessToken $graphToken
+        }
+        Assert-DevicePolicyGroups -GroupIds $deviceGroupIds -AccessToken $graphToken
+        foreach ($scopeTagName in $scopeTagNames) {
+            $null = Resolve-PolicyScopeTag -Name $scopeTagName -AccessToken $graphToken -Create
+        }
     }
-    $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
+    $updatedPolicyJson = ConvertTo-Json -InputObject @($updatedPolicy) -Depth 8 -Compress
 }
 catch {
+    Write-Error "[$correlationId] Policy validation or Graph setup failed: $($_.Exception.Message)" -ErrorAction Continue
     Send-JsonResponse -StatusCode BadRequest -Body @{
         error         = 'invalidTagPolicy'
         message       = $_.Exception.Message

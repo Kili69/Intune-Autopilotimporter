@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -23,8 +23,10 @@ group display names without changing it.
 
 .PARAMETER TagAuthorizationRule
 Complete set of authorization rules as <group-object-id>=<tag1>,<tag2> strings
-or objects with groupId, tags, and an optional
-administrativeUnitName. This parameter replaces the
+or named objects with name, groupId, groupTag and/or scopeTag, optional
+extensionAttributes (attribute/value map), deviceGroupIds (target security-group
+IDs), and administrativeUnitName. Legacy objects with groupId and tags remain
+supported. This parameter replaces the
 existing policy and is required unless List is specified.
 
 .PARAMETER AdministrativeUnitName

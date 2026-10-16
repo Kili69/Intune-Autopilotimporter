@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -347,6 +347,8 @@ $history = @($auditRecords | ForEach-Object {
             'extensionAttributeUpdatedAtUtc'
             'administrativeUnitAssignedAtUtc'
             'processingCompletedAtUtc'
+            'deviceGroupsUpdatedAtUtc'
+            'scopeTagUpdatedAtUtc'
             'Timestamp'
         )
         $lastUpdated = @($timelineProperties | ForEach-Object {
@@ -380,6 +382,11 @@ $history = @($auditRecords | ForEach-Object {
             extensionAttributeUpdatedAtUtc    = if ($audit) { [string] $audit.extensionAttributeUpdatedAtUtc } else { $null }
             administrativeUnitAssignedAtUtc   = if ($audit) { [string] $audit.administrativeUnitAssignedAtUtc } else { $null }
             processingCompletedAtUtc          = if ($audit) { [string] $audit.processingCompletedAtUtc } else { $null }
+            policyName                        = if ($audit.PSObject.Properties['policyName']) { [string] $audit.policyName } else { $null }
+            scopeTagStatus                    = if ($audit.PSObject.Properties['scopeTagStatus']) { [string] $audit.scopeTagStatus } else { $null }
+            scopeTagName                      = if ($audit.PSObject.Properties['scopeTagName']) { [string] $audit.scopeTagName } else { $null }
+            scopeTagUpdatedAtUtc              = if ($audit.PSObject.Properties['scopeTagUpdatedAtUtc']) { [string] $audit.scopeTagUpdatedAtUtc } else { $null }
+            deviceGroupsUpdatedAtUtc          = if ($audit.PSObject.Properties['deviceGroupsUpdatedAtUtc']) { [string] $audit.deviceGroupsUpdatedAtUtc } else { $null }
             lastUpdatedAtUtc                  = if ($lastUpdated.Count -gt 0) { $lastUpdated[0].ToUniversalTime().ToString('o') } else { $null }
         }
     })

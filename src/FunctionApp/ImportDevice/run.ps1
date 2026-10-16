@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -178,6 +178,12 @@ if ([string] $Request.Method -eq 'GET') {
         }
         $extensionAttributeValue = $null
         $entraDeviceId = $null
+        $actions = Get-DevicePolicyActions -Policy $tagAuthorizationPolicy -GroupTag $authorizedGroupTag
+        $scopeTagStatus = $null
+        $expectedAttributes = [ordered]@{ $extensionAttribute = $authorizedGroupTag }
+        if ($actions.PSObject.Properties['extensionAttributes']) {
+            $expectedAttributes = $actions.extensionAttributes | ConvertTo-Json -Depth 4 | ConvertFrom-Json -AsHashtable
+        }
 
         if ($intuneStatus -eq 'complete') {
             try {
@@ -202,18 +208,33 @@ if ([string] $Request.Method -eq 'GET') {
                     -Authentication Bearer `
                     -Token $graphToken `
                     -ErrorAction Stop
-                $extensionProperty = $entraDevice.extensionAttributes.PSObject.Properties[
-                    $extensionAttribute
-                ]
+                $deviceAttributes = $entraDevice.extensionAttributes
+                $extensionProperty = if ($null -ne $deviceAttributes) {
+                    $deviceAttributes.PSObject.Properties[$extensionAttribute]
+                } else { $null }
                 if ($extensionProperty) {
                     $extensionAttributeValue = [string] $extensionProperty.Value
                 }
-                if ($extensionAttributeValue -ceq $authorizedGroupTag) {
+                $attributesMatch = $true
+                foreach ($key in $expectedAttributes.Keys) {
+                    $actual = if ($null -ne $deviceAttributes) { $deviceAttributes.PSObject.Properties[$key] } else { $null }
+                    if (-not $actual -or [string] $actual.Value -cne [string] $expectedAttributes[$key]) {
+                        $attributesMatch = $false
+                    }
+                }
+                if ($attributesMatch) {
                     $extensionAttributeStatus = 'complete'
                 }
             }
             catch {
                 Write-Information "[$correlationId] Extension attribute status is still pending for import '$parsedImportId': $($_.Exception.Message)"
+            }
+        }
+        if ($actions.PSObject.Properties['groupTag']) {
+            $audit = (Get-ImportAuditRecords -ImportId $parsedImportId -AccessToken (Get-ImportAuditAccessToken))[[string] $parsedImportId]
+            if ($audit -and $audit.PSObject.Properties['scopeTagStatus']) { $scopeTagStatus = [string] $audit.scopeTagStatus }
+            if (-not $audit -or -not $audit.PSObject.Properties['processingCompletedAtUtc'] -or -not $audit.processingCompletedAtUtc) {
+                $extensionAttributeStatus = 'pending'
             }
         }
     }
@@ -254,6 +275,8 @@ if ([string] $Request.Method -eq 'GET') {
         extensionAttributeName  = $extensionAttribute
         extensionAttributeStatus = $extensionAttributeStatus
         extensionAttributeValue = $extensionAttributeValue
+        expectedExtensionAttributes = $expectedAttributes
+        scopeTagStatus          = $scopeTagStatus
         entraDeviceId           = $entraDeviceId
         correlationId           = $correlationId
     }

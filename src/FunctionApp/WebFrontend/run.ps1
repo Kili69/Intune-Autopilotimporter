@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261016.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 using namespace System.Net
@@ -94,6 +94,7 @@ if ($requestedPath -ieq 'config') {
             tagsUrl          = "$origin/api/devices/tags"
             deviceTagAssignmentsUrl = "$origin/api/devices/tags/assignments"
             importHistoryUrl = "$origin/api/management/imports"
+            tagPolicyUrl = "$origin/api/management/tag-policy"
             functionVersion   = $functionVersion
         } | ConvertTo-Json -Compress)
     return
