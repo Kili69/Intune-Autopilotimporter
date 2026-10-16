@@ -1,12 +1,12 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.1
+# Project-Version: 1.4.20261016.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
 .SYNOPSIS
 Validates branch routes and release-line changes using Git objects only.
 .DESCRIPTION
-Run the trusted base-branch copy for pull requests. No code from the source
+Run the trusted protected-dev copy for pull requests. No code from the source
 branch is executed. ResultCommit is GitHub's prospective merge commit.
 #>
 [CmdletBinding()]
