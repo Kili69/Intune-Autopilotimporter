@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.4
+# Project-Version: 1.4.20261016.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -288,6 +288,25 @@ Describe 'Device policy Graph actions' {
                 Should -Throw '*complete rule objects*'
             Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 0 -ParameterFilter { $Method -eq 'Put' }
         }
+        It 'submits <Count> replacement rules as a flat JSON array' -TestCases @(
+            @{ Count = 1 }
+            @{ Count = 2 }
+        ) {
+            param($Count)
+            $coreModulePath = Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
+            Mock Get-CoreModulePath -ModuleName AutopilotImport.Client { $coreModulePath }
+            Mock Import-Module -ModuleName AutopilotImport.Client {}
+            $rules = @(
+                '11111111-1111-1111-1111-111111111111=Sales'
+                '55555555-5555-5555-5555-555555555555=Other'
+            )[0..($Count - 1)]
+            $null = Set-AutoPilotTagPolicy @parameters -TagAuthorizationRule $rules
+            Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 1 -Exactly -ParameterFilter {
+                $Method -eq 'Put' -and
+                ($Body | ConvertFrom-Json).policy.Count -eq $Count -and
+                ($Body | ConvertFrom-Json).policy[0].groupId -is [string]
+            }
+        }
     }
 Describe 'Device policy queue integration' {
     BeforeAll {
@@ -492,6 +511,24 @@ BeforeAll {
                     $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).groups[0].displayName -eq 'Sales'
                 }
                 Should -Invoke Find-EntraPolicyGroups -Times 1 -Exactly -ParameterFilter { $SearchText -eq 'Sales' }
+            }
+            It 'returns a flat policy array for <Count> legacy rules' -TestCases @(
+                @{ Count = 1 }
+                @{ Count = 2 }
+            ) {
+                param($Count)
+                $request.Query = @{}
+                $rules = @(
+                    @{ groupId = '11111111-1111-1111-1111-111111111111'; tags = @('Sales'); administrativeUnitName = 'PAW' }
+                    @{ groupId = '22222222-2222-2222-2222-222222222222'; tags = @('Other', 'Shared') }
+                )[0..($Count - 1)]
+                & $managerHandler -Request $request -TagPolicyBlob (ConvertTo-Json -InputObject @($rules) -Depth 8)
+                Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+                    $Value.StatusCode -eq 200 -and
+                    ($Value.Body | ConvertFrom-Json).policy.Count -eq $Count -and
+                    ($Value.Body | ConvertFrom-Json).policy[0].groupId -is [string] -and
+                    ($Value.Body | ConvertFrom-Json).policy[0].administrativeUnitName -eq 'PAW'
+                }
             }
             It 'routes AU searches through the same authorized endpoint' {
                 $request.Query = @{ auSearch = 'Berlin' }

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.4
+# Project-Version: 1.4.20261016.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2971,10 +2971,10 @@ function Set-AutoPilotTagPolicy {
     # identical to the Function's accepted rule format.
     $coreModulePath = Get-CoreModulePath
     Import-Module $coreModulePath -Force
-    $policy = @(ConvertTo-TagAuthorizationPolicy `
+    $policy = ConvertTo-TagAuthorizationPolicy `
         -Rules $TagAuthorizationRule `
         -AdministrativeUnitName `
-            $AdministrativeUnitName)
+            $AdministrativeUnitName
     if (-not $PSCmdlet.ShouldProcess($url, "Replace tag authorization policy with $($policy.Count) group rule(s)")) {
         return
     }

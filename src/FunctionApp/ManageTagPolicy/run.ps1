@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.4
+# Project-Version: 1.4.20261016.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -335,10 +335,10 @@ if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
     $currentPolicyJson = $env:TAG_AUTHORIZATION_POLICY
 }
 
-# GET is read-only and returns the policy exactly as stored or deployed.
+# GET is read-only and returns the normalized policy.
 if ($Request.Method -ieq 'GET') {
     try {
-        $currentPolicy = @(ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json))
+        $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json)
     }
     catch {
         Send-JsonResponse -StatusCode InternalServerError -Body @{
