@@ -2,7 +2,7 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261016.3` - 2026-10-16
+## `1.4.20261016.2` - 2026-10-16
 
 - Added protected nextversion-to-dev-to-main promotion, release-line validation, and automated dev sync PRs that preserve the future major/minor; made version updates preserve the current release line and support explicit minor/major advances.
 - Enabled PR policy checks during default-branch bootstrap and retained the current main ancestry for strict dev-to-main promotion.
