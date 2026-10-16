@@ -2,8 +2,9 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.3.20261016.2` - 2026-10-16
+## `1.4.20261016.1` - 2026-10-16
 
+- Started the nextversion branch from dev on release line 1.4; dev remains on 1.3 until the future release is explicitly promoted.
 - Added protected nextversion-to-dev-to-main promotion, release-line validation, and automated dev sync PRs that preserve the future major/minor; made version updates preserve the current release line and support explicit minor/major advances.
 - Clarified the operational difference between `Get-AutoPilotImportHistory` and `Get-AutoPilotImportStatus` so support and automation can distinguish the retained audit record from the live import workflow state.
 - Documented the live workflow fields returned by the status endpoint, including `workflowStatus`, `extensionAttributeStatus`, and the final-state interpretation used by the client.
