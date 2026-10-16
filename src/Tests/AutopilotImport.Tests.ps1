@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261016.1
+# Project-Version: 1.3.20261016.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5696,7 +5696,7 @@ Describe 'Project metadata entries' {
     It 'uses the central version in every PowerShell file' {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $projectVersion = (Get-Content (Join-Path $projectRoot 'VERSION') -Raw).Trim()
-        $projectVersion | Should -Match '^1\.3\.\d{8}\.\d+$'
+        $projectVersion | Should -Match '^\d+\.\d+\.\d{8}\.\d+$'
 
         $powerShellFiles = @(
             Get-ChildItem -LiteralPath $projectRoot -Recurse -File |
@@ -5809,8 +5809,8 @@ Describe 'Project metadata entries' {
                 '.github\workflows\enforce-dev-promotion.yml') `
             -Raw
 
-        $workflow | Should -Match '(?m)^\s+pull_request:\s*$'
-        $workflow | Should -Match '(?m)^\s+- main\s*$'
+        $workflow | Should -Match '(?m)^\s+pull_request_target:\s*$'
+        $workflow | Should -Match 'TARGET_BRANCH: \$\{\{ github\.base_ref \}\}'
         $workflow | Should -Match `
             'SOURCE_BRANCH: \$\{\{ github\.head_ref \}\}'
         $workflow | Should -Match `
