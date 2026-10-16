@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261008.1
+# Project-Version: 1.3.20261016.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -1607,6 +1607,7 @@ Describe 'Client Group Tag policy display' {
         $result[0].GroupId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
         $result[0].Tags | Should -Be @('Standard', 'Kiosk')
+        $result[0].ExtensionAttribute | Should -Be 'extensionAttribute1'
         $result[0].AdministrativeUnitName |
             Should -BeNullOrEmpty
         $result[0].CorrelationId | Should -Be `
@@ -1618,6 +1619,7 @@ Describe 'Client Group Tag policy display' {
                 'GroupId'
                 'GroupName'
                 'Tags'
+                'ExtensionAttribute'
                 'AdministrativeUnitName'
             )
     }
@@ -1636,6 +1638,25 @@ Describe 'Client Group Tag policy display' {
             -ModuleName AutopilotImport.Client `
             -ParameterFilter { $Uri -like 'https://graph.microsoft.com/*' } `
             -Times 0
+    }
+
+    It 'normalizes a website URL to the management API endpoint automatically' {
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter { $Uri -eq 'https://func.example/api/management/tag-policy' } `
+            -Times 0
+
+        $result = @(Get-AutoPilotTagPolicy `
+            -ManagementUrl 'https://func.example' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444')
+
+        $result.Count | Should -Be 1
+        $result[0].GroupName | Should -Be 'Autopilot Import Operators'
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter { $Uri -eq 'https://func.example/api/management/tag-policy' } `
+            -Times 1
     }
 }
 
@@ -1724,6 +1745,82 @@ Describe 'Adding a Client Group Tag policy rule' {
             $binding.ConfirmImpact |
                 Should -Be 'None' -Because "$commandName should not prompt automatically"
         }
+    }
+
+    It 'updates an existing rule by group name with a specific tag set' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Uri -like 'https://graph.microsoft.com/*') {
+                return [pscustomobject]@{
+                    id          = '11111111-1111-1111-1111-111111111111'
+                    displayName = 'Autopilot Import Operators'
+                }
+            }
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @([pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('Standard')
+                            administrativeUnitName = 'Autopilot Devices'
+                        })
+                }
+            }
+            return [pscustomobject]@{ correlationId = 'group-update-correlation-id' }
+        }
+
+        Set-AutoPilotTagPolicy `
+            -GroupName 'Autopilot Import Operators' `
+            -Tags @('Shared', 'Kiosk') `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false
+
+        Should -Invoke Invoke-RestMethod `
+            -ModuleName AutopilotImport.Client `
+            -ParameterFilter {
+                $Method -eq 'Put' -and
+                $Body -match '11111111-1111-1111-1111-111111111111' -and
+                $Body -match 'Shared' -and
+                $Body -match 'Kiosk' -and
+                $Body -notmatch 'Standard'
+            } `
+            -Times 1
+    }
+
+    It 'returns the updated policy for display after a successful rule update' {
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            if ($Uri -like 'https://graph.microsoft.com/*') {
+                return [pscustomobject]@{
+                    id          = '11111111-1111-1111-1111-111111111111'
+                    displayName = 'Autopilot Import Operators'
+                }
+            }
+            if ($Method -eq 'Get') {
+                return [pscustomobject]@{
+                    policy = @([pscustomobject]@{
+                            groupId = '11111111-1111-1111-1111-111111111111'
+                            tags = @('Shared', 'Kiosk')
+                            administrativeUnitName = 'Autopilot Devices'
+                        })
+                }
+            }
+            return [pscustomobject]@{ correlationId = 'display-correlation-id' }
+        }
+
+        $result = @(Set-AutoPilotTagPolicy `
+            -GroupName 'Autopilot Import Operators' `
+            -Tags @('Shared', 'Kiosk') `
+            -ManagementUrl 'https://func.example/api/management/tag-policy' `
+            -ApiApplicationIdUri 'api://33333333-3333-3333-3333-333333333333' `
+            -TenantId '44444444-4444-4444-4444-444444444444' `
+            -Confirm:$false)
+
+        $updatedRule = @($result | Where-Object {
+            $_.PSObject.Properties['GroupName'] -and
+            $_.GroupName -eq 'Autopilot Import Operators'
+        })
+        $updatedRule.Count | Should -Be 1
+        $updatedRule[0].Tags | Should -Be @('Shared', 'Kiosk')
     }
 
     It 'accepts comma-separated tags as separate values' {

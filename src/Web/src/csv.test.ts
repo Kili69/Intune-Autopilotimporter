@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isValidBase64, parseAutopilotCsv } from './csv';
 import { buildHistoryRequestUrl, formatHashReference } from './history';
+import { buildApiRequestOptions } from './api';
 
 const hash = btoa('hardware-hash');
 
@@ -48,5 +49,17 @@ describe('history helpers', () => {
       .toBe('012345…abcdef');
     expect(formatHashReference('   abc   ')).toBe('abc');
     expect(formatHashReference('')).toBe('—');
+  });
+});
+
+describe('api request options', () => {
+  it('bypasses browser caching for dynamic dashboard data', () => {
+    const options = buildApiRequestOptions({
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+
+    expect(options.cache).toBe('no-store');
+    expect(new Headers(options.headers as HeadersInit).get('Accept')).toBe('application/json');
   });
 });

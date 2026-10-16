@@ -2,7 +2,7 @@
 
 <p align="center"><img src="./src/Web/public/kjitlogo.png" alt="Intune Autopilot Importer logo" width="180"></p>
 <p align="center"><strong>Secure, policy-based Windows Autopilot hardware hash imports</strong></p>
-<p align="center"><a href="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml"><img src="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml/badge.svg?branch=main" alt="Deployment package"></a> <a href="./VERSION"><img src="https://img.shields.io/badge/version-1.3.20261007.1-0A66C2" alt="Version 1.3.20261007.1"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2C3E50" alt="Apache License 2.0"></a> <img src="https://img.shields.io/badge/platform-Azure%20Functions-0078D4?logo=microsoftazure" alt="Azure Functions"> <img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white" alt="PowerShell 5.1 or newer"></p>
+<p align="center"><a href="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml"><img src="https://github.com/Kili69/Intune-Autopilotimporter/actions/workflows/deployment-package.yml/badge.svg?branch=main" alt="Deployment package"></a> <a href="./VERSION"><img src="https://img.shields.io/badge/version-1.3.20261016.1-0A66C2" alt="Version 1.3.20261016.1"></a> <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2C3E50" alt="Apache License 2.0"></a> <img src="https://img.shields.io/badge/platform-Azure%20Functions-0078D4?logo=microsoftazure" alt="Azure Functions"> <img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white" alt="PowerShell 5.1 or newer"></p>
 
 ---
 
@@ -123,7 +123,10 @@ status-request errors are displayed and retried during the next polling cycle.
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The
 import itself continues in Azure and can be checked later with
-`Get-AutoPilotImportStatus -ImportId '<import-id>'`.
+`Get-AutoPilotImportStatus -ImportId '<import-id>'`. Use
+`Get-AutoPilotImportHistory` for the retained audit record and
+`Get-AutoPilotImportStatus` for the current live workflow state, including
+`workflowStatus`, `extensionAttributeStatus`, and the final-state flag.
 
 #### Import a Device During Windows OOBE
 

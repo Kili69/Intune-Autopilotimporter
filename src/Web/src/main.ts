@@ -6,6 +6,7 @@ import {
   PublicClientApplication,
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
+import { buildApiRequestOptions } from './api';
 import './style.css';
 
 interface RuntimeConfig {
@@ -634,14 +635,14 @@ async function acquireApiToken(): Promise<AuthenticationResult> {
 
 async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const token = await acquireApiToken();
-  const response = await fetch(url, {
+  const requestInit = buildApiRequestOptions({
     ...init,
     headers: {
       ...init?.headers,
       Authorization: `Bearer ${token.accessToken}`,
-      'Content-Type': 'application/json',
     },
   });
+  const response = await fetch(url, requestInit);
   const body = await response.json() as T & ApiError;
   if (!response.ok) {
     const detail = body.message ?? body.error ?? `HTTP ${response.status}`;
