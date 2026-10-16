@@ -556,6 +556,11 @@ principal name, and Entra object ID. UTC timestamps record when the request was
 received, the Graph import was created, processing was queued and started, the
 Entra device was resolved, its extension attribute was updated, optional
 administrative-unit membership was confirmed, and processing completed.
+Microsoft Graph's error name `None` with error code `0` means no import error:
+the web overview and trace do not display it as a failure. Actual error names,
+nonzero codes and failed statuses remain visible even if a completion timestamp
+exists. A successful Graph import remains pending until its queued processing
+has completed.
 Audit metadata is stored for 30 days in the deployment's private Azure Table
 Storage. The raw DeviceHash and its SHA-256 search index are stored with the
 audit record; product keys are not stored. Neither value is returned in history
@@ -706,6 +711,10 @@ unit on the matching rule, imports continue without automatic membership.
 #### Named Device Policies and Web Editor
 
 Use the **TagPolicies** tab after signing in as a configured policy manager.
+The tab stays hidden until the server confirms manager access; users without
+that permission do not see it, including in keyboard tab navigation. Authorization
+and dependency failures other than the expected permission-denied response are
+reported rather than silently ignored.
 Load the existing rules, edit their names, tags, attribute/value pairs and Entra
 device target groups. Each new or changed rule has its own **Save rule** button.
 Saving one rule leaves other local drafts unsaved. Removing a rule requires

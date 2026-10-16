@@ -2,10 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261016.5` - 2026-10-16
+## `1.4.20261016.6` - 2026-10-16
 
 - Added named device policies, Group/Scope Tag fallback and automatic Scope Tag creation, explicit single-line Extension Attributes (max. 1024 characters, no control characters; no rows means no writes), durable policy-owned device-group synchronization and post-enrollment Scope Tag retries. The German/English manager editor includes collapsible rules, per-rule dirty-state saves, confirmed deletion, new-rule navigation, attribute-slot selectors and modal Entra group/AU pickers with named selectable lists. Legacy authorization-only rules retain compatibility; new actions require additional Microsoft Graph permissions.
 - Preserved all named policy actions, multiple attribute values, empty maps and device-group targets through the regular updater; kept installer policies, management GET responses and PowerShell full-rule submissions as flat JSON arrays, including single-rule upgrades from 1.3 and subsequent 1.4 updates.
+- Hide the TagPolicies tab until server-confirmed manager access, including keyboard navigation; report authentication/dependency failures explicitly. Interpret Graph error name `None` with code `0` as no error in the import overview and trace, while preserving real errors and queued-processing status.
 - Started the nextversion branch from dev on release line 1.4; dev remains on 1.3 until the future release is explicitly promoted.
 - Added protected nextversion-to-dev-to-main promotion, release-line validation, and automated dev sync PRs that preserve the future major/minor; made version updates preserve the current release line and support explicit minor/major advances.
 - Synchronized the completed dev workflow setup into nextversion without changing its 1.4 release line, enabled PR checks during default-branch bootstrap, and retained the current main ancestry for strict dev-to-main promotion.

@@ -6,7 +6,8 @@ import {
   PublicClientApplication,
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
-import { buildApiRequestOptions } from './api';
+import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from './api';
+import { getHistoryStatus, getImportError } from './import-status';
 import { mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
 import './style.css';
@@ -56,6 +57,7 @@ interface ImportHistoryRecord {
   requestedBy?: string;
   requestedByDisplayName?: string;
   deviceErrorName?: string;
+  deviceErrorCode?: number;
   requestReceivedAtUtc?: string;
   graphImportCreatedAtUtc?: string;
   queuedAtUtc?: string;
@@ -201,7 +203,7 @@ app.innerHTML = `
       <div class="workspace-tabs" role="tablist" aria-label="${t('register')}">
         <button id="import-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="import-tab-panel">${t('importTab')}</button>
         <button id="retag-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="retag-tab-panel" tabindex="-1">${t('retagTab')}</button>
-        <button id="policy-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="policy-tab-panel" tabindex="-1">${t('policyTab')}</button>
+        <button id="policy-tab" class="workspace-tab hidden" type="button" role="tab" aria-selected="false" aria-controls="policy-tab-panel" tabindex="-1">${t('policyTab')}</button>
       </div>
 
       <div id="import-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="import-tab">
@@ -387,6 +389,7 @@ let pollTimer: number | undefined;
 let processing = false;
 
 function activateWorkspaceTab(tab: 'import' | 'retag' | 'policy'): void {
+  if (tab === 'policy' && policyTab.classList.contains('hidden')) return;
   const showImport = tab === 'import';
   importTab.setAttribute('aria-selected', String(showImport));
   importTab.tabIndex = showImport ? 0 : -1;
@@ -484,15 +487,6 @@ function formatHistoryDate(value?: string): string {
   }).format(date);
 }
 
-function getHistoryStatus(record: ImportHistoryRecord): 'pending' | 'complete' | 'error' {
-  const normalized = record.status?.toLowerCase();
-  if (record.deviceErrorName || normalized === 'error' || normalized === 'failed') {
-    return 'error';
-  }
-  if (record.processingCompletedAtUtc) return 'complete';
-  return 'pending';
-}
-
 function openHistoryTrace(record: ImportHistoryRecord): void {
   const status = getHistoryStatus(record);
   const summaryValues: Array<[TranslationKey, string]> = [
@@ -561,7 +555,7 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
     const title = document.createElement('strong');
     title.textContent = t('traceError');
     const detail = document.createElement('span');
-    detail.textContent = record.deviceErrorName ?? t('statusError');
+    detail.textContent = getImportError(record) ?? t('statusError');
     content.append(title, detail);
     item.append(marker, content);
     traceSteps.append(item);
@@ -674,7 +668,7 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const detail = body.message ?? body.error ?? `HTTP ${response.status}`;
     const correlation = body.correlationId ? ` Correlation ID: ${body.correlationId}.` : '';
-    throw new Error(`${detail}.${correlation}`);
+    throw new ApiRequestError(`${detail}.${correlation}`, response.status);
   }
   return body;
 }
@@ -777,16 +771,12 @@ async function loadImportHistory(): Promise<void> {
   }
 }
 
-async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void> {
-  account = selectedAccount;
-  msal.setActiveAccount(account);
-  accountName.textContent = account.name ?? account.username;
-  accountUpn.textContent = account.username;
-  accountUpn.title = account.username;
-  logoutButton.classList.remove('hidden');
-  signinView.classList.add('hidden');
-  workspace.classList.remove('hidden');
+async function loadPolicyAccess(): Promise<void> {
+  policyTab.classList.add('hidden');
+  if (policyTab.getAttribute('aria-selected') === 'true') activateWorkspaceTab('import');
   policyTabPanel.replaceChildren();
+  if (!await canManageTagPolicies(() => apiRequest(config.tagPolicyUrl))) return;
+  policyTab.classList.remove('hidden');
   mountPolicyEditor(policyTabPanel, <T>(init?: RequestInit) => apiRequest<T>(config.tagPolicyUrl, init),
     language, async () => { await Promise.all([loadTags(), loadExistingDevices()]); },
     query => {
@@ -799,8 +789,19 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
       url.searchParams.set('auSearch', query);
       return apiRequest<GroupSearchResult>(url.toString());
     });
+}
+
+async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void> {
+  account = selectedAccount;
+  msal.setActiveAccount(account);
+  accountName.textContent = account.name ?? account.username;
+  accountUpn.textContent = account.username;
+  accountUpn.title = account.username;
+  logoutButton.classList.remove('hidden');
+  signinView.classList.add('hidden');
+  workspace.classList.remove('hidden');
   try {
-    await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices()]);
+    await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices(), loadPolicyAccess()]);
   } catch (error) {
     showAlert(error instanceof Error ? error.message : t('tagsLoadFailed'));
   }
@@ -901,13 +902,14 @@ async function pollResults(): Promise<void> {
         workflowStatus: string;
         status: string;
         deviceErrorName?: string;
+        deviceErrorCode?: number;
       }>(statusUrl);
       if (status.workflowStatus === 'complete') {
         item.status = 'complete';
         item.detail = t('completedDetail');
       } else if (status.workflowStatus === 'error') {
         item.status = 'error';
-        item.detail = status.deviceErrorName ?? status.status;
+        item.detail = getImportError(status) ?? status.status;
       } else {
         item.detail = status.status;
       }
@@ -952,11 +954,12 @@ for (const tab of workspaceTabs) {
   tab.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const index = event.key === 'Home' ? 0 : event.key === 'End' ? 2
-      : (workspaceTabs.indexOf(tab) + (event.key === 'ArrowLeft' ? 2 : 1)) % 3;
-    const target = (['import', 'retag', 'policy'] as const)[index];
-    const button = workspaceTabs[index];
-    if (target && button) {
+    const visibleTabs = workspaceTabs.filter(button => !button.classList.contains('hidden'));
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? visibleTabs.length - 1
+      : (visibleTabs.indexOf(tab) + (event.key === 'ArrowLeft' ? visibleTabs.length - 1 : 1)) % visibleTabs.length;
+    const button = visibleTabs[index];
+    const target = button === importTab ? 'import' : button === retagTab ? 'retag' : 'policy';
+    if (button) {
       activateWorkspaceTab(target);
       button.focus();
     }
