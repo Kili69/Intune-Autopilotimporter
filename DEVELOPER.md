@@ -1268,7 +1268,9 @@ branch in this repository. Direct pushes, force pushes, branch deletion, and
 pull requests from other branches or forks are blocked.
 
 The `Enforce dev promotion` workflow validates PR routes and the prospective
-merged `VERSION`, using trusted base-branch code without executing PR source.
+merged `VERSION`, using trusted protected-dev code without executing PR source.
+Both PR event types are supported so initial setup works before the new
+workflow reaches the default branch. Their checks execute the same policy.
 `main` requires `Require dev as source branch` and `Dev release version`: the
 latter runs on every `dev` push and requires a full version higher than `main`.
 Prepare that version in `dev` before promotion; never push a version bump
