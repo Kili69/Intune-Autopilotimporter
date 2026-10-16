@@ -1,6 +1,13 @@
 name: Enforce dev promotion
 
 on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
   pull_request_target:
     types:
       - opened
@@ -38,10 +45,10 @@ jobs:
     name: Branch and version policy
     runs-on: ubuntu-latest
     steps:
-      - name: Check out trusted base branch
+      - name: Check out trusted policy from protected dev
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: dev
           fetch-depth: 0
           persist-credentials: false
 
