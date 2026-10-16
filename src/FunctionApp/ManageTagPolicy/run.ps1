@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -374,13 +374,10 @@ try {
     $deviceGroupIds = @($updatedPolicy | ForEach-Object {
         if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
     } | Sort-Object -Unique)
-    $scopeTagNames = @($updatedPolicy | ForEach-Object {
-        if ($_.PSObject.Properties['scopeTag']) { $_.scopeTag }
-    } | Sort-Object -Unique)
     foreach ($tag in @($updatedPolicy | ForEach-Object { $_.tags } | Sort-Object -Unique)) {
         $null = Get-DevicePolicyActions -Policy $updatedPolicy -GroupTag $tag
     }
-    if ($configuredAdministrativeUnits.Count -gt 0 -or $deviceGroupIds.Count -gt 0 -or $scopeTagNames.Count -gt 0) {
+    if ($configuredAdministrativeUnits.Count -gt 0 -or $deviceGroupIds.Count -gt 0) {
         # Az.Accounts versions differ in whether Token is already a
         # SecureString; downstream Graph helpers consistently require one.
         $tokenResult = Get-AzAccessToken `
@@ -398,9 +395,6 @@ try {
             Assert-SubmittedAdministrativeUnitsExist -Policy $updatedPolicy -AccessToken $graphToken
         }
         Assert-DevicePolicyGroups -GroupIds $deviceGroupIds -AccessToken $graphToken
-        foreach ($scopeTagName in $scopeTagNames) {
-            $null = Resolve-PolicyScopeTag -Name $scopeTagName -AccessToken $graphToken -Create
-        }
     }
     $updatedPolicyJson = ConvertTo-Json -InputObject @($updatedPolicy) -Depth 8 -Compress
 }

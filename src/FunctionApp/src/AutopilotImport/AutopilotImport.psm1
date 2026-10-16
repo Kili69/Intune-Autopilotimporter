@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -10,9 +10,22 @@
 Provides validation and authorization helpers for the Autopilot import API.
 
 .DESCRIPTION
-Contains the testable core used by the Azure Function HTTP triggers to decode
-Easy Auth principals, enforce group-to-tag and manager policies, and construct
-a validated Microsoft Graph Autopilot import payload.
+Shared core for HTTP triggers, queued device processing and audit retention.
+Includes blob decoding, Storage Table audit/state access, policy normalization,
+Easy Auth claim handling, current Graph membership checks, Autopilot payload
+validation and synchronization of policy-managed device groups and AUs.
+
+Pure transformation/authorization functions do not call external services.
+Graph and Storage helpers require appropriately scoped access tokens; token
+acquisition uses the current Az context, normally the Function managed identity.
+
+.NOTES
+Functions use named parameters rather than pipeline parameter binding.
+Network/validation errors generally propagate to the calling Function, which
+maps them to HTTP responses or queue retries. This module does not establish
+an Azure sign-in or validate the authenticity of an Easy Auth header.
+Importing it enables strict mode in the module scope. Import alone does not
+perform network requests or mutate Azure resources.
 #>
 
 Set-StrictMode -Version Latest
@@ -22,12 +35,26 @@ function ConvertFrom-BlobBindingContent {
     .SYNOPSIS
     Converts an Azure Functions blob input binding value to text.
 
+    .DESCRIPTION
+    Accepts worker representations of the same blob: strings, UTF-8 bytes,
+    streams or nested Content wrappers. Dictionaries, custom objects and other
+    enumerables are serialized as JSON at depth 20; other values use ToString().
+
     .PARAMETER Value
     Blob binding value represented as text, bytes, a stream, or a content
     wrapper supplied by the Functions PowerShell worker.
 
     .OUTPUTS
     System.String, or null when the binding has no value.
+
+    .EXAMPLE
+    ConvertFrom-BlobBindingContent -Value ([Text.Encoding]::UTF8.GetBytes('[]'))
+
+    Returns the JSON text [] from a byte-array binding.
+
+    .NOTES
+    Seekable streams are rewound and consumed, but remain open. Text is not
+    validated as JSON. Conversion, stream and serialization errors propagate.
     #>
     [CmdletBinding()]
     param(
@@ -45,6 +72,8 @@ function ConvertFrom-BlobBindingContent {
         return [Text.Encoding]::UTF8.GetString($Value)
     }
     if ($Value -is [IO.Stream]) {
+        # Bindings may reuse a stream whose cursor is no longer at the start.
+        # leaveOpen below keeps ownership with the Functions worker.
         if ($Value.CanSeek) {
             $Value.Position = 0
         }
@@ -63,6 +92,7 @@ function ConvertFrom-BlobBindingContent {
         }
     }
     if ($Value.PSObject.Properties.Name -contains 'Content') {
+        # Unwrap recursively because worker binding wrappers can be nested.
         return ConvertFrom-BlobBindingContent -Value $Value.Content
     }
     if ($Value -is [System.Collections.IDictionary] -or
@@ -78,6 +108,24 @@ function Get-ImportAuditTableUri {
     <#
     .SYNOPSIS
     Resolves the Azure Table endpoint used for import audit records.
+
+    .DESCRIPTION
+    Builds a public-cloud Table Storage URI from
+    AzureWebJobsStorage__accountName and IMPORT_AUDIT_TABLE_NAME. The table
+    defaults to importaudit. This helper does not create or contact the table.
+
+    .OUTPUTS
+    System.String. HTTPS table URI without entity keys or a query string.
+
+    .EXAMPLE
+    $tableUri = Get-ImportAuditTableUri
+
+    Resolves the table endpoint using the Function's current settings.
+
+    .NOTES
+    Throws when the account name is blank or the table name is not 3..63
+    alphanumeric characters beginning with a letter. The account name is not
+    otherwise validated here.
     #>
     [CmdletBinding()]
     param()
@@ -87,6 +135,7 @@ function Get-ImportAuditTableUri {
         throw 'AzureWebJobsStorage__accountName is required for import audit history.'
     }
 
+    # Keep audit reads/writes and device-policy state on the same table.
     $tableName = if ([string]::IsNullOrWhiteSpace(
             $env:IMPORT_AUDIT_TABLE_NAME)) {
         'importaudit'
@@ -104,7 +153,24 @@ function Get-ImportAuditTableUri {
 function Get-ImportAuditAccessToken {
     <#
     .SYNOPSIS
-    Acquires an Azure Storage token through the current managed identity.
+    Acquires an Azure Storage token through the current Azure context.
+
+    .DESCRIPTION
+    Requests the https://storage.azure.com/ audience through Get-AzAccessToken.
+    Returns SecureString consistently across Az.Accounts versions. In Azure,
+    profile.ps1 normally establishes the managed-identity context beforehand.
+
+    .OUTPUTS
+    System.Security.SecureString containing the Storage access token.
+
+    .EXAMPLE
+    $storageToken = Get-ImportAuditAccessToken
+
+    Acquires a token for the audit/state Storage helpers.
+
+    .NOTES
+    Requires Az.Accounts and an authenticated context. Token acquisition
+    failures propagate; this helper does not sign in or assign data roles.
     #>
     [CmdletBinding()]
     param()
@@ -115,6 +181,7 @@ function Get-ImportAuditAccessToken {
     if ($tokenResult.Token -is [Security.SecureString]) {
         return $tokenResult.Token
     }
+    # Older Az.Accounts releases return text rather than SecureString.
     return ConvertTo-SecureString `
         ([string] $tokenResult.Token) `
         -AsPlainText `
@@ -125,6 +192,25 @@ function Get-DeviceHashSha256 {
     <#
     .SYNOPSIS
     Returns a stable SHA-256 index for a Base64 Autopilot device hash.
+
+    .DESCRIPTION
+    Decodes the Base64 hardware hash and hashes the decoded bytes rather than
+    its textual representation. Formats the digest as lowercase hexadecimal.
+
+    .PARAMETER DeviceHash
+    Nonempty Base64 device hash, limited to 65,536 input characters.
+
+    .OUTPUTS
+    System.String. Exactly 64 lowercase hexadecimal characters.
+
+    .EXAMPLE
+    Get-DeviceHashSha256 -DeviceHash 'AQID'
+
+    Computes the index for the three decoded bytes 1, 2 and 3.
+
+    .NOTES
+    Throws ArgumentException for invalid Base64 or an empty decoded value.
+    The result is a lookup index, not a replacement hardware hash for Graph.
     #>
     [CmdletBinding()]
     param(
@@ -143,12 +229,41 @@ function Get-DeviceHashSha256 {
         throw [ArgumentException]::new('DeviceHash must not be empty.')
     }
 
+    # Index the underlying bytes so permitted Base64 whitespace does not
+    # produce different lookup keys for the same hardware hash.
     return [Convert]::ToHexString(
         [Security.Cryptography.SHA256]::HashData($deviceHashBytes)
     ).ToLowerInvariant()
 }
 
 function Test-ImportAuditHttpStatus {
+    <#
+    .SYNOPSIS
+    Tests an audit request error for a particular HTTP status code.
+
+    .DESCRIPTION
+    Reads Exception.Response.StatusCode when present; otherwise checks the
+    Exception.Data StatusCode entry. Supports REST errors and synthetic errors
+    used by tests without depending on one concrete HTTP exception type.
+
+    .PARAMETER ErrorRecord
+    PowerShell error record, normally the current catch variable.
+
+    .PARAMETER StatusCode
+    Integer HTTP status to compare, such as 404 or 409.
+
+    .OUTPUTS
+    System.Boolean. False when neither supported status representation exists.
+
+    .EXAMPLE
+    Test-ImportAuditHttpStatus -ErrorRecord $errorRecord -StatusCode 404
+
+    Checks whether a failed audit operation reported a missing entity.
+
+    .NOTES
+    Internal helper, not exported. Response status takes precedence over Data.
+    Values must be convertible to an integer; this helper does not retry.
+    #>
     param(
         [Parameter(Mandatory)]
         [Management.Automation.ErrorRecord] $ErrorRecord,
@@ -170,6 +285,36 @@ function Set-ImportAuditRecord {
     <#
     .SYNOPSIS
     Merges audit properties into the record for an Autopilot import.
+
+    .DESCRIPTION
+    Uses PartitionKey imports and the GUID ImportId as RowKey. MERGE preserves
+    unrelated existing properties. A missing entity is inserted with POST; an
+    insertion conflict retries the merge to handle a concurrent creator.
+
+    .PARAMETER ImportId
+    Individual import or tag-change operation GUID, not a batch import ID.
+
+    .PARAMETER Properties
+    Dictionary of properties to merge. Null values and attempted PartitionKey/
+    RowKey overrides are ignored; null does not delete an existing property.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with permission to write table entities.
+
+    .OUTPUTS
+    None. REST response bodies are suppressed.
+
+    .EXAMPLE
+    Set-ImportAuditRecord -ImportId $importId -Properties @{
+        processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+    } -AccessToken $storageToken
+
+    Adds the worker completion marker without replacing the whole audit row.
+
+    .NOTES
+    Uses If-Match * rather than ETag concurrency checks. Only a 404 triggers
+    insertion and a 409 on insertion triggers another merge; other errors
+    propagate. Recursive conflict retries have no explicit attempt limit.
     #>
     [CmdletBinding()]
     param(
@@ -190,6 +335,7 @@ function Set-ImportAuditRecord {
         RowKey = $rowKey
     }
     foreach ($propertyName in $Properties.Keys) {
+        # Keys belong to the audit schema, and null means "leave unchanged".
         if ($propertyName -in @('PartitionKey', 'RowKey') -or
             $null -eq $Properties[$propertyName]) {
             continue
@@ -224,6 +370,7 @@ function Set-ImportAuditRecord {
             throw
         }
         $headers.Remove('If-Match')
+        # A new entity cannot use the conditional merge header.
         try {
             Invoke-RestMethod `
                 -Method Post `
@@ -253,6 +400,31 @@ function Get-ImportAuditRecords {
     <#
     .SYNOPSIS
     Returns audit records indexed by Autopilot import ID.
+
+    .DESCRIPTION
+    Deduplicates IDs and queries the imports partition in batches of up to 20
+    RowKey comparisons. Missing IDs are omitted from the returned dictionary.
+
+    .PARAMETER ImportId
+    Individual import/tag-change operation GUIDs whose audit rows are needed.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with table-entity read access.
+
+    .OUTPUTS
+    System.Collections.Hashtable keyed by the returned records' RowKey strings.
+    Values are raw Storage entities, including internal audit properties.
+
+    .EXAMPLE
+    $records = Get-ImportAuditRecords -ImportId $importId -AccessToken $storageToken
+    $record = $records[$importId.ToString()]
+
+    Looks up one audit entity by its normalized operation GUID.
+
+    .NOTES
+    Does not enforce retention, owner authorization or public-field projection.
+    Callers must apply those checks. REST/configuration errors propagate.
+    Each batch uses one request and does not follow Storage continuation.
     #>
     [CmdletBinding()]
     param(
@@ -276,6 +448,8 @@ function Get-ImportAuditRecords {
             'R', [Globalization.CultureInfo]::InvariantCulture)
         'x-ms-version' = '2019-02-02'
     }
+    # Bound the number of OR clauses per request rather than issuing one
+    # network request for every individual import.
     for ($offset = 0; $offset -lt $ids.Count; $offset += 20) {
         $lastIndex = [Math]::Min($offset + 19, $ids.Count - 1)
         $rowFilters = @($ids[$offset..$lastIndex] | ForEach-Object {
@@ -302,6 +476,26 @@ function Get-ImportAuditRetentionCutoffUtc {
     <#
     .SYNOPSIS
     Returns the UTC cutoff for the import audit retention period.
+
+    .DESCRIPTION
+    Subtracts the requested number of days from ReferenceUtc. No records are
+    queried or deleted; callers use the result for history and cleanup filters.
+
+    .PARAMETER RetentionDays
+    Number of retained days, 1..3650. Defaults to 30.
+
+    .PARAMETER ReferenceUtc
+    Reference instant, normally UTC now. Accepts DateTimeOffset; its offset
+    is preserved by AddDays, and Storage callers convert it to UTC text.
+
+    .OUTPUTS
+    System.DateTimeOffset representing the cutoff instant.
+
+    .EXAMPLE
+    Get-ImportAuditRetentionCutoffUtc -RetentionDays 30 `
+        -ReferenceUtc ([datetimeoffset]'2026-10-16T12:00:00Z')
+
+    Returns the instant 2026-09-16T12:00:00Z.
     #>
     [CmdletBinding()]
     param(
@@ -318,6 +512,56 @@ function Get-ImportAuditHistory {
     <#
     .SYNOPSIS
     Returns recent audit records filtered by owner or explicit identifiers.
+
+    .DESCRIPTION
+    Queries the imports partition at or after SinceUtc. Explicit import,
+    serial-number, user and hardware-hash-index predicates are combined with
+    OR. Only when none are supplied is ActorObjectId applied. Without either,
+    all records within the time window are eligible.
+
+    Reads all Storage pages before sorting by requestReceivedAtUtc (falling
+    back to Timestamp) descending and returning at most Top entries.
+
+    .PARAMETER ImportId
+    Optional individual import/tag-change GUID filters.
+
+    .PARAMETER SerialNumber
+    Optional serial-number equality filters. Blank entries are ignored.
+
+    .PARAMETER ActorUserPrincipalName
+    Optional requester-UPN equality filters. Blank entries are ignored.
+
+    .PARAMETER DeviceHashSha256
+    Optional SHA-256 index equality filters, not raw hardware hashes.
+
+    .PARAMETER ActorObjectId
+    Default owner restriction, ignored when any explicit identifier filter is
+    present. The HTTP caller must authorize broader lookup modes beforehand.
+
+    .PARAMETER SinceUtc
+    Inclusive lower bound for requestReceivedAtUtc, formatted as UTC text.
+
+    .PARAMETER Top
+    Final result limit, 1..1000. Defaults to 100; not the Storage page size.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with table-entity read access.
+
+    .OUTPUTS
+    Raw audit entities, newest first, emitted to the pipeline. Call with @()
+    when a stable zero/one/many array is required.
+
+    .EXAMPLE
+    $history = @(Get-ImportAuditHistory -ActorObjectId $actorId `
+        -SinceUtc (Get-ImportAuditRetentionCutoffUtc) -Top 100 `
+        -AccessToken $storageToken)
+
+    Retrieves the actor's most recent retained operations.
+
+    .NOTES
+    Does not authorize callers or redact internal properties. HTTP handlers
+    perform authorization and response projection. REST/configuration errors
+    and invalid sortable timestamps propagate.
     #>
     [CmdletBinding()]
     param(
@@ -369,6 +613,8 @@ function Get-ImportAuditHistory {
             "deviceHashSha256 eq '$($_.Replace("'", "''"))'"
         })
     )
+    # Explicit filters are alternatives, not an intersection with the owner
+    # filter. The calling endpoint is responsible for authorizing that scope.
     if ($identifierFilters.Count -gt 0) {
         $filters += "($($identifierFilters -join ' or '))"
     }
@@ -387,6 +633,8 @@ function Get-ImportAuditHistory {
     $nextPartitionKey = $null
     $nextRowKey = $null
 
+    # Table Storage continuation uses response headers, not Graph nextLink.
+    # Fetch all matching pages so the final Top is globally newest-first.
     do {
         $requestUri = "$tableUri()?`$filter=$([uri]::EscapeDataString($filter))&`$top=1000"
         if (-not [string]::IsNullOrWhiteSpace($nextPartitionKey)) {
@@ -437,6 +685,31 @@ function Remove-ExpiredImportAuditRecords {
     <#
     .SYNOPSIS
     Deletes import audit records older than the supplied UTC cutoff.
+
+    .DESCRIPTION
+    Queries the imports partition for requestReceivedAtUtc strictly before
+    BeforeUtc, follows Storage continuation headers, and deletes each match.
+    Entries in other partitions, including devicePolicies, are not selected.
+
+    .PARAMETER BeforeUtc
+    Exclusive upper bound for expired request timestamps, formatted as UTC.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with table read and delete permissions.
+
+    .OUTPUTS
+    System.Int32. Count of successfully deleted entities after all pages finish.
+
+    .EXAMPLE
+    $removed = Remove-ExpiredImportAuditRecords `
+        -BeforeUtc (Get-ImportAuditRetentionCutoffUtc) -AccessToken $storageToken
+
+    Permanently deletes expired audit history. Intended for the retention job.
+
+    .NOTES
+    Destructive: no confirmation, WhatIf, rollback or ETag concurrency check.
+    Errors propagate; prior successful deletions remain applied if a later
+    request fails, and a final count is not returned in that case.
     #>
     [CmdletBinding()]
     param(
@@ -451,6 +724,7 @@ function Remove-ExpiredImportAuditRecords {
     $beforeValue = $BeforeUtc.UtcDateTime.ToString(
         'yyyy-MM-ddTHH:mm:ss.fffffffZ',
         [Globalization.CultureInfo]::InvariantCulture)
+    # Keep retention cleanup separate from persistent per-device policy state.
     $filter = "PartitionKey eq 'imports' and requestReceivedAtUtc lt '$beforeValue'"
     $headers = @{
         Accept         = 'application/json;odata=nometadata'
@@ -475,9 +749,6 @@ function Remove-ExpiredImportAuditRecords {
             -ErrorAction Stop
         $expiredRecords = @($response.value)
         foreach ($record in $expiredRecords) {
-            if ($record.PSObject.Properties['scopeTagStatus'] -and $record.scopeTagStatus -eq 'pendingEnrollment') {
-                continue
-            }
             $rowKey = [uri]::EscapeDataString([string] $record.RowKey)
             Invoke-RestMethod `
                 -Method Delete `
@@ -501,21 +772,44 @@ function ConvertTo-TagAuthorizationPolicy {
     .SYNOPSIS
     Converts group-to-tag rules into a normalized authorization policy.
 
+    .DESCRIPTION
+    Accepts legacy group=tag1,tag2 strings and object rules. Normalizes group
+    GUIDs, tag lists, optional AU names and named device-action settings.
+    Legacy rules merge by group ID; action rules merge by group ID plus name.
+    Conflicting settings or AU assignments for the same key are rejected.
+    The output is deterministic by rule key and tag name.
+
     .PARAMETER Rules
     Rules in the form <group-object-id>=<tag1>,<tag2>, or rule objects with
     groupId, tags, and an optional administrativeUnitName. Named device-action
-    objects use name, groupId, groupTag and/or scopeTag, optional extensionAttributes
+    objects use name, groupId, groupTag, optional extensionAttributes
     (extensionAttribute1 through extensionAttribute15), and deviceGroupIds.
-    A missing Group/Scope Tag inherits the other tag's name.
+    Former scopeTag-only rules retain their effective Group Tag on migration;
+    scopeTag is never included in the normalized policy.
 
     .PARAMETER AdministrativeUnitName
-    Optional display name of the administrative unit to associate with every
-    generated policy entry. Imported devices using a matching Group Tag are
-    added to this regular or restricted management unit after their Entra
-    device becomes available. Leave empty to disable automatic membership.
+    Default administrative-unit display name for string rules and object rules
+    without their own administrativeUnitName property. An explicit object
+    property overrides this default, including an empty value. Imported devices
+    using a matching Group Tag can be assigned to this regular or restricted
+    management unit after their Entra device becomes available.
 
     .OUTPUTS
-    Normalized policy entries, preserving legacy multi-tag authorization rules.
+    PSCustomObject array returned as one collection, preserving legacy
+    multi-tag authorization rules and normalized action properties.
+
+    .EXAMPLE
+    $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
+        '11111111-1111-1111-1111-111111111111=BG-Default,BG-VIP'
+    ) -AdministrativeUnitName 'Managed devices'
+
+    Creates a legacy multi-tag rule with a default display name and AU target.
+
+    .NOTES
+    Pure normalization: does not query Graph or check that groups/AUs exist.
+    Rejects invalid GUIDs, tags, attribute names/values and conflicting rules.
+    Named actions require a name and Group Tag; scopeTag is migrated only as
+    a legacy Group Tag fallback and never emitted.
     #>
     [CmdletBinding()]
     param(
@@ -536,6 +830,8 @@ function ConvertTo-TagAuthorizationPolicy {
         throw 'At least one group and tag rule is required.'
     }
 
+    # Track tags, AU and action settings separately so compatible duplicate
+    # rules can merge without silently overwriting conflicting settings.
     $rulesByGroup = @{}
     $mauByGroup = @{}
     $settingsByGroup = @{}
@@ -544,6 +840,8 @@ function ConvertTo-TagAuthorizationPolicy {
         $settings = [ordered]@{}
         $extended = $false
         if ($rule -isnot [string]) {
+            # Map custom objects to dictionary access. Existing dictionaries
+            # are reused, so the tags normalization below can update the input.
             $data = if ($rule -is [Collections.IDictionary]) { $rule } else {
                 $map = @{}
                 foreach ($property in $rule.PSObject.Properties) { $map[$property.Name] = $property.Value }
@@ -558,27 +856,33 @@ function ConvertTo-TagAuthorizationPolicy {
                 throw 'Named policy rules require a name of 1..128 characters.'
             }
             if ($data.Contains('groupTag') -or $data.Contains('scopeTag')) {
-                if (-not $groupTag -and -not $scopeTag) { throw 'At least one Group Tag or Scope Tag is required.' }
+                # Retain old scopeTag-only policies as effective Group Tags,
+                # but expose only the current groupTag/tags representation.
+                if (-not $groupTag -and -not $scopeTag) { throw 'A Group Tag is required.' }
                 if (-not $groupTag) { $groupTag = $scopeTag }
-                if (-not $scopeTag) { $scopeTag = $groupTag }
-                if ($groupTag.Length -gt 128 -or $scopeTag.Length -gt 128 -or $groupTag.Contains(',')) {
-                    throw 'Group Tag and Scope Tag names must be at most 128 characters; Group Tag must not contain commas.'
+                if ($groupTag.Length -gt 128 -or $groupTag.Contains(',')) {
+                    throw 'Group Tag names must be at most 128 characters and must not contain commas.'
                 }
                 $settings.groupTag = $groupTag
-                $settings.scopeTag = $scopeTag
                 $data['tags'] = @($groupTag)
             }
             if ($extended -and -not $settings.Contains('groupTag')) {
-                throw 'Named action rules require a Group Tag or Scope Tag.'
+                throw 'Named action rules require a Group Tag.'
             }
             if ($name) { $settings.name = $name }
             if ($data.Contains('extensionAttributes')) {
+                # Attribute values are explicit strings, including empty ones.
+                # Reject control characters rather than normalizing user data.
                 $attributes = $data['extensionAttributes']
                 if ($attributes -isnot [Collections.IDictionary] -and $attributes -isnot [pscustomobject]) {
                     throw 'extensionAttributes must be an object of attribute/value pairs.'
                 }
                 $attributeMap = [ordered]@{}
-                $keys = if ($attributes -is [Collections.IDictionary]) { $attributes.Keys } else { $attributes.PSObject.Properties.Name }
+                $keys = if ($attributes -is [Collections.IDictionary]) {
+                    $attributes.Keys
+                } else {
+                    @($attributes.PSObject.Properties) | ForEach-Object Name
+                }
                 foreach ($key in @($keys | Sort-Object)) {
                     $value = if ($attributes -is [Collections.IDictionary]) { $attributes[$key] } else { $attributes.$key }
                     if ($key -cnotmatch '^extensionAttribute(?:[1-9]|1[0-5])$' -or
@@ -591,6 +895,8 @@ function ConvertTo-TagAuthorizationPolicy {
                 $settings.extensionAttributes = $attributeMap
             }
             elseif ($extended) {
+                # An explicit empty map disables the legacy tag-to-attribute
+                # default for action rules with no configured attributes.
                 $settings.extensionAttributes = [ordered]@{}
             }
             if ($data.Contains('deviceGroupIds')) {
@@ -651,6 +957,8 @@ function ConvertTo-TagAuthorizationPolicy {
         }
         $normalizedGroupId = $parsedGroupId.ToString()
         if (-not $settings.Contains('name')) { $settings.name = "Policy $normalizedGroupId" }
+        # One authorization group can own several independently named action
+        # rules; legacy multi-tag rules retain their group-only merge identity.
         $policyKey = if ($extended) { "$normalizedGroupId|$($settings.name)" } else { $normalizedGroupId }
         $groupIdsByRule[$policyKey] = $normalizedGroupId
         if ($settingsByGroup.ContainsKey($policyKey) -and
@@ -692,6 +1000,7 @@ function ConvertTo-TagAuthorizationPolicy {
         $mauByGroup[$policyKey] = $normalizedMauName
     }
 
+    # Return the policy as one array object, including when it has one entry.
     return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
         $policyEntry = [ordered]@{
             groupId = $groupIdsByRule[$_]
@@ -711,6 +1020,11 @@ function Resolve-AdministrativeUnitName {
     .SYNOPSIS
     Resolves the optional administrative unit for a tag.
 
+    .DESCRIPTION
+    Finds nonblank AU names on matching tag rules. When Principal is supplied,
+    considers only rules for its group claims. Repeated copies of the same AU
+    name are consolidated; multiple distinct targets are an error.
+
     .PARAMETER Policy
     Collection of tag authorization policy entries containing tags and an
     optional administrativeUnitName property.
@@ -725,6 +1039,16 @@ function Resolve-AdministrativeUnitName {
     .OUTPUTS
     System.String, or null when no administrative unit is configured for the
     Group Tag.
+
+    .EXAMPLE
+    $auName = Resolve-AdministrativeUnitName -Policy $policy `
+        -GroupTag 'BG-Default' -Principal $principal
+
+    Resolves the target using only rules applicable to the caller's groups.
+
+    .NOTES
+    Throws when matching rules name multiple AUs. Does not check Graph or
+    refresh claims; callers supply an already authorized tag/current principal.
     #>
     [CmdletBinding()]
     param(
@@ -750,6 +1074,8 @@ function Resolve-AdministrativeUnitName {
     else {
         @()
     }
+    # Caller-specific resolution prevents another group's same-tag rule from
+    # assigning an unrelated administrative unit during request acceptance.
     $administrativeUnitNames = @($Policy | Where-Object {
         @($_.tags) -contains $GroupTag -and
         ($null -eq $Principal -or [string] $_.groupId -in $callerGroupIds) -and
@@ -771,6 +1097,11 @@ function Resolve-EffectiveAdministrativeUnitName {
     .SYNOPSIS
     Resolves the effective administrative unit for queued work.
 
+    .DESCRIPTION
+    Prefers a single target in the current policy. When several names match,
+    uses the queued name only if it matches one of those targets ignoring case.
+    When no current target exists, retains a nonblank queued name.
+
     .PARAMETER Policy
     Current tag authorization policy loaded when the queue item is processed.
 
@@ -783,6 +1114,16 @@ function Resolve-EffectiveAdministrativeUnitName {
     .OUTPUTS
     System.String, or null when neither the current policy nor the queue item
     configures an administrative unit.
+
+    .EXAMPLE
+    Resolve-EffectiveAdministrativeUnitName -Policy $policy `
+        -GroupTag 'BG-Default' -QueuedAdministrativeUnitName 'Managed devices'
+
+    Reconciles an accepted request's AU snapshot with the current policy.
+
+    .NOTES
+    Throws when multiple current targets cannot be disambiguated by the queued
+    name. Does not authorize a caller, resolve an AU ID or mutate memberships.
     #>
     [CmdletBinding()]
     param(
@@ -805,6 +1146,8 @@ function Resolve-EffectiveAdministrativeUnitName {
         ([string] $_.administrativeUnitName).Trim()
     } | Select-Object -Unique)
 
+    # A policy edited after enqueue wins when unambiguous. The queued value
+    # is a disambiguation/fallback value, not an unconditional override.
     if ($currentNames.Count -eq 1) {
         return $currentNames[0]
     }
@@ -831,12 +1174,31 @@ function Resolve-EntraAdministrativeUnit {
     .SYNOPSIS
     Resolves a uniquely named Entra administrative unit.
 
+    .DESCRIPTION
+    Queries Graph using an escaped displayName equality filter, selects basic
+    identity/restriction properties, and requires exactly one case-insensitive
+    exact match after trimming the requested name.
+
     .PARAMETER AdministrativeUnitName
     Display name of the administrative unit. The name must uniquely identify
     an existing regular or restricted management administrative unit.
 
     .PARAMETER AccessToken
-    Microsoft Graph access token used to resolve the administrative unit.
+    SecureString Microsoft Graph token with AU read permissions.
+
+    .OUTPUTS
+    Graph administrative-unit object containing id, displayName and
+    isMemberManagementRestricted.
+
+    .EXAMPLE
+    $unit = Resolve-EntraAdministrativeUnit `
+        -AdministrativeUnitName 'Managed devices' -AccessToken $graphToken
+
+    Resolves a single existing regular or restricted management AU.
+
+    .NOTES
+    Throws for missing/ambiguous names and propagates Graph errors. Does not
+    create an AU, validate write permissions or follow collection pagination.
     #>
     [CmdletBinding()]
     param(
@@ -848,6 +1210,8 @@ function Resolve-EntraAdministrativeUnit {
         [Security.SecureString] $AccessToken
     )
 
+    # Escape the OData string literal first, then encode the whole filter for
+    # the URL so names containing apostrophes or reserved characters are safe.
     $escapedName = $AdministrativeUnitName.Trim().Replace("'", "''")
     $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
     $administrativeUnitResponse = Invoke-RestMethod `
@@ -877,6 +1241,11 @@ function Add-EntraDeviceToAdministrativeUnit {
     .SYNOPSIS
     Adds an Entra device to a named administrative unit.
 
+    .DESCRIPTION
+    Resolves the unique AU, checks current membership with an eventual-
+    consistency query, and posts a device reference only if not already a
+    member and TestOnly is absent. Does not remove other AU memberships.
+
     .PARAMETER AdministrativeUnitName
     Display name of the regular or restricted management administrative unit.
     The name must uniquely identify an existing unit.
@@ -893,8 +1262,19 @@ function Add-EntraDeviceToAdministrativeUnit {
     device.
 
     .OUTPUTS
-    PSCustomObject containing the resolved administrative unit ID and whether
-    membership was added.
+    PSCustomObject with AdministrativeUnitId, IsMember (the pre-write check)
+    and MembershipAdded. IsMember is not updated after a successful addition.
+
+    .EXAMPLE
+    Add-EntraDeviceToAdministrativeUnit -AdministrativeUnitName 'Managed devices' `
+        -DeviceObjectId $deviceObjectId -AccessToken $graphToken -TestOnly
+
+    Checks existing membership without writing to Graph.
+
+    .NOTES
+    Without TestOnly this changes directory membership without a confirmation
+    prompt. AU resolution and Graph failures propagate; permission for a
+    restricted AU may require additional Entra role assignments.
     #>
     [CmdletBinding()]
     param(
@@ -915,6 +1295,7 @@ function Add-EntraDeviceToAdministrativeUnit {
         -AdministrativeUnitName $AdministrativeUnitName `
         -AccessToken $AccessToken
 
+    # Directory membership endpoints require the object ID, not deviceId.
     $deviceId = $DeviceObjectId.ToString()
     $memberFilter = [uri]::EscapeDataString("id eq '$deviceId'")
     $memberResponse = Invoke-RestMethod `
@@ -927,6 +1308,7 @@ function Add-EntraDeviceToAdministrativeUnit {
     $isMember = @($memberResponse.value | Where-Object {
         [string] $_.id -eq $deviceId
     }).Count -gt 0
+    # Add the reference rather than replacing the AU's membership collection.
     if (-not $isMember -and -not $TestOnly) {
         Invoke-RestMethod `
             -Method Post `
@@ -955,6 +1337,35 @@ function Sync-EntraDeviceAdministrativeUnits {
     .DESCRIPTION
     Removes the device from administrative units referenced by other policy
     rules and adds it to the target administrative unit when one is configured.
+    Leaves memberships in AUs outside the supplied policy untouched.
+
+    .PARAMETER Policy
+    Current policy rules defining the set of managed administrative-unit names.
+
+    .PARAMETER AdministrativeUnitName
+    Target AU display name. Empty means remove other policy-managed memberships
+    without adding a new target. Names are trimmed and compared ignoring case.
+
+    .PARAMETER DeviceObjectId
+    Entra directory object GUID of the device, not its deviceId alternate key.
+
+    .PARAMETER AccessToken
+    SecureString Graph token with AU read and membership write permissions.
+
+    .OUTPUTS
+    PSCustomObject with RemovedAdministrativeUnits (display names),
+    TargetAdministrativeUnit and MembershipAdded.
+
+    .EXAMPLE
+    Sync-EntraDeviceAdministrativeUnits -Policy $policy `
+        -AdministrativeUnitName 'Managed devices' -DeviceObjectId $deviceObjectId `
+        -AccessToken $graphToken
+
+    Removes other policy-managed AU memberships and ensures the target.
+
+    .NOTES
+    Mutates Graph without WhatIf or confirmation. Removals precede target
+    addition; failures propagate and prior changes are not rolled back.
     #>
     [CmdletBinding()]
     param(
@@ -982,6 +1393,8 @@ function Sync-EntraDeviceAdministrativeUnits {
     $deviceId = $DeviceObjectId.ToString()
     $removedNames = @()
 
+    # Limit removal to current policy-managed names. Unrelated directory
+    # memberships are intentionally not enumerated or removed.
     foreach ($managedName in $managedNames) {
         if ([string]::Equals(
                 $managedName,
@@ -1035,11 +1448,28 @@ function ConvertTo-EntraDeviceExtensionAttributes {
     .SYNOPSIS
     Creates a Microsoft Graph device extensionAttributes update payload.
 
+    .DESCRIPTION
+    Wraps one authorized tag in the nested extensionAttributes map expected by
+    a Graph device PATCH. Does not write to Graph or normalize the tag text.
+
     .PARAMETER ExtensionAttribute
     Target attribute from extensionAttribute1 through extensionAttribute15.
 
     .PARAMETER GroupTag
     Authorized Autopilot Group Tag written to the selected attribute.
+
+    .OUTPUTS
+    OrderedDictionary containing one nested ordered attribute/value map.
+
+    .EXAMPLE
+    ConvertTo-EntraDeviceExtensionAttributes `
+        -ExtensionAttribute extensionAttribute1 -GroupTag 'BG-Default'
+
+    Builds the payload for writing BG-Default to extensionAttribute1.
+
+    .NOTES
+    Parameter validation restricts attribute names to extensionAttribute1..15
+    and tag length to 1..128. Caller must authorize the value before use.
     #>
     [CmdletBinding()]
     param(
@@ -1060,11 +1490,42 @@ function ConvertTo-EntraDeviceExtensionAttributes {
 }
 
 function Get-PolicyGraphCollection {
+    <#
+    .SYNOPSIS
+    Streams every page of a Microsoft Graph policy-related collection.
+
+    .DESCRIPTION
+    Performs GET requests and follows @odata.nextLink unchanged. Emits each
+    page's value entries immediately rather than accumulating the entire
+    collection in memory.
+
+    .PARAMETER Uri
+    Trusted absolute Graph collection URL, including any initial query.
+
+    .PARAMETER AccessToken
+    SecureString Graph token with read permission for the collection.
+
+    .OUTPUTS
+    Graph collection entries on the pipeline. Use @() at the call site for a
+    stable array when zero or one entry is returned.
+
+    .EXAMPLE
+    $memberships = @(Get-PolicyGraphCollection `
+        -Uri "https://graph.microsoft.com/v1.0/devices/$deviceObjectId/memberOf" `
+        -AccessToken $graphToken)
+
+    Collects all membership pages for one directory device.
+
+    .NOTES
+    REST errors propagate without retry. Earlier pages may already have been
+    emitted when a later request fails. No filtering or deduplication occurs.
+    #>
     param(
         [Parameter(Mandatory)][string] $Uri,
         [Parameter(Mandatory)][Security.SecureString] $AccessToken
     )
     do {
+        # Continuation links already contain Graph's paging/query state.
         $page = Invoke-RestMethod -Method Get -Uri $Uri -Authentication Bearer -Token $AccessToken -ErrorAction Stop
         foreach ($item in @($page.value)) { $item }
         $Uri = if ($page.PSObject.Properties['@odata.nextLink']) { [string] $page.'@odata.nextLink' } else { '' }
@@ -1072,15 +1533,46 @@ function Get-PolicyGraphCollection {
 }
 
 function Get-DevicePolicyActions {
+    <#
+    .SYNOPSIS
+    Resolves consistent device actions for a Group Tag.
+
+    .DESCRIPTION
+    Finds matching rules and compares their serialized extensionAttributes and
+    deviceGroupIds settings. Returns a shallow copy of the first matching rule
+    when those actions agree. Removes obsolete scopeTag from the returned copy.
+    Named rules without attributes receive an explicit empty attribute object.
+
+    .PARAMETER Policy
+    Normalized authorization rules with tags and optional action settings.
+
+    .PARAMETER GroupTag
+    Tag to match using PowerShell's case-insensitive membership comparison.
+
+    .OUTPUTS
+    PSCustomObject containing the first matching rule and its action settings,
+    or an empty PSCustomObject when no rule matches.
+
+    .EXAMPLE
+    $actions = Get-DevicePolicyActions -Policy $policy -GroupTag 'BG-Default'
+
+    Resolves the attributes and device groups to apply for the authorized tag.
+
+    .NOTES
+    Throws for differing serialized action settings. It does not authorize
+    user groups, compare every metadata field or query Graph.
+    #>
     param(
         [Parameter(Mandatory)][object[]] $Policy,
         [Parameter(Mandatory)][string] $GroupTag
     )
     $matching = @($Policy | Where-Object { $GroupTag -in @($_.tags) })
+    # Multiple authorization groups may expose the same tag, but the worker
+    # must not choose between contradictory device actions for that tag.
     $actions = @($matching | ForEach-Object {
         $rule = $_
         $result = [ordered]@{}
-        foreach ($key in @('scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+        foreach ($key in @('extensionAttributes', 'deviceGroupIds')) {
             if ($rule.PSObject.Properties[$key]) { $result[$key] = $rule.$key }
             elseif ($key -eq 'extensionAttributes' -and $rule.PSObject.Properties['groupTag']) {
                 $result[$key] = [ordered]@{}
@@ -1092,15 +1584,42 @@ function Get-DevicePolicyActions {
         throw "Group Tag '$GroupTag' has conflicting device actions across authorization rules."
     }
     if ($matching.Count -eq 0) { return [pscustomobject]@{} }
-    if ($matching[0].PSObject.Properties['groupTag'] -and -not $matching[0].PSObject.Properties['extensionAttributes']) {
-        $copy = $matching[0].PSObject.Copy()
+    $copy = $matching[0].PSObject.Copy()
+    $copy.PSObject.Properties.Remove('scopeTag')
+    if ($copy.PSObject.Properties['groupTag'] -and -not $copy.PSObject.Properties['extensionAttributes']) {
         $copy | Add-Member -NotePropertyName extensionAttributes -NotePropertyValue ([pscustomobject]@{})
-        return $copy
     }
-    return $matching[0]
+    return $copy
 }
 
 function Assert-DevicePolicyGroups {
+    <#
+    .SYNOPSIS
+    Validates that target groups support direct device membership management.
+
+    .DESCRIPTION
+    Reads each unique group from Graph and requires securityEnabled, no
+    DynamicMembership type, no on-premises synchronization and no role-
+    assignable flag. Does not change any membership.
+
+    .PARAMETER GroupIds
+    Directory group ID strings to inspect. Defaults to an empty list.
+
+    .PARAMETER AccessToken
+    SecureString Graph token permitted to read the requested group properties.
+
+    .OUTPUTS
+    None. Successful completion means all requested groups passed the checks.
+
+    .EXAMPLE
+    Assert-DevicePolicyGroups -GroupIds $targetGroupIds -AccessToken $graphToken
+
+    Validates all configured device target groups before a membership change.
+
+    .NOTES
+    Throws for unsupported groups and propagates Graph lookup errors. This
+    does not prove the token has permission to write memberships.
+    #>
     param(
         [string[]] $GroupIds = @(),
         [Parameter(Mandatory)][Security.SecureString] $AccessToken
@@ -1116,31 +1635,62 @@ function Assert-DevicePolicyGroups {
     }
 }
 
-function Resolve-PolicyScopeTag {
-    param(
-        [Parameter(Mandatory)][string] $Name,
-        [Parameter(Mandatory)][Security.SecureString] $AccessToken,
-        [switch] $Create
-    )
-    $tags = @(Get-PolicyGraphCollection -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
-        -AccessToken $AccessToken | Where-Object { $_.displayName -ieq $Name })
-    if ($tags.Count -gt 1) { throw "Scope Tag '$Name' is ambiguous." }
-    if ($tags.Count -eq 1) { return $tags[0] }
-    if (-not $Create) { throw "Scope Tag '$Name' was not found. Save the policy again to create it." }
-    return Invoke-RestMethod -Method Post -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
-        -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
-        -Body (@{ displayName = $Name; description = 'Managed by Autopilot Import tag policy' } | ConvertTo-Json -Compress) `
-        -ErrorAction Stop
-}
-
 function Sync-DevicePolicyGroups {
+    <#
+    .SYNOPSIS
+    Synchronizes a device's policy-managed group memberships.
+
+    .DESCRIPTION
+    Reads current direct memberships. The removal scope is the union of groups
+    referenced by current Policy and PreviousGroupIds. Adds missing target
+    groups first, then removes managed memberships not in TargetGroupIds.
+    Unrelated group memberships remain unchanged.
+
+    .PARAMETER Policy
+    Current policy rules defining managed deviceGroupIds.
+
+    .PARAMETER TargetGroupIds
+    Desired device groups. Defaults to empty, meaning no target memberships.
+
+    .PARAMETER PreviousGroupIds
+    Previously tracked group IDs, allowing cleanup after policy groups have
+    been removed from the current configuration.
+
+    .PARAMETER DeviceObjectId
+    Entra directory object GUID of the device, not the deviceId alternate key.
+
+    .PARAMETER AccessToken
+    SecureString Graph token with device/group read and membership write access.
+
+    .PARAMETER PassThru
+    Returns the planned successful additions/removals after writes complete.
+
+    .OUTPUTS
+    None by default. With PassThru, PSCustomObject with AddedGroupIds and
+    RemovedGroupIds. Existing target memberships are not counted as additions.
+
+    .EXAMPLE
+    $changes = Sync-DevicePolicyGroups -Policy $policy `
+        -TargetGroupIds $targets -PreviousGroupIds $previous `
+        -DeviceObjectId $deviceObjectId -AccessToken $graphToken -PassThru
+
+    Applies the target set and returns the IDs added and removed.
+
+    .NOTES
+    Validates affected removal/target groups before any writes. Changes have no
+    confirmation, transaction or rollback. Errors propagate, and earlier writes
+    may remain applied. This helper does not persist device-policy state.
+    #>
     param(
         [Parameter(Mandatory)][object[]] $Policy,
         [string[]] $TargetGroupIds = @(),
         [string[]] $PreviousGroupIds = @(),
         [Parameter(Mandatory)][guid] $DeviceObjectId,
-        [Parameter(Mandatory)][Security.SecureString] $AccessToken
+        [Parameter(Mandatory)][Security.SecureString] $AccessToken,
+        [switch] $PassThru
     )
+    # Include the persisted previous set so deleted policy references can
+    # still be cleaned up without touching arbitrary device memberships.
     $managedIds = @(@($Policy | ForEach-Object {
         if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
     }) + $PreviousGroupIds | Sort-Object -Unique)
@@ -1148,6 +1698,9 @@ function Sync-DevicePolicyGroups {
         -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectId/memberOf?`$select=id" -AccessToken $AccessToken)
     $memberIds = @($memberships | ForEach-Object { [string] $_.id })
     $removeIds = @($managedIds | Where-Object { $_ -in $memberIds -and $_ -notin $TargetGroupIds })
+    $addIds = @($TargetGroupIds | Where-Object { $_ -notin $memberIds })
+    # Check all affected groups before starting writes; a later Graph failure
+    # can still leave partial changes, so worker retries must re-read state.
     Assert-DevicePolicyGroups -GroupIds @($removeIds + $TargetGroupIds | Sort-Object -Unique) -AccessToken $AccessToken
     foreach ($id in $TargetGroupIds) {
         if ($id -notin $memberIds) {
@@ -1161,9 +1714,41 @@ function Sync-DevicePolicyGroups {
             Invoke-RestMethod -Method Delete -Uri "https://graph.microsoft.com/v1.0/groups/$id/members/$DeviceObjectId/`$ref" `
                 -Authentication Bearer -Token $AccessToken -ErrorAction Stop | Out-Null
     }
+    if ($PassThru) {
+        [pscustomobject]@{ AddedGroupIds = $addIds; RemovedGroupIds = $removeIds }
+    }
 }
 
 function Get-DevicePolicyState {
+    <#
+    .SYNOPSIS
+    Reads the last persisted policy-managed group set for a device.
+
+    .DESCRIPTION
+    Queries the audit table's devicePolicies partition by DeviceId. State is
+    separate from imports history so retention cleanup does not select it.
+
+    .PARAMETER DeviceId
+    GUID used as the device-policy state RowKey. Use the same device identifier
+    consistently when reading and writing state.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with table-entity read access.
+
+    .OUTPUTS
+    Raw state entity when found. Otherwise a PSCustomObject with groupIdsJson
+    equal to [] as JSON text. The JSON property is not deserialized here.
+
+    .EXAMPLE
+    $state = Get-DevicePolicyState -DeviceId $deviceId -AccessToken $storageToken
+    $previous = @($state.groupIdsJson | ConvertFrom-Json)
+
+    Reads the previously managed groups for subsequent synchronization.
+
+    .NOTES
+    A missing row is an empty state; HTTP/configuration errors propagate rather
+    than being treated as missing. This helper does not read live memberships.
+    #>
     param(
         [Parameter(Mandatory)][guid] $DeviceId,
         [Parameter(Mandatory)][Security.SecureString] $AccessToken
@@ -1175,22 +1760,54 @@ function Get-DevicePolicyState {
             'x-ms-version' = '2019-02-02'
         } -ErrorAction Stop
     $rows = @($response.value)
-    if ($rows.Count -eq 0) { return [pscustomobject]@{ groupIdsJson = '[]'; scopeTagNamesJson = '[]' } }
+    # First-time processing has no previous managed group set to remove.
+    if ($rows.Count -eq 0) { return [pscustomobject]@{ groupIdsJson = '[]' } }
     return $rows[0]
 }
 
 function Set-DevicePolicyState {
+    <#
+    .SYNOPSIS
+    Persists a device's policy-managed group IDs in Table Storage.
+
+    .DESCRIPTION
+    PUTs a devicePolicies entity in the configured audit table. groupIdsJson
+    stores the supplied group-ID array as JSON, including [] for no groups.
+    Replaces/upserts the state entity rather than merging audit properties.
+
+    .PARAMETER DeviceId
+    GUID used as RowKey; must match the identifier used by the state reader.
+
+    .PARAMETER GroupIds
+    Group IDs to remember for later policy cleanup. Defaults to an empty array.
+    This helper does not validate, sort or deduplicate the supplied IDs.
+
+    .PARAMETER AccessToken
+    SecureString Storage token with table-entity write access.
+
+    .OUTPUTS
+    None. REST response output is suppressed.
+
+    .EXAMPLE
+    Set-DevicePolicyState -DeviceId $deviceId -GroupIds $targetGroupIds `
+        -AccessToken $storageToken
+
+    Records the managed group set after the caller applies device actions.
+
+    .NOTES
+    Does not change Graph memberships. Storage/configuration errors propagate.
+    Concurrent writes are not guarded by an ETag.
+    #>
     param(
         [Parameter(Mandatory)][guid] $DeviceId,
         [string[]] $GroupIds = @(),
-        [string[]] $ScopeTagNames = @(),
         [Parameter(Mandatory)][Security.SecureString] $AccessToken
     )
     $body = @{
         PartitionKey = 'devicePolicies'
         RowKey = $DeviceId.ToString()
+        # InputObject preserves array JSON even for zero or one group ID.
         groupIdsJson = ConvertTo-Json -InputObject @($GroupIds) -Compress
-        scopeTagNamesJson = ConvertTo-Json -InputObject @($ScopeTagNames) -Compress
     } | ConvertTo-Json -Compress
     Invoke-RestMethod -Method Put -Uri "$(Get-ImportAuditTableUri)(PartitionKey='devicePolicies',RowKey='$DeviceId')" `
         -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
@@ -1198,83 +1815,30 @@ function Set-DevicePolicyState {
         -Body $body -ErrorAction Stop | Out-Null
 }
 
-function Set-DevicePolicyScopeTag {
-    param(
-        [Parameter(Mandatory)][guid] $EntraDeviceId,
-        [Parameter(Mandatory)][string] $ScopeTag,
-        [string[]] $ManagedScopeTagNames = @(),
-        [Parameter(Mandatory)][Security.SecureString] $AccessToken
-    )
-    $filter = [uri]::EscapeDataString("azureADDeviceId eq '$EntraDeviceId'")
-    $devices = @(Get-PolicyGraphCollection `
-        -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=$filter&`$select=id,roleScopeTagIds" `
-        -AccessToken $AccessToken)
-    if ($devices.Count -eq 0) { return $false }
-    $target = Resolve-PolicyScopeTag -Name $ScopeTag -AccessToken $AccessToken
-    $managedIds = @(Get-PolicyGraphCollection -Uri 'https://graph.microsoft.com/beta/deviceManagement/roleScopeTags' `
-        -AccessToken $AccessToken | Where-Object { $_.displayName -in $ManagedScopeTagNames } | ForEach-Object { [string] $_.id })
-    foreach ($device in $devices) {
-        $ids = @(@($device.roleScopeTagIds | Where-Object { $_ -notin $managedIds }) + @([string] $target.id) | Sort-Object -Unique)
-        Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$($device.id)" `
-            -Authentication Bearer -Token $AccessToken -ContentType 'application/json' `
-            -Body (@{ roleScopeTagIds = $ids } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-    }
-    return $true
-}
-
-function Complete-PendingDeviceScopeTags {
-    param(
-        [Parameter(Mandatory)][Security.SecureString] $AccessToken,
-        [Parameter(Mandatory)][Security.SecureString] $AuditToken
-    )
-    $tableUri = Get-ImportAuditTableUri
-    $filter = [uri]::EscapeDataString("PartitionKey eq 'imports' and scopeTagStatus eq 'pendingEnrollment'")
-    $headers = @{
-        Accept = 'application/json;odata=nometadata'
-        'x-ms-date' = [datetime]::UtcNow.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
-        'x-ms-version' = '2019-02-02'
-    }
-    $continuation = ''
-    $failures = 0
-    do {
-        $pageHeaders = $null
-        $page = Invoke-RestMethod -Method Get -Uri "$tableUri()?`$filter=$filter&`$top=1000$continuation" `
-            -Authentication Bearer -Token $AuditToken -Headers $headers `
-            -ResponseHeadersVariable pageHeaders -ErrorAction Stop
-        foreach ($record in @($page.value)) {
-            try {
-                $scopeNames = @($record.managedScopeTagNamesJson | ConvertFrom-Json)
-                $complete = Set-DevicePolicyScopeTag -EntraDeviceId ([guid] $record.entraDeviceId) `
-                    -ScopeTag $record.scopeTagName -ManagedScopeTagNames $scopeNames -AccessToken $AccessToken
-                if ($complete) {
-                    Set-ImportAuditRecord -ImportId ([guid] $record.RowKey) -AccessToken $AuditToken -Properties @{
-                        scopeTagStatus = 'complete'
-                        scopeTagUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
-                    }
-                }
-            }
-            catch {
-                $failures++
-                Write-Error "Scope Tag processing failed for '$($record.RowKey)': $($_.Exception.Message)" -ErrorAction Continue
-            }
-        }
-        $nextPartition = if ($pageHeaders) { $pageHeaders['x-ms-continuation-NextPartitionKey'] } else { $null }
-        $nextRow = if ($pageHeaders) { $pageHeaders['x-ms-continuation-NextRowKey'] } else { $null }
-        $continuation = if ($nextPartition) {
-            "&NextPartitionKey=$([uri]::EscapeDataString([string] $nextPartition))&NextRowKey=$([uri]::EscapeDataString([string] $nextRow))"
-        } else { '' }
-    } while ($continuation)
-    if ($failures) { throw "$failures pending Scope Tag operation(s) failed; they remain pending and will be retried." }
-}
-
 function Get-AutoPilotDeviceRegistrationId {
     <#
     .SYNOPSIS
     Returns the registered Autopilot identity ID from a completed import.
 
+    .DESCRIPTION
+    Reads state.deviceRegistrationId and parses it as a GUID. This bridges
+    Graph's temporary imported identity and its registered Autopilot identity.
+
     .PARAMETER ImportedDevice
     Imported Windows Autopilot device identity whose state contains the
     deviceRegistrationId returned by Microsoft Graph.
+
+    .OUTPUTS
+    System.Guid. Registered Autopilot identity ID, not an Entra device object ID.
+
+    .EXAMPLE
+    $registrationId = Get-AutoPilotDeviceRegistrationId -ImportedDevice $import
+
+    Extracts the ID for a windowsAutopilotDeviceIdentities lookup.
+
+    .NOTES
+    Throws if state, the property or a parseable GUID is unavailable. Does not
+    query Graph, check deviceImportStatus or wait for registration completion.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][object] $ImportedDevice)
@@ -1293,7 +1857,12 @@ function Get-AutoPilotDeviceRegistrationId {
 function Compare-TagAuthorizationPolicyGroups {
     <#
     .SYNOPSIS
-    Compares group membership between two tag authorization policies.
+    Compares authorization-group references between two policy versions.
+
+    .DESCRIPTION
+    Normalizes groupId values as GUID strings and calculates references added
+    to or removed from the policy. Does not inspect actual group memberships,
+    tags, device target groups or other policy settings.
 
     .PARAMETER PreviousPolicy
     Existing tag authorization policy whose group IDs form the comparison
@@ -1305,6 +1874,16 @@ function Compare-TagAuthorizationPolicyGroups {
 
     .OUTPUTS
     PSCustomObject containing AddedGroupIds and RemovedGroupIds.
+
+    .EXAMPLE
+    $delta = Compare-TagAuthorizationPolicyGroups `
+        -PreviousPolicy $previousPolicy -UpdatedPolicy $updatedPolicy
+
+    Finds authorization-group references requiring configuration updates.
+
+    .NOTES
+    GUID conversion errors propagate. Input duplicates are not explicitly
+    removed; callers normally supply normalized policies.
     #>
     [CmdletBinding()]
     param(
@@ -1313,6 +1892,7 @@ function Compare-TagAuthorizationPolicyGroups {
         [object[]] $UpdatedPolicy = @()
     )
 
+    # Normalize textual GUID representations before comparing references.
     $previousGroupIds = @($PreviousPolicy.groupId | ForEach-Object {
         ([guid] $_).ToString()
     })
@@ -1331,14 +1911,30 @@ function Test-TagPolicyManagerPrincipal {
     .SYNOPSIS
     Tests whether a caller is an explicitly configured tag-policy manager.
 
+    .DESCRIPTION
+    Combines the manager policy's legacy principalIds with installerPrincipalId
+    and additionalPrincipalIds. Normalizes valid GUIDs and checks whether the
+    caller's object or claimed group IDs intersect that allowlist.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing object and group claims.
 
     .PARAMETER ManagerPolicy
-    Policy containing a principalIds collection of user or group object IDs.
+    Policy containing any of principalIds, installerPrincipalId and
+    additionalPrincipalIds as user/group object IDs.
 
     .OUTPUTS
     System.Boolean. True when the caller or one of its claimed groups is listed.
+
+    .EXAMPLE
+    $allowed = Test-TagPolicyManagerPrincipal -Principal $principal `
+        -ManagerPolicy $managerPolicy
+
+    Evaluates explicit manager authorization without querying Graph.
+
+    .NOTES
+    Invalid GUID entries are ignored. This helper uses supplied claims only;
+    it does not refresh memberships or check the optional Intune admin role.
     #>
     [CmdletBinding()]
     param(
@@ -1349,6 +1945,8 @@ function Test-TagPolicyManagerPrincipal {
         [object] $ManagerPolicy
     )
 
+    # Accept both the original flat allowlist and the installer/additional
+    # manager schema so older deployments remain readable.
     $configuredPrincipalIds = @('principalIds', 'installerPrincipalId', 'additionalPrincipalIds' |
         Where-Object { $ManagerPolicy.PSObject.Properties.Name -contains $_ } |
         ForEach-Object { @($ManagerPolicy.$_) })
@@ -1382,12 +1980,27 @@ function Test-IntuneRoleAdministrator {
     .SYNOPSIS
     Tests whether a caller has an Intune Role Administrator assignment.
 
+    .DESCRIPTION
+    Acquires a Graph token from the current Az context, retrieves all Intune
+    role-assignment pages with expanded role definitions, and delegates the
+    caller/assignment comparison to Test-IntuneRoleAdministratorAssignment.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing object and group claims.
 
     .OUTPUTS
     System.Boolean. True when an Intune Role Administrator assignment covers
     the caller or one of its claimed groups.
+
+    .EXAMPLE
+    $isIntuneAdmin = Test-IntuneRoleAdministrator -Principal $principal
+
+    Checks current Intune assignments against the caller's supplied claims.
+
+    .NOTES
+    Requires Az.Accounts and Graph Intune RBAC read access. Token/Graph errors
+    propagate; they are not converted into a negative authorization result.
+    Does not resolve fresh group claims or evaluate Entra directory roles.
     #>
     [CmdletBinding()]
     param(
@@ -1406,6 +2019,8 @@ function Test-IntuneRoleAdministrator {
     }
     $headers = @{ Authorization = "Bearer $accessToken" }
 
+    # Intune application RBAC assignments are separate from Azure resource
+    # roles and Entra directory roles; inspect the Intune collection directly.
     $roleAssignments = @()
     $requestUri = "https://graph.microsoft.com/v1.0/deviceManagement/roleAssignments?`$expand=roleDefinition(`$select=id,displayName)&`$select=id,members"
     while ($requestUri) {
@@ -1432,6 +2047,11 @@ function Test-TagManagerPolicyAdministratorRole {
     .SYNOPSIS
     Tests whether Azure role assignments permit changing the manager policy.
 
+    .DESCRIPTION
+    Matches built-in role names Owner or Contributor at the Function resource
+    or an ancestor scope. Normalizes trailing slashes and compares ancestor
+    prefixes ignoring case with a path boundary.
+
     .PARAMETER RoleAssignment
     Effective Azure role assignments for the current principal and its groups.
 
@@ -1441,6 +2061,17 @@ function Test-TagManagerPolicyAdministratorRole {
     .OUTPUTS
     System.Boolean. True only for Owner or Contributor at the Function scope or
     an ancestor scope.
+
+    .EXAMPLE
+    Test-TagManagerPolicyAdministratorRole -RoleAssignment $assignments `
+        -FunctionResourceId $functionResourceId
+
+    Evaluates role assignments already resolved for the caller and its groups.
+
+    .NOTES
+    No Azure lookup occurs. Caller must provide effective assignments and a
+    trusted resource ID. Custom-role permissions and deny assignments are not
+    evaluated; matching is by the two role names and scope only.
     #>
     [CmdletBinding()]
     param(
@@ -1450,6 +2081,8 @@ function Test-TagManagerPolicyAdministratorRole {
         [string] $FunctionResourceId
     )
 
+    # Include the slash boundary so a sibling resource with a common name
+    # prefix cannot be mistaken for a parent scope.
     $normalizedResourceId = $FunctionResourceId.TrimEnd('/')
     return @($RoleAssignment | Where-Object {
         $assignmentScope = ([string] $_.Scope).TrimEnd('/')
@@ -1464,12 +2097,31 @@ function Test-IntuneRoleAdministratorAssignment {
     .SYNOPSIS
     Tests whether a caller is covered by an Intune Role Administrator assignment.
 
+    .DESCRIPTION
+    Collects the caller's object/group claims and the members of assignments
+    whose expanded roleDefinition displayName is Intune Role Administrator.
+    Returns whether any IDs intersect.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing object and group claims.
 
     .PARAMETER RoleAssignment
     Intune deviceAndAppManagementRoleAssignment objects with roleDefinition and
     members properties.
+
+    .OUTPUTS
+    System.Boolean. False when there is no matching assignment member.
+
+    .EXAMPLE
+    Test-IntuneRoleAdministratorAssignment -Principal $principal `
+        -RoleAssignment $intuneAssignments
+
+    Performs the pure comparison after assignments have been fetched.
+
+    .NOTES
+    No network calls or group expansion occur. Requires expanded roleDefinition
+    data; assignments without a displayName are not considered. Matching uses
+    the role display name, not a role-definition GUID.
     #>
     [CmdletBinding()]
     param(
@@ -1487,6 +2139,8 @@ function Test-IntuneRoleAdministratorAssignment {
             'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
         )
     } | ForEach-Object { [string] $_.val })
+    # Skip incomplete/unexpanded assignments rather than assuming every role
+    # in the response grants the administrative capability.
     $assignedPrincipalIds = @($RoleAssignment | Where-Object {
         $roleDefinitionProperty = $_.PSObject.Properties['roleDefinition']
         $roleDefinitionProperty -and
@@ -1507,14 +2161,27 @@ function ConvertFrom-ClientPrincipalHeader {
     .SYNOPSIS
     Decodes an Azure App Service Easy Auth client-principal header.
 
+    .DESCRIPTION
+    Base64-decodes the header as UTF-8 JSON and requires a nonempty claims
+    property. Returns the principal without changing its other properties.
+
     .PARAMETER HeaderValue
     Base64-encoded UTF-8 JSON value from the x-ms-client-principal header.
 
     .OUTPUTS
     PSCustomObject containing the decoded Easy Auth principal and claims.
 
+    .EXAMPLE
+    $principal = ConvertFrom-ClientPrincipalHeader `
+        -HeaderValue $Request.Headers['x-ms-client-principal']
+
+    Decodes the trusted header passed to a Function by Easy Auth.
+
     .NOTES
-    Throws ArgumentException when Base64, JSON, or claims are invalid.
+    Converts Base64/JSON decoding errors and empty claims to ArgumentException.
+    Does not validate signatures, tenant, audience, object IDs or individual
+    claim values. Easy Auth must authenticate the request and protect the
+    header boundary before this helper is used.
     #>
     [CmdletBinding()]
     param(
@@ -1523,6 +2190,7 @@ function ConvertFrom-ClientPrincipalHeader {
     )
 
     try {
+        # This is an encoded principal description, not a JWT validation step.
         $json = [System.Text.Encoding]::UTF8.GetString(
             [System.Convert]::FromBase64String($HeaderValue)
         )
@@ -1544,14 +2212,28 @@ function Test-ClientPrincipalRole {
     .SYNOPSIS
     Tests whether an Easy Auth principal has a required app role.
 
+    .DESCRIPTION
+    Searches roles, the fully qualified role claim type and any principal
+    role_typ alias for a value equal to RequiredRole. Uses PowerShell's default
+    case-insensitive equality comparison.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing a claims collection.
 
     .PARAMETER RequiredRole
-    Exact app-role value required for authorization.
+    App-role value required for authorization, compared without case sensitivity.
 
     .OUTPUTS
     System.Boolean. True when a matching role claim exists; otherwise false.
+
+    .EXAMPLE
+    Test-ClientPrincipalRole -Principal $principal -RequiredRole 'ImportDevices'
+
+    Checks an application-role claim in an already decoded principal.
+
+    .NOTES
+    Does not fetch memberships/role assignments or authenticate the principal.
+    Callers supply the expected Easy Auth schema, including role_typ when used.
     #>
     [CmdletBinding()]
     param(
@@ -1568,6 +2250,7 @@ function Test-ClientPrincipalRole {
     )
 
     if ($Principal.role_typ) {
+        # Easy Auth can identify an issuer-specific role claim type.
         $roleClaimTypes += [string] $Principal.role_typ
     }
 
@@ -1581,6 +2264,12 @@ function Get-CurrentPolicyPrincipal {
     .SYNOPSIS
     Resolves the caller's current memberships in policy groups.
 
+    .DESCRIPTION
+    Validates caller/group GUIDs and calls Graph users/{id}/checkMemberGroups
+    with up to 20 distinct policy groups per request. Replaces all incoming
+    group claims with matching IDs returned for those batches, preserving
+    other claims and principal properties in a new principal object.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing the caller object ID.
 
@@ -1593,6 +2282,17 @@ function Get-CurrentPolicyPrincipal {
     .OUTPUTS
     PSCustomObject containing the original non-group claims and current group
     claims returned by Microsoft Graph.
+
+    .EXAMPLE
+    $current = Get-CurrentPolicyPrincipal -Principal $principal `
+        -Policy $policy -AccessToken $graphToken
+
+    Refreshes only memberships relevant to the configured authorization rules.
+
+    .NOTES
+    Throws ArgumentException for an invalid caller object ID or policy group
+    GUID. Graph errors propagate with no stale-claim fallback. Requires Graph
+    permission to check the user's memberships; does not authenticate a token.
     #>
     [CmdletBinding()]
     param(
@@ -1630,6 +2330,8 @@ function Get-CurrentPolicyPrincipal {
         $parsedGroupId.ToString()
     } | Select-Object -Unique)
 
+    # Graph accepts at most 20 checkMemberGroups IDs per request. Restrict
+    # returned claims to IDs actually requested, not unrelated memberships.
     $currentGroupIds = @()
     for ($offset = 0; $offset -lt $policyGroupIds.Count; $offset += 20) {
         $lastIndex = [Math]::Min($offset + 19, $policyGroupIds.Count - 1)
@@ -1651,6 +2353,8 @@ function Get-CurrentPolicyPrincipal {
         'groups',
         'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups'
     )
+    # Drop the original group claims entirely; unioning them with fresh data
+    # would keep revoked memberships authorized until token expiry.
     $resolvedClaims = @($Principal.claims | Where-Object {
         $_.typ -notin $groupClaimTypes
     }) + @($currentGroupIds | Select-Object -Unique | ForEach-Object {
@@ -1673,6 +2377,11 @@ function Resolve-AuthorizedGroupTag {
     .SYNOPSIS
     Resolves a requested Group Tag authorized for the caller's groups.
 
+    .DESCRIPTION
+    Trims and validates the requested tag, then finds the first policy rule
+    whose groupId is in the caller's group claims and whose tags contain a
+    case-insensitive match. Returns the configured spelling, not client casing.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing Entra security-group claims.
 
@@ -1685,8 +2394,17 @@ function Resolve-AuthorizedGroupTag {
     .OUTPUTS
     System.String. Returns the configured Group Tag with its canonical casing.
 
+    .EXAMPLE
+    $tag = Resolve-AuthorizedGroupTag -Principal $principal -Policy $policy `
+        -RequestedGroupTag ' bg-default '
+
+    Resolves BG-Default when an applicable rule contains that configured tag.
+
     .NOTES
-    Throws UnauthorizedAccessException when no caller group permits the tag.
+    Throws ArgumentException for blank tags or more than 128 trimmed characters,
+    and UnauthorizedAccessException when no caller group permits the tag.
+    Uses supplied claims only; refresh them beforehand when current membership
+    is required.
     #>
     [CmdletBinding()]
     param(
@@ -1715,6 +2433,8 @@ function Resolve-AuthorizedGroupTag {
         [string] $_.val
     })
 
+    # Return the server-configured value so downstream writes use canonical
+    # tag casing even when the request used different casing or whitespace.
     foreach ($rule in $Policy) {
         $configuredTag = @($rule.tags | Where-Object {
             [string] $_ -ieq $requestedTag
@@ -1734,6 +2454,10 @@ function Get-AuthorizedGroupTags {
     .SYNOPSIS
     Returns all Group Tags authorized for the caller's Entra groups.
 
+    .DESCRIPTION
+    Selects rules matching caller group claims, flattens their tags, removes
+    blank entries, trims text and returns a sorted unique list.
+
     .PARAMETER Principal
     Decoded Easy Auth principal containing Entra security-group claims.
 
@@ -1741,7 +2465,17 @@ function Get-AuthorizedGroupTags {
     Collection of rules with groupId and tags properties.
 
     .OUTPUTS
-    System.String values sorted by their configured Group Tag names.
+    System.String values, sorted and deduplicated after trimming. No output
+    when no rule grants tags; callers can use @() for stable array semantics.
+
+    .EXAMPLE
+    $tags = @(Get-AuthorizedGroupTags -Principal $principal -Policy $policy)
+
+    Builds the caller's allowed-tag list for API/frontend responses.
+
+    .NOTES
+    Does not refresh memberships, query Graph or validate the complete policy.
+    Matching and uniqueness use PowerShell's default comparison behavior.
     #>
     [CmdletBinding()]
     param(
@@ -1762,6 +2496,8 @@ function Get-AuthorizedGroupTags {
         [string] $_.val
     })
 
+    # Several caller groups can grant the same tag; expose one normalized
+    # choice rather than duplicate entries in the selection list.
     return @($Policy | Where-Object {
         [string] $_.groupId -in $callerGroupIds
     } | ForEach-Object {
@@ -1778,6 +2514,11 @@ function ConvertTo-AutoPilotImportPayload {
     .SYNOPSIS
     Creates a validated Microsoft Graph Autopilot import payload.
 
+    .DESCRIPTION
+    Requires a nonblank serial number (trimmed, at most 128 characters) and
+    hardwareIdentifier (at most 65,536 characters, nonempty decoded Base64).
+    Creates only the Graph type marker and the three supported import fields.
+
     .PARAMETER RequestBody
     Request object containing serialNumber and Base64 hardwareIdentifier.
 
@@ -1788,9 +2529,19 @@ function ConvertTo-AutoPilotImportPayload {
     OrderedDictionary suitable for the importedWindowsAutopilotDeviceIdentities
     Microsoft Graph endpoint.
 
+    .EXAMPLE
+    ConvertTo-AutoPilotImportPayload -RequestBody ([pscustomobject]@{
+        serialNumber = 'SERIAL-001'
+        hardwareIdentifier = 'AQID'
+    }) -GroupTag 'BG-Default'
+
+    Illustrates payload construction; the short sample hash is not intended
+    to represent a real device accepted by Intune.
+
     .NOTES
-    Validates required fields, size limits, and Base64 encoding before returning
-    the payload.
+    Throws ArgumentException for failed explicit field checks; parameter
+    validation and missing-property errors can also propagate. Does not
+    authorize the tag, import a device or verify hash semantics beyond Base64.
     #>
     [CmdletBinding()]
     param(
@@ -1818,6 +2569,7 @@ function ConvertTo-AutoPilotImportPayload {
         throw [System.ArgumentException]::new('hardwareIdentifier is required.')
     }
 
+    # Limit encoded input before allocating decoded bytes for validation.
     if ($hardwareIdentifier.Length -gt 65536) {
         throw [System.ArgumentException]::new('hardwareIdentifier is too large.')
     }
@@ -1833,6 +2585,8 @@ function ConvertTo-AutoPilotImportPayload {
         throw [System.ArgumentException]::new('hardwareIdentifier must not be empty.')
     }
 
+    # Whitelist Graph fields explicitly; never forward arbitrary request
+    # properties or replace the server-authorized GroupTag with client input.
     return [ordered]@{
         '@odata.type'      = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
         groupTag          = $GroupTag
@@ -1842,13 +2596,48 @@ function ConvertTo-AutoPilotImportPayload {
 }
 
 function Find-EntraPolicyGroups {
+    <#
+    .SYNOPSIS
+    Searches Entra groups or administrative units for policy selection.
+
+    .DESCRIPTION
+    Treats a GUID search as an exact ID lookup and other input as a display-name
+    prefix. For groups, requests at most 25 results and detects more via
+    @odata.nextLink. For AUs, reads all pages and filters/sorts locally before
+    selecting the first 25.
+
+    .PARAMETER SearchText
+    Search text of 2..128 characters. Trimmed text must still contain at least
+    two characters. A parseable GUID selects ID equality instead of a prefix.
+
+    .PARAMETER ObjectType
+    groups (default) or administrativeUnits.
+
+    .PARAMETER AccessToken
+    SecureString Graph token with read permission for the selected object type.
+
+    .OUTPUTS
+    PSCustomObject with groups (array of id/displayName objects) and hasMore.
+    The groups property name is retained even for administrative-unit results.
+
+    .EXAMPLE
+    Find-EntraPolicyGroups -SearchText 'Managed' `
+        -ObjectType administrativeUnits -AccessToken $graphToken
+
+    Returns up to 25 matching AUs for a policy picker.
+
+    .NOTES
+    Read-only. Does not authorize the caller or enforce device-target group
+    eligibility; use Assert-DevicePolicyGroups separately. Validation and Graph
+    errors propagate. Group pages beyond the first 25 are not fetched here.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [ValidateLength(2, 128)]
         [string] $SearchText,
 
-        [ValidateSet('groups', 'administrativeUnits')]
+        [ValidateSet('groups', 'users', 'administrativeUnits')]
         [string] $ObjectType = 'groups',
 
         [Parameter(Mandatory)]
@@ -1874,17 +2663,41 @@ function Find-EntraPolicyGroups {
             hasMore = $units.Count -gt 25
         }
     }
+    # Escape apostrophes inside OData literals before URL-encoding the filter.
+    # Group search can use server-side startswith unlike the AU branch above.
     $filter = if ([guid]::TryParse($query, [ref] $groupId)) {
         "id eq '$($groupId.ToString())'"
     } else {
-        "startswith(displayName,'$($query.Replace("'", "''"))')"
+        $escaped = $query.Replace("'", "''")
+        if ($ObjectType -eq 'users') {
+            "(startswith(displayName,'$escaped') or startswith(userPrincipalName,'$escaped'))"
+        } else {
+            "startswith(displayName,'$escaped')"
+        }
     }
-    $response = Invoke-RestMethod -Method Get `
-        -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$([uri]::EscapeDataString($filter))&`$select=id,displayName&`$top=25" `
-        -Authentication Bearer -Token $AccessToken -ErrorAction Stop
+    $select = if ($ObjectType -eq 'users') { 'id,displayName,userPrincipalName' } else { 'id,displayName' }
+    try {
+        $response = Invoke-RestMethod -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/${ObjectType}?`$filter=$([uri]::EscapeDataString($filter))&`$select=$select&`$top=25" `
+            -Authentication Bearer -Token $AccessToken -ErrorAction Stop
+    }
+    catch {
+        # Graph optimizes id eq into an entity lookup: a user ID on /groups
+        # (or a group ID on /users) is 404, not an empty collection.
+        if ($groupId -ne [guid]::Empty -and
+            $_.Exception -is [Microsoft.PowerShell.Commands.HttpResponseException] -and
+            $_.Exception.Response.StatusCode -eq [System.Net.HttpStatusCode]::NotFound) {
+            return [pscustomobject]@{ groups = @(); hasMore = $false }
+        }
+        throw
+    }
     [pscustomobject]@{
         groups = @($response.value | Sort-Object displayName, id | ForEach-Object {
-            [pscustomobject]@{ id = [string] $_.id; displayName = [string] $_.displayName }
+            $displayName = [string] $_.displayName
+            if ($ObjectType -eq 'users' -and $_.PSObject.Properties['userPrincipalName']) {
+                $displayName = "$displayName ($($_.userPrincipalName))"
+            }
+            [pscustomobject]@{ id = [string] $_.id; displayName = $displayName }
         })
         hasMore = $null -ne $response.PSObject.Properties['@odata.nextLink'] -and
             -not [string]::IsNullOrWhiteSpace([string] $response.'@odata.nextLink')
@@ -1907,12 +2720,9 @@ Export-ModuleMember -Function @(
     'Get-PolicyGraphCollection',
     'Get-DevicePolicyActions',
     'Assert-DevicePolicyGroups',
-    'Resolve-PolicyScopeTag',
     'Sync-DevicePolicyGroups',
     'Get-DevicePolicyState',
     'Set-DevicePolicyState',
-    'Set-DevicePolicyScopeTag',
-    'Complete-PendingDeviceScopeTags',
     'Resolve-AdministrativeUnitName',
     'Resolve-EffectiveAdministrativeUnitName',
     'Resolve-EntraAdministrativeUnit',

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -123,6 +123,12 @@ function Resolve-ClientConfiguration {
 
 function Resolve-ClientManagementUrl {
     <#
+    .NOTES
+    Normalizes only recognized site/UI/management-root paths. An already
+    specific management route or an unknown path is retained so explicit
+    endpoints are not silently redirected. Empty and unparseable values are
+    passed through for the calling command's configuration validation.
+
     .SYNOPSIS
     Resolves a site URL or a management endpoint to the exact API route.
 
@@ -220,6 +226,11 @@ function Get-DefaultClientConfigurationPath {
 
 function Get-ConfigurationValue {
     <#
+    .DESCRIPTION
+    Converts the selected setting to text and rejects absent or whitespace-only
+    values before token acquisition or HTTP requests. Optional settings should
+    be read directly from the configuration rather than through this helper.
+
     .SYNOPSIS
     Returns one required value from resolved client configuration.
 
@@ -250,6 +261,12 @@ function Get-ConfigurationValue {
 
 function Get-ClientApiErrorMessage {
     <#
+    .NOTES
+    ErrorDetails can contain a proxy's non-JSON body. JSON parsing is therefore
+    best-effort; the original exception remains the fallback. Only recognized
+    API error identifiers receive tailored guidance, and the correlation ID is
+    appended without exposing tokens or the hardware hash.
+
     .SYNOPSIS
     Converts an import API error into an actionable client message.
 
@@ -339,6 +356,11 @@ function Get-ClientApiErrorMessage {
 
 function Add-ClientImportMetadata {
     <#
+    .DESCRIPTION
+    Enriches the same response object in place, replacing prior client metadata
+    when called again. The local acceptance timestamp is informational and must
+    not be interpreted as the server's processing-completion timestamp.
+
     .SYNOPSIS
     Adds client-side timing and availability information to an import response.
 
@@ -371,6 +393,12 @@ function Add-ClientImportMetadata {
 
 function Add-ClientImportStatusMetadata {
     <#
+    .NOTES
+    Mutates and returns the response, preserving all server fields. An Intune
+    complete state alone is not final: extensionAttributeStatus must also be
+    complete. Older responses without that field stay nonfinal instead of
+    implying that queued Entra processing succeeded.
+
     .SYNOPSIS
     Adds a description and final-state flag to an import status response.
 
@@ -432,6 +460,12 @@ function Add-ClientImportStatusMetadata {
 
 function Get-ClientAccessToken {
     <#
+    .NOTES
+    Reuses a matching Az context when possible and signs in for the requested
+    tenant/subscription otherwise. Normalizes old string and new SecureString
+    Az.Accounts token results to SecureString for Invoke-RestMethod. Tokens are
+    returned only in memory and are not written to client configuration.
+
     .SYNOPSIS
     Acquires an Azure PowerShell access token for a resource.
 
@@ -488,6 +522,26 @@ function Get-ClientAccessToken {
 }
 
 function Resolve-ClientFunctionAppFromUrl {
+    <#
+    .SYNOPSIS
+    Finds the Azure Function App that owns a default or custom hostname.
+
+    .DESCRIPTION
+    Acquires an ARM token and searches accessible subscriptions in the tenant.
+    Matches only Function Apps, using both default and bound hostnames.
+    Inaccessible subscriptions are reported on the verbose stream; no match or
+    multiple matches require explicit deployment parameters from the caller.
+    The original Azure context is restored after the search.
+
+    .PARAMETER FunctionUrl
+    HTTPS URL whose hostname identifies the deployed Function App.
+    .PARAMETER TenantId
+    Tenant in which subscriptions are searched.
+    .PARAMETER SubscriptionId
+    Optional subscription restriction to avoid a tenant-wide search.
+    .OUTPUTS
+    PSCustomObject with SubscriptionId, ResourceGroupName and FunctionAppName.
+    #>
     param(
         [Parameter(Mandatory)]
         [ValidatePattern('^https://')]
@@ -568,6 +622,23 @@ function Resolve-ClientFunctionAppFromUrl {
 }
 
 function Save-ClientDeploymentConfiguration {
+    <#
+    .SYNOPSIS
+    Persists discovered deployment coordinates without replacing other settings.
+
+    .DESCRIPTION
+    Updates an existing JSON configuration through a sibling temporary file
+    followed by a move. Missing files are deliberately not created: bootstrap
+    owns initial configuration creation. The temporary file is cleaned up even
+    when serialization or replacement fails.
+
+    .PARAMETER Configuration
+    Resolved client settings containing the ConfigPath to update.
+    .PARAMETER Deployment
+    Discovered SubscriptionId, ResourceGroupName and FunctionAppName.
+    .OUTPUTS
+    None. Writes the existing client configuration file.
+    #>
     param(
         [Parameter(Mandatory)]
         [hashtable] $Configuration,
@@ -605,6 +676,11 @@ function Save-ClientDeploymentConfiguration {
 
 function Get-CoreModulePath {
     <#
+    .NOTES
+    Checks the bundled core module and the sibling compatibility layout in
+    order. Throws with both attempted paths if the installation is incomplete
+    rather than importing an unrelated module from PSModulePath.
+
     .SYNOPSIS
     Locates the AutopilotImport runtime module used by client policy commands.
 
@@ -629,6 +705,12 @@ function Get-CoreModulePath {
 
 function Get-AutoPilotImporterClientConfiguration {
     <#
+    .NOTES
+    Bootstrap validates the public runtime endpoints before replacing the
+    persisted user settings. Custom domains do not reliably reveal the Azure
+    resource name; control-plane coordinates may be supplied explicitly and
+    are otherwise discovered only when an administrative command needs them.
+
     .SYNOPSIS
     Displays the active Autopilot Import client configuration.
 
@@ -919,6 +1001,12 @@ function Get-AutoPilotImporterClientConfiguration {
 
 function New-AutoPilotImporterClientConfiguration {
     <#
+    .NOTES
+    Reads Easy Auth through ARM, not from local guesses. Prefers a configured
+    API audience different from the application client ID, then derives api://
+    from that ID when necessary. Existing files require Force; ShouldProcess
+    gates filesystem writes, but Azure reads/sign-in still occur under WhatIf.
+
     .SYNOPSIS
     Creates client.settings.json for an existing Autopilot Import deployment.
 
@@ -1073,6 +1161,12 @@ function New-AutoPilotImporterClientConfiguration {
 
 function Import-AutoPilotDevice {
     <#
+    .NOTES
+    Validates every CSV row before acquiring a token to avoid partial submission
+    caused by malformed later rows. ValidateOnly and WhatIf do not submit or
+    authenticate. Real imports are sequential, reuse one API token and stop on
+    the first rejected request; previously accepted rows are not rolled back.
+
     .SYNOPSIS
     Imports Windows Autopilot devices from a CSV through the secured Function.
 
@@ -1253,6 +1347,20 @@ function Import-AutoPilotDevice {
 }
 
 function Resolve-ClientDeviceTagAssignmentsUrl {
+    <#
+    .SYNOPSIS
+    Resolves the endpoint for listing and re-tagging eligible Autopilot devices.
+
+    .DESCRIPTION
+    Prefers an explicit deviceTagAssignmentsUrl. Otherwise derives the canonical
+    route from the import URL's authority, preserving custom domains but not
+    the import route. Both paths require absolute HTTPS URLs.
+
+    .PARAMETER Configuration
+    Resolved settings with deviceTagAssignmentsUrl or functionUrl.
+    .OUTPUTS
+    System.String containing the absolute assignments endpoint.
+    #>
     param(
         [Parameter(Mandatory)]
         [hashtable] $Configuration
@@ -1280,6 +1388,23 @@ function Resolve-ClientDeviceTagAssignmentsUrl {
 }
 
 function Get-ClientTagChangeErrorMessage {
+    <#
+    .SYNOPSIS
+    Formats a failed device-list or Group Tag change request for the caller.
+
+    .DESCRIPTION
+    Prefers the API's message, then its error identifier, then the original
+    exception. Non-JSON proxy responses retain the original exception instead
+    of hiding it behind a JSON parsing failure. Includes the API correlation
+    ID when present so the request can be traced in Function logs.
+
+    .PARAMETER ErrorRecord
+    Original Invoke-RestMethod failure, including optional JSON ErrorDetails.
+    .PARAMETER Action
+    Human-readable operation description prepended to the error.
+    .OUTPUTS
+    System.String. Does not itself throw or write to an error stream.
+    #>
     param(
         [Parameter(Mandatory)]
         [System.Management.Automation.ErrorRecord] $ErrorRecord,
@@ -1320,6 +1445,11 @@ function Get-ClientTagChangeErrorMessage {
 
 function Get-AutoPilotDeviceTagAssignment {
     <#
+    .NOTES
+    Eligibility and authorization are server-side decisions; this command does
+    not broaden the returned device list. A missing devices property is a
+    protocol error, while an empty devices array is a valid result.
+
     .SYNOPSIS
     Lists existing Autopilot devices eligible for a Group Tag change.
 
@@ -1406,6 +1536,12 @@ function Get-AutoPilotDeviceTagAssignment {
 
 function Set-AutoPilotDeviceGroupTag {
     <#
+    .NOTES
+    Resolves configuration in begin, acquires a token lazily after the first
+    approved ShouldProcess action, and handles pipeline IDs sequentially.
+    Wait polls the queued operation rather than treating POST acceptance as
+    completion. The timeout includes the next sleep interval.
+
     .SYNOPSIS
     Assigns an authorized Group Tag to existing Autopilot devices.
 
@@ -1588,6 +1724,12 @@ function Set-AutoPilotDeviceGroupTag {
 
 function Get-AutoPilotImportStatus {
     <#
+    .NOTES
+    Reads the live import route, not retained audit history. Without Wait it
+    returns one enriched response; with Wait it polls until isFinal or timeout.
+    HTTP failures retain service error and correlation identifiers. A successful
+    request or an Intune complete state does not imply Entra work is complete.
+
     .SYNOPSIS
     Returns the current Intune processing status of an Autopilot import.
 
@@ -1710,6 +1852,21 @@ function Get-AutoPilotImportStatus {
 }
 
 function Get-ClientDeviceHashSha256 {
+    <#
+    .SYNOPSIS
+    Computes the audit-search index for a Base64 Autopilot hardware hash.
+
+    .DESCRIPTION
+    Decodes Base64 before hashing so the index represents the binary hardware
+    identifier, not its textual representation. Rejects invalid or empty
+    hashes and returns lowercase hexadecimal SHA-256. History requests send
+    only this index, never the original hardware hash.
+
+    .PARAMETER DeviceHash
+    Base64 Hardware Hash value from the Autopilot CSV, not a serial number.
+    .OUTPUTS
+    System.String containing exactly 64 lowercase hexadecimal characters.
+    #>
     param(
         [Parameter(Mandatory)]
         [ValidateLength(1, 65536)]
@@ -1732,6 +1889,13 @@ function Get-ClientDeviceHashSha256 {
 
 function Get-AutoPilotImportHistory {
     <#
+    .NOTES
+    Unfiltered/self and ShowAll queries use GET; explicit filters use a JSON
+    POST so identities and hash indexes are not placed in the URL. DeviceHash
+    is decoded and SHA-256 indexed locally. Raw bypasses client projection;
+    normal output parses audit times as DateTimeOffset and retains real Intune
+    error details. A 404 means a missing endpoint, not an empty history.
+
     .SYNOPSIS
     Returns Autopilot import operations visible to the current user.
 
@@ -2032,6 +2196,8 @@ function Get-AutoPilotImportHistory {
         $auditTimestampNames = @(
             'requestReceivedAtUtc'
             'graphImportCreatedAtUtc'
+            'graphImportCompletedAtUtc'
+            'autopilotGroupTagUpdatedAtUtc'
             'queuedAtUtc'
             'processingStartedAtUtc'
             'entraDeviceResolvedAtUtc'
@@ -2062,10 +2228,14 @@ function Get-AutoPilotImportHistory {
             GroupTag                         = [string] $importProperties['groupTag']
             Status                           = [string] $importProperties['status']
             PolicyName                       = [string] $importProperties['policyName']
-            ScopeTagStatus                   = [string] $importProperties['scopeTagStatus']
-            ScopeTagName                     = [string] $importProperties['scopeTagName']
-            ScopeTagUpdatedAtUtc             = [string] $importProperties['scopeTagUpdatedAtUtc']
             DeviceGroupsUpdatedAtUtc         = [string] $importProperties['deviceGroupsUpdatedAtUtc']
+            EntraDeviceId                    = [string] $importProperties['entraDeviceId']
+            AppliedExtensionAttributes       = $importProperties['appliedExtensionAttributes']
+            TargetDeviceGroupIds             = $importProperties['targetDeviceGroupIds']
+            AddedDeviceGroupIds              = $importProperties['addedDeviceGroupIds']
+            RemovedDeviceGroupIds            = $importProperties['removedDeviceGroupIds']
+            AdministrativeUnitName           = $importProperties['administrativeUnitName']
+            RemovedAdministrativeUnits       = $importProperties['removedAdministrativeUnits']
             DeviceHashSha256                 = [string] $importProperties['deviceHashSha256']
             DeviceErrorCode                  = $importProperties['deviceErrorCode']
             DeviceErrorName                  = [string] $importProperties['deviceErrorName']
@@ -2075,6 +2245,8 @@ function Get-AutoPilotImportHistory {
             RequestedByDisplayName           = [string] $importProperties['requestedByDisplayName']
             RequestReceivedAtUtc              = $auditTimestamps['requestReceivedAtUtc']
             GraphImportCreatedAtUtc           = $auditTimestamps['graphImportCreatedAtUtc']
+            GraphImportCompletedAtUtc         = $auditTimestamps['graphImportCompletedAtUtc']
+            AutopilotGroupTagUpdatedAtUtc     = $auditTimestamps['autopilotGroupTagUpdatedAtUtc']
             QueuedAtUtc                       = $auditTimestamps['queuedAtUtc']
             ProcessingStartedAtUtc            = $auditTimestamps['processingStartedAtUtc']
             EntraDeviceResolvedAtUtc          = $auditTimestamps['entraDeviceResolvedAtUtc']
@@ -2105,6 +2277,28 @@ function Get-AutoPilotImportHistory {
 }
 
 function ConvertTo-ClientTagPolicyResult {
+    <#
+    .SYNOPSIS
+    Projects one API rule into the client policy output and display shape.
+
+    .DESCRIPTION
+    Adds resolved group names, a legacy default extension-attribute slot and
+    request correlation metadata. Optional device actions are copied only
+    when present so a legacy authorization rule does not become an explicit
+    action rule merely by being displayed. Sets the default table columns
+    without discarding properties available through Format-List.
+
+    .PARAMETER Rule
+    Policy rule returned by the management API.
+    .PARAMETER GroupName
+    Resolved Entra display name, or the caller's unresolved-group marker.
+    .PARAMETER ExtensionAttribute
+    Deployment-selected legacy slot; defaults to extensionAttribute1.
+    .PARAMETER CorrelationId
+    Optional API request identifier for troubleshooting.
+    .OUTPUTS
+    AutopilotImport.TagPolicyRule with preserved supported action properties.
+    #>
     param(
         [Parameter(Mandatory)]
         [object] $Rule,
@@ -2144,7 +2338,7 @@ function ConvertTo-ClientTagPolicyResult {
         }
         CorrelationId = $CorrelationId
     }
-    foreach ($key in @('groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+    foreach ($key in @('groupTag', 'extensionAttributes', 'deviceGroupIds')) {
         if ($Rule.PSObject.Properties[$key]) {
             $result | Add-Member -NotePropertyName $key -NotePropertyValue $Rule.$key
         }
@@ -2169,6 +2363,15 @@ function ConvertTo-ClientTagPolicyResult {
 
 function Get-AutoPilotTagPolicy {
     <#
+    .PARAMETER DeviceTagExtensionAttribute
+    Legacy deployment attribute slot used in the formatted result. Overrides
+    configuration; defaults to extensionAttribute1 and does not change rules.
+
+    .NOTES
+    Raw returns the API response without extra Graph reads. Normal output uses
+    a separate Graph token to resolve authorization-group names; a lookup
+    failure produces a warning and unresolved marker without losing the rule.
+
     .SYNOPSIS
     Returns the current group-to-tag policy with Entra group display names.
 
@@ -2295,6 +2498,12 @@ function Get-AutoPilotTagPolicy {
 
 function Add-AutoPilotTagPolicy {
     <#
+    .NOTES
+    Performs a read/merge/replace of the full policy, preserving unrelated
+    rules and their actions/AUs. Group-based shortcuts reject multiple named
+    rules for one group because the target would be ambiguous. This is not an
+    ETag compare-and-swap; simultaneous editors can race.
+
     .SYNOPSIS
     Adds an Entra group and its allowed Group Tags to the policy.
 
@@ -2453,7 +2662,7 @@ function Add-AutoPilotTagPolicy {
             tags = @($rulesByGroup[$_])
         }
         if ($sourceRules.ContainsKey($_)) {
-            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($sourceRules[$_].PSObject.Properties[$key]) { $policyEntry[$key] = $sourceRules[$_].$key }
             }
         }
@@ -2508,6 +2717,12 @@ function Add-AutoPilotTagPolicy {
 
 function Remove-AutoPilotTagPolicy {
     <#
+    .NOTES
+    Reads the latest complete policy, removes only the selected group/tags and
+    preserves remaining actions/AUs. The final rule cannot be removed. Named
+    rules sharing a group must be edited through complete rule objects instead
+    of this ambiguous group-level shortcut.
+
     .SYNOPSIS
     Removes Group Tags or an Entra group from the Group Tag policy.
 
@@ -2676,7 +2891,7 @@ function Remove-AutoPilotTagPolicy {
                 groupId = $ruleGroupId
                 tags = @($ruleTags)
             }
-            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
             }
             if ($_.PSObject.Properties[
@@ -2766,6 +2981,20 @@ function Remove-AutoPilotTagPolicy {
 
 function Set-AutoPilotTagPolicy {
     <#
+    .PARAMETER GroupName
+    Exact Entra group display name or object ID for updating one existing
+    group's tags. Must be used together with Tags instead of TagAuthorizationRule.
+
+    .PARAMETER Tags
+    Complete replacement tag list for GroupName. Accepts comma-separated
+    entries. Named action rules require exactly one Group Tag.
+
+    .NOTES
+    Group mode replaces that group's tags while preserving unrelated rules and
+    action metadata. Full-rule mode delegates validation to the shared runtime
+    parser and serializes its existing flat array without another wrapper.
+    Writes are gated by ShouldProcess; successful writes reload server state.
+
     .SYNOPSIS
     Replaces the complete group-to-tag policy.
 
@@ -2780,10 +3009,10 @@ function Set-AutoPilotTagPolicy {
     with groupId, tags, and an optional
     administrativeUnitName. Each group object ID must be a
     GUID and each rule must contain at least one Group Tag.
-    Named device-action rules accept name, groupId, groupTag and/or scopeTag,
+    Named device-action rules accept name, groupId, groupTag,
     extensionAttributes as an attribute-to-value map, and deviceGroupIds as
-    target device group object IDs. At least one tag is required; a missing
-    tag inherits the other name. Missing Intune Scope Tags are created.
+    target device group object IDs. A Group Tag is required.
+    Intune Scope Tags are not managed.
 
     .PARAMETER AdministrativeUnitName
     Optional fallback administrative unit applied to string rules. Rule
@@ -2930,7 +3159,7 @@ function Set-AutoPilotTagPolicy {
                 groupId = $resolvedGroupId
                 tags = @($normalizedTags)
             }
-            foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
             }
             if ($policyEntry.Contains('groupTag')) {
@@ -2992,6 +3221,12 @@ function Set-AutoPilotTagPolicy {
 
 function Get-AutoPilotTagPolicyManager {
     <#
+    .NOTES
+    Uses ARM application settings rather than the policy HTTP endpoint.
+    Missing deployment coordinates are discovered from the configured hostname
+    and cached for later calls. The installer and additional principals are
+    projected separately; malformed manager JSON is an explicit error.
+
     .SYNOPSIS
     Gets the explicitly configured Group Tag managers.
 
@@ -3131,6 +3366,13 @@ function Get-AutoPilotTagPolicyManager {
 
 function Update-AutoPilotTagPolicyManager {
     <#
+    .NOTES
+    Resolves the signed-in principal from the ARM token and checks effective
+    Owner/Contributor assignments against the Function resource before writing.
+    Preserves every app setting because Set-AzWebApp replaces the collection.
+    The installer cannot be removed; additional IDs are merged/deduplicated in
+    one write. Concurrent external settings changes are not ETag-protected.
+
     .SYNOPSIS
     Adds and removes explicit Group Tag managers atomically.
 
@@ -3308,6 +3550,11 @@ function Update-AutoPilotTagPolicyManager {
 
 function Add-AutoPilotTagPolicyManager {
     <#
+    .NOTES
+    Delegates authorization, merge and persistence to
+    Update-AutoPilotTagPolicyManager. Forwards explicitly bound parameters and
+    common WhatIf/Confirm behavior rather than duplicating app-setting writes.
+
     .SYNOPSIS
     Adds explicit users or groups to the Group Tag manager policy.
 
@@ -3380,6 +3627,11 @@ function Add-AutoPilotTagPolicyManager {
 
 function Remove-AutoPilotTagPolicyManager {
     <#
+    .NOTES
+    Delegates to Update-AutoPilotTagPolicyManager so installer protection and
+    the effective Azure-role check cannot diverge between add/remove commands.
+    Only explicitly bound optional connection parameters are forwarded.
+
     .SYNOPSIS
     Removes explicit users or groups from the Group Tag manager policy.
 

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -11,26 +11,27 @@ Describe 'Named device policy normalization' {
             groupTag = 'Sales'
         }
     }
-    It 'fills in a missing scope tag from the group tag' {
+    It 'keeps Group Tag actions without scope tag output' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
         $policy[0].name | Should -Be 'Sales'
-        $policy[0].scopeTag | Should -Be 'Sales'
+        $policy[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
         $policy[0].tags | Should -Be @('Sales')
         @($policy[0].extensionAttributes.Keys).Count | Should -Be 0
     }
-    It 'fills in a missing group tag from a scope tag' {
+    It 'migrates the effective group tag from an older scope-only rule without retaining scope actions' {
         $rule.Remove('groupTag')
         $rule.scopeTag = 'Operations'
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
         $policy[0].groupTag | Should -Be 'Operations'
         $policy[0].tags | Should -Be @('Operations')
+        $policy[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
     }
     It 'requires a name and at least one tag' {
         $rule.name = ''
         { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*name*'
         $rule.name = 'Sales'
         $rule.groupTag = ''
-        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*At least one*'
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*Group Tag*'
     }
     It 'round-trips multiple attribute values and target groups through JSON' {
         $rule.extensionAttributes = @{ extensionAttribute1 = 'Sales'; extensionAttribute5 = 'Berlin' }
@@ -88,7 +89,7 @@ Describe 'Named device policy normalization' {
     It 'rejects conflicting actions for the same group tag' {
         $other = $rule.Clone()
         $other.groupId = '22222222-2222-2222-2222-222222222222'
-        $other.scopeTag = 'Other'
+        $other.extensionAttributes = @{ extensionAttribute1 = 'Other' }
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @($rule, $other)
         { Get-DevicePolicyActions -Policy $policy -GroupTag 'Sales' } | Should -Throw '*conflicting device actions*'
     }
@@ -97,6 +98,16 @@ Describe 'Named device policy normalization' {
         $policy[0].name | Should -Be 'Policy 11111111-1111-1111-1111-111111111111'
         $policy[0].tags.Count | Should -Be 2
         $policy[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
+    }
+    It 'ignores different deprecated scopes when comparing and returning active actions' {
+        $raw = @(
+            [pscustomobject]@{ name = 'A'; groupTag = 'Sales'; tags = @('Sales'); scopeTag = 'Old A' }
+            [pscustomobject]@{ name = 'B'; groupTag = 'Sales'; tags = @('Sales'); scopeTag = 'Old B' }
+        )
+        $actions = Get-DevicePolicyActions -Policy $raw -GroupTag Sales
+        $actions.groupTag | Should -Be 'Sales'
+        $actions.PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
+        $raw[0].scopeTag | Should -Be 'Old A'
     }
 }
 
@@ -126,8 +137,10 @@ Describe 'Device policy Graph actions' {
                 @([pscustomobject]@{ id = $old }, [pscustomobject]@{ id = $unmanaged })
             }
             Mock Invoke-RestMethod {}
-            Sync-DevicePolicyGroups -Policy @([pscustomobject]@{ deviceGroupIds = @($target) }) `
-                -PreviousGroupIds @($old) -TargetGroupIds @($target) -DeviceObjectId $device -AccessToken $token
+            $result = Sync-DevicePolicyGroups -Policy @([pscustomobject]@{ deviceGroupIds = @($target) }) `
+                -PreviousGroupIds @($old) -TargetGroupIds @($target) -DeviceObjectId $device -AccessToken $token -PassThru
+            $result.AddedGroupIds | Should -Be @($target)
+            $result.RemovedGroupIds | Should -Be @($old)
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
                 $Method -eq 'Post' -and $Uri -eq "https://graph.microsoft.com/v1.0/groups/$target/members/`$ref"
             }
@@ -140,56 +153,11 @@ Describe 'Device policy Graph actions' {
             Mock Assert-DevicePolicyGroups {}
             Mock Get-PolicyGraphCollection { [pscustomobject]@{ id = $target } }
             Mock Invoke-RestMethod {}
-            Sync-DevicePolicyGroups -Policy @([pscustomobject]@{ deviceGroupIds = @($target) }) `
-                -TargetGroupIds @($target) -DeviceObjectId $device -AccessToken $token
+            $result = Sync-DevicePolicyGroups -Policy @([pscustomobject]@{ deviceGroupIds = @($target) }) `
+                -TargetGroupIds @($target) -DeviceObjectId $device -AccessToken $token -PassThru
+            $result.AddedGroupIds.Count | Should -Be 0
+            $result.RemovedGroupIds.Count | Should -Be 0
             Should -Invoke Invoke-RestMethod -Times 0
-        }
-        It 'creates a missing scope tag only when explicitly requested' {
-            Mock Get-PolicyGraphCollection { @() }
-            Mock Invoke-RestMethod { [pscustomobject]@{ id = '7'; displayName = 'Sales' } }
-            { Resolve-PolicyScopeTag -Name Sales -AccessToken $token } | Should -Throw '*was not found*'
-            (Resolve-PolicyScopeTag -Name Sales -AccessToken $token -Create).id | Should -Be '7'
-            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
-                $Method -eq 'Post' -and ($Body | ConvertFrom-Json).displayName -eq 'Sales'
-            }
-        }
-        It 'reuses an existing scope tag and rejects duplicate names' {
-            Mock Get-PolicyGraphCollection { [pscustomobject]@{ id = '7'; displayName = 'Sales' } }
-            Mock Invoke-RestMethod {}
-            (Resolve-PolicyScopeTag -Name Sales -AccessToken $token -Create).id | Should -Be '7'
-            Should -Invoke Invoke-RestMethod -Times 0
-            Mock Get-PolicyGraphCollection { @([pscustomobject]@{ id = '7'; displayName = 'Sales' }, [pscustomobject]@{ id = '8'; displayName = 'Sales' }) }
-            { Resolve-PolicyScopeTag -Name Sales -AccessToken $token -Create } | Should -Throw '*ambiguous*'
-        }
-        It 'leaves scope processing pending before enrollment without writing Graph' {
-            Mock Get-PolicyGraphCollection { @() }
-            Mock Invoke-RestMethod {}
-            Set-DevicePolicyScopeTag -EntraDeviceId $device -ScopeTag Sales -AccessToken $token | Should -BeFalse
-            Should -Invoke Invoke-RestMethod -Times 0
-        }
-        It 'replaces only policy-managed scope tags on all matching managed devices' {
-            Mock Get-PolicyGraphCollection {
-                if ($Uri -like '*managedDevices*') {
-                    [pscustomobject]@{ id = 'managed-1'; roleScopeTagIds = @('2', '99') }
-                } else {
-                    @([pscustomobject]@{ id = '2'; displayName = 'Old' }, [pscustomobject]@{ id = '7'; displayName = 'Sales' })
-                }
-            }
-            Mock Resolve-PolicyScopeTag { [pscustomobject]@{ id = '7' } }
-            Mock Invoke-RestMethod {}
-            Set-DevicePolicyScopeTag -EntraDeviceId $device -ScopeTag Sales -ManagedScopeTagNames @('Old', 'Sales') `
-                -AccessToken $token | Should -BeTrue
-            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
-                $Method -eq 'Patch' -and
-                ($Body | ConvertFrom-Json).roleScopeTagIds.Count -eq 2 -and
-                '7' -in ($Body | ConvertFrom-Json).roleScopeTagIds -and
-                '99' -in ($Body | ConvertFrom-Json).roleScopeTagIds
-            }
-        }
-        It 'propagates Graph failures rather than reporting success' {
-            Mock Get-PolicyGraphCollection { throw 'Graph unavailable' }
-            { Set-DevicePolicyScopeTag -EntraDeviceId $device -ScopeTag Sales -AccessToken $token } |
-                Should -Throw '*Graph unavailable*'
         }
         It 'paginates group collections' {
             Mock Invoke-RestMethod {
@@ -201,27 +169,7 @@ Describe 'Device policy Graph actions' {
             $result.Count | Should -Be 2
             Should -Invoke Invoke-RestMethod -Times 2 -Exactly
         }
-        It 'keeps enrollment-pending records until a managed device exists' {
-            Mock Get-ImportAuditTableUri { 'https://test.table.core.windows.net/importaudit' }
-            Mock Invoke-RestMethod {
-                [pscustomobject]@{ value = @([pscustomobject]@{
-                    RowKey = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-                    entraDeviceId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
-                    scopeTagName = 'Sales'
-                    managedScopeTagNamesJson = '["Sales"]'
-                }) }
-            }
-            Mock Set-DevicePolicyScopeTag { $false }
-            Mock Set-ImportAuditRecord {}
-            Complete-PendingDeviceScopeTags -AccessToken $token -AuditToken $token
-            Should -Invoke Set-ImportAuditRecord -Times 0
-            Mock Set-DevicePolicyScopeTag { $true }
-            Complete-PendingDeviceScopeTags -AccessToken $token -AuditToken $token
-            Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
-                $Properties.scopeTagStatus -eq 'complete' -and $Properties.scopeTagUpdatedAtUtc
-            }
-        }
-        It 'does not delete pending enrollment audit records after normal retention' {
+        It 'expires abandoned old scope records with normal audit retention' {
             Mock Get-ImportAuditTableUri { 'https://test.table.core.windows.net/importaudit' }
             Mock Invoke-RestMethod {
                 [pscustomobject]@{ value = @(
@@ -231,13 +179,13 @@ Describe 'Device policy Graph actions' {
             } -ParameterFilter { $Method -eq 'Get' }
             Mock Invoke-RestMethod {} -ParameterFilter { $Method -eq 'Delete' }
             Remove-ExpiredImportAuditRecords -BeforeUtc ([datetimeoffset]::UtcNow.AddDays(-30)) -AccessToken $token |
-                Should -Be 1
-            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { $Method -eq 'Delete' -and $Uri -like "*RowKey='old'*" }
+                Should -Be 2
+            Should -Invoke Invoke-RestMethod -Times 2 -Exactly -ParameterFilter { $Method -eq 'Delete' }
         }
         It 'persists device ownership outside expiring import history' {
             Mock Get-ImportAuditTableUri { 'https://test.table.core.windows.net/importaudit' }
             Mock Invoke-RestMethod {}
-            Set-DevicePolicyState -DeviceId $device -GroupIds @($target, $old) -ScopeTagNames @('Sales') -AccessToken $token
+            Set-DevicePolicyState -DeviceId $device -GroupIds @($target, $old) -AccessToken $token
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
                 $Method -eq 'Put' -and $Uri -like "*PartitionKey='devicePolicies'*" -and
                 (($Body | ConvertFrom-Json).groupIdsJson | ConvertFrom-Json).Count -eq 2
@@ -280,7 +228,7 @@ Describe 'Device policy Graph actions' {
                 ($Body | ConvertFrom-Json).policy[0].name -eq 'Sales' -and
                 ($Body | ConvertFrom-Json).policy[0].extensionAttributes.extensionAttribute5 -eq 'Berlin' -and
                 ($Body | ConvertFrom-Json).policy[0].deviceGroupIds -contains '22222222-2222-2222-2222-222222222222' -and
-                ($Body | ConvertFrom-Json).policy[0].scopeTag -eq 'Sales scope'
+                'scopeTag' -notin ($Body | ConvertFrom-Json).policy[0].PSObject.Properties.Name
             }
         }
         It 'rejects adding a second Group Tag to a named single-tag rule' {
@@ -338,17 +286,21 @@ Describe 'Device policy queue integration' {
         }
         Mock Get-DevicePolicyState { [pscustomobject]@{ groupIdsJson = '[]'; scopeTagNamesJson = '[]' } }
         Mock Set-DevicePolicyState {}
-        Mock Sync-DevicePolicyGroups {}
-        Mock Sync-EntraDeviceAdministrativeUnits {}
-        Mock Set-DevicePolicyScopeTag { $false }
+        Mock Sync-DevicePolicyGroups {
+            [pscustomobject]@{ AddedGroupIds = @('22222222-2222-2222-2222-222222222222'); RemovedGroupIds = @() }
+        }
+        Mock Sync-EntraDeviceAdministrativeUnits {
+            [pscustomobject]@{ RemovedAdministrativeUnits = @('Old AU'); TargetAdministrativeUnit = ''; MembershipAdded = $false }
+        }
         Mock Invoke-RestMethod {
             if ($Uri -like '*importedWindowsAutopilot*') {
-                [pscustomobject]@{ state = [pscustomobject]@{ deviceRegistrationId = 'cccccccc-cccc-cccc-cccc-cccccccccccc' } }
+                [pscustomobject]@{ state = [pscustomobject]@{ deviceRegistrationId = 'cccccccc-cccc-cccc-cccc-cccccccccccc'; deviceImportStatus = 'complete' } }
             } elseif ($Uri -like '*windowsAutopilotDeviceIdentities/*' -and $Method -eq 'Get') {
                 [pscustomobject]@{
                     azureActiveDirectoryDeviceId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
                     serialNumber = 'TEST-POLICY'
                     enrollmentState = 'notContacted'
+                    groupTag = 'Sales'
                 }
             } elseif ($Method -eq 'Get') { [pscustomobject]@{ id = 'dddddddd-dddd-dddd-dddd-dddddddddddd' } }
         }
@@ -361,7 +313,7 @@ Describe 'Device policy queue integration' {
         }
         $policy = '[{"name":"Sales","groupId":"11111111-1111-1111-1111-111111111111","tags":["Sales"],"scopeTag":"Sales","deviceGroupIds":["22222222-2222-2222-2222-222222222222"]}]'
     }
-    It 'patches multiple values, syncs groups and records pending scope assignment on import' {
+    It 'patches multiple values and syncs groups without post-enrollment Graph calls' {
         & $worker -QueueItem $message -TagPolicyBlob $policy
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
             $Method -eq 'Patch' -and
@@ -371,10 +323,24 @@ Describe 'Device policy queue integration' {
         Should -Invoke Sync-DevicePolicyGroups -Times 1 -Exactly -ParameterFilter {
             $TargetGroupIds -contains '22222222-2222-2222-2222-222222222222'
         }
-        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
-            $Properties.scopeTagStatus -eq 'pendingEnrollment' -and $Properties.managedScopeTagNamesJson -eq '["Sales"]'
-        }
+        Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Uri -match 'managedDevices|roleScopeTags' }
+        Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter { 'scopeTagStatus' -in $Properties.Keys }
         Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter { $Properties.processingCompletedAtUtc }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.graphImportCompletedAtUtc -and $Properties.autopilotGroupTagUpdatedAtUtc
+        }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.appliedExtensionAttributesJson -and
+            ($Properties.appliedExtensionAttributesJson | ConvertFrom-Json).PSObject.Properties['extensionAttribute5'] -and
+            ($Properties.appliedExtensionAttributesJson | ConvertFrom-Json).extensionAttribute5 -eq 'Berlin'
+        }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.addedDeviceGroupIdsJson -eq '["22222222-2222-2222-2222-222222222222"]' -and
+            $Properties.removedDeviceGroupIdsJson -eq '[]'
+        }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.removedAdministrativeUnitsJson -eq '["Old AU"]'
+        }
     }
     It 'applies the same actions during re-tagging' {
         $message.registeredDeviceId = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
@@ -384,7 +350,8 @@ Describe 'Device policy queue integration' {
             $Method -eq 'Post' -and $Uri -like '*updateDeviceProperties'
         }
         Should -Invoke Sync-DevicePolicyGroups -Times 1 -Exactly
-        Should -Invoke Set-DevicePolicyScopeTag -Times 1 -Exactly
+        Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Uri -match 'managedDevices|roleScopeTags' }
+        Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter { $Properties.graphImportCompletedAtUtc }
     }
     It 'skips attribute patches when a named rule has no configured attributes' {
         Mock Get-DevicePolicyActions {
@@ -392,11 +359,17 @@ Describe 'Device policy queue integration' {
         }
         & $worker -QueueItem $message -TagPolicyBlob $policy
         Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Method -eq 'Patch' }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter { $Properties.appliedExtensionAttributesJson -eq '{}' }
         Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter { $Properties.processingCompletedAtUtc }
+    }
+    It 'does not record successful group synchronization or completion after a group failure' {
+        Mock Sync-DevicePolicyGroups { throw 'Membership denied' }
+        { & $worker -QueueItem $message -TagPolicyBlob $policy } | Should -Throw '*Membership denied*'
+        Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter { $Properties.deviceGroupsUpdatedAtUtc -or $Properties.processingCompletedAtUtc }
     }
 }
 
-Describe 'Pending scope timer cleanup' {
+Describe 'Audit-only timer cleanup' {
     BeforeAll {
         Import-Module Az.Accounts
         $timer = Join-Path $PSScriptRoot '..\FunctionApp\RemoveExpiredImportHistory\run.ps1'
@@ -405,17 +378,76 @@ Describe 'Pending scope timer cleanup' {
         Mock Import-Module {}
         Mock Get-ImportAuditAccessToken { ConvertTo-SecureString test -AsPlainText -Force }
         Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
-        Mock Complete-PendingDeviceScopeTags { throw 'Scope assignment failed' }
         Mock Remove-ExpiredImportAuditRecords { 1 }
     }
-    It 'cleans up expired history while propagating a scope assignment error' {
-        { & $timer } | Should -Throw '*Scope assignment failed*'
+    It 'cleans up expired history without acquiring a Graph token' {
+        & $timer
+        Should -Invoke Remove-ExpiredImportAuditRecords -Times 1 -Exactly
+        Should -Invoke Get-AzAccessToken -Times 0
+    }
+    It 'propagates storage cleanup failures' {
+        Mock Remove-ExpiredImportAuditRecords { throw 'Storage cleanup failed' }
+        { & $timer } | Should -Throw '*Storage cleanup failed*'
         Should -Invoke Remove-ExpiredImportAuditRecords -Times 1 -Exactly
     }
-    It 'cleans up expired history while propagating a Graph token error' {
-        Mock Get-AzAccessToken { throw 'Graph token failed' }
-        { & $timer } | Should -Throw '*Graph token failed*'
-        Should -Invoke Remove-ExpiredImportAuditRecords -Times 1 -Exactly
+}
+
+Describe 'Detailed history API projection' {
+    BeforeAll {
+        Import-Module Az.Accounts
+        $historyHandler = Join-Path $PSScriptRoot '..\FunctionApp\GetImportHistory\run.ps1'
+        function Push-OutputBinding { param($Name, $Value) }
+    }
+    BeforeEach {
+        Mock Import-Module {}
+        Mock ConvertFrom-ClientPrincipalHeader {
+            [pscustomobject]@{ claims = @([pscustomobject]@{ typ = 'oid'; val = '11111111-1111-1111-1111-111111111111' }) }
+        }
+        Mock Get-ImportAuditAccessToken { ConvertTo-SecureString test -AsPlainText -Force }
+        Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
+        Mock Invoke-RestMethod { [pscustomobject]@{ value = @() } }
+        $capturedResponses = [Collections.Generic.List[object]]::new()
+        Mock Push-OutputBinding { $capturedResponses.Add($Value) }
+        $record = [pscustomobject]@{
+            RowKey = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+            graphImportCompletedAtUtc = '2026-10-16T12:00:02Z'
+            appliedExtensionAttributesJson = '{"extensionAttribute5":"Berlin"}'
+            targetDeviceGroupIdsJson = '["22222222-2222-2222-2222-222222222222"]'
+            addedDeviceGroupIdsJson = '["22222222-2222-2222-2222-222222222222"]'
+            removedDeviceGroupIdsJson = '[]'
+            administrativeUnitName = 'Berlin Devices'
+            removedAdministrativeUnitsJson = '["Old AU"]'
+        }
+        Mock Get-ImportAuditHistory { $record }
+        $request = @{ Method = 'GET'; Headers = @{ 'x-ms-client-principal' = 'mock' }; Query = @{} }
+    }
+    It 'returns attribute maps and real arrays including single and empty group lists' {
+        & $historyHandler -Request $request
+        $capturedResponses.Count | Should -Be 1
+        $capturedResponses[0].StatusCode | Should -Be 200
+        $item = ($capturedResponses[0].Body | ConvertFrom-Json).imports[0]
+        $item.appliedExtensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        ($item.targetDeviceGroupIds -is [array]) | Should -BeTrue
+        $item.targetDeviceGroupIds.Count | Should -Be 1
+        ($item.addedDeviceGroupIds -is [array]) | Should -BeTrue
+        $item.addedDeviceGroupIds.Count | Should -Be 1
+        ($item.removedDeviceGroupIds -is [array]) | Should -BeTrue
+        $item.removedDeviceGroupIds.Count | Should -Be 0
+        $item.removedAdministrativeUnits[0] | Should -Be 'Old AU'
+        $item.administrativeUnitName | Should -Be 'Berlin Devices'
+        ([datetimeoffset] $item.graphImportCompletedAtUtc).ToUniversalTime() |
+            Should -Be ([datetimeoffset]'2026-10-16T12:00:02Z')
+    }
+    It 'does not invent action details for older records' {
+        $record = [pscustomobject]@{ RowKey = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }
+        & $historyHandler -Request $request
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $body = $Value.Body | ConvertFrom-Json
+            $Value.StatusCode -eq 200 -and
+            $null -eq $body.imports[0].appliedExtensionAttributes -and
+            $null -eq $body.imports[0].addedDeviceGroupIds -and
+            $null -eq $body.imports[0].graphImportCompletedAtUtc
+        }
     }
 }
 
@@ -456,6 +488,21 @@ BeforeAll {
                         [uri]::UnescapeDataString($Uri) -like "*startswith(displayName,'O''Brien')*"
                     }
                 }
+                It 'searches users by display name or UPN and returns basic identifiable names' {
+                    Mock Invoke-RestMethod {
+                        [pscustomobject]@{ value = @([pscustomobject]@{
+                            id = '11111111-1111-1111-1111-111111111111'
+                            displayName = 'User One'
+                            userPrincipalName = 'user@example.test'
+                        }) }
+                    }
+                    $result = Find-EntraPolicyGroups -SearchText 'user@' -ObjectType users -AccessToken $token
+                    $result.groups[0].displayName | Should -Be 'User One (user@example.test)'
+                    $result.groups[0].PSObject.Properties.Name | Should -Be @('id', 'displayName')
+                    Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
+                        [uri]::UnescapeDataString($Uri) -eq "https://graph.microsoft.com/v1.0/users?`$filter=(startswith(displayName,'user@') or startswith(userPrincipalName,'user@'))&`$select=id,displayName,userPrincipalName&`$top=25"
+                    }
+                }
                 It 'looks up exact object IDs without treating them as name prefixes' {
                     $id = '11111111-1111-1111-1111-111111111111'
                     $null = Find-EntraPolicyGroups -SearchText $id -AccessToken $token
@@ -468,6 +515,31 @@ BeforeAll {
                     $result = Find-EntraPolicyGroups -SearchText Missing -AccessToken $token
                     $result.groups.Count | Should -Be 0
                     $result.hasMore | Should -BeFalse
+                }
+                It 'treats exact-ID Graph 404 as no object of that type' -ForEach @(
+                    @{ ObjectType = 'users' }
+                    @{ ObjectType = 'groups' }
+                ) {
+                    Mock Invoke-RestMethod {
+                        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::NotFound)
+                        throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Not found', $response)
+                    }
+                    $result = Find-EntraPolicyGroups -SearchText '11111111-1111-1111-1111-111111111111' -ObjectType $ObjectType -AccessToken $token
+                    ($result.groups -is [array]) | Should -BeTrue
+                    $result.groups.Count | Should -Be 0
+                    $result.hasMore | Should -BeFalse
+                }
+                It 'does not suppress Graph 404 for a name search or forbidden ID lookup' {
+                    Mock Invoke-RestMethod {
+                        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::NotFound)
+                        throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Not found', $response)
+                    }
+                    { Find-EntraPolicyGroups -SearchText Sales -AccessToken $token } | Should -Throw
+                    Mock Invoke-RestMethod {
+                        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::Forbidden)
+                        throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Forbidden', $response)
+                    }
+                    { Find-EntraPolicyGroups -SearchText '11111111-1111-1111-1111-111111111111' -AccessToken $token } | Should -Throw
                 }
                 It 'rejects short and oversized queries before Graph is called' {
                     { Find-EntraPolicyGroups -SearchText 'a' -AccessToken $token } | Should -Throw
@@ -529,6 +601,30 @@ BeforeAll {
                     ($Value.Body | ConvertFrom-Json).policy[0].groupId -is [string] -and
                     ($Value.Body | ConvertFrom-Json).policy[0].administrativeUnitName -eq 'PAW'
                 }
+            }
+            It 'saves older scope metadata as Group Tag only without Intune calls' {
+                $request.Method = 'PUT'
+                $request.Query = @{}
+                $request.Body = @{
+                    policy = @(@{
+                        name = 'Older rule'
+                        groupId = '11111111-1111-1111-1111-111111111111'
+                        scopeTag = 'Sales'
+                        extensionAttributes = @{}
+                    })
+                }
+                Mock Invoke-RestMethod { throw 'Unexpected Graph request' }
+                & $managerHandler -Request $request
+                Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+                    $Name -eq 'UpdatedTagPolicyBlob' -and
+                    ($Value | ConvertFrom-Json)[0].groupTag -eq 'Sales' -and
+                    'scopeTag' -notin ($Value | ConvertFrom-Json)[0].PSObject.Properties.Name
+                }
+                Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+                    $Name -eq 'Response' -and $Value.StatusCode -eq 200
+                }
+                Should -Invoke Get-AzAccessToken -Times 0
+                Should -Invoke Invoke-RestMethod -Times 0
             }
             It 'routes AU searches through the same authorized endpoint' {
                 $request.Query = @{ auSearch = 'Berlin' }
@@ -669,7 +765,7 @@ Describe 'Named policy import status' {
             $Value.StatusCode | Should -Be 200
             $body = $Value.Body | ConvertFrom-Json
             $body.workflowStatus | Should -Be 'complete'
-            $body.scopeTagStatus | Should -Be 'pendingEnrollment'
+            $body.PSObject.Properties.Name | Should -Not -Contain 'scopeTagStatus'
             $body.expectedExtensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
             $true
         }

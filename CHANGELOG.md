@@ -6,11 +6,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261016.6] - 2026-10-16
+## [1.4.20261016.12] - 2026-10-16
+
+### Changed
+
+- Show a localized popup after saving a rule, hide Import History on TagPolicies, use readable rule names in tag selectors, and remove redundant introductory/help paragraphs.
+- Automatically reload current rules on entering TagPolicies, retaining unsaved edits unless discard is confirmed and surfacing reload failures.
+- Include every runtime function, including Policy Manager administration, in both release and publication allowlists; verify both paths in package regression tests.
+- Support Graph's exact-ID 404 when a manager search checks the other object type; do not suppress permission/dependency or name-search failures.
+- Explain each recorded import/re-tagging step chronologically, including queueing versus completion, confirmed Group Tags, attribute values, group changes and AU membership. Preserve action details in audit/API/PowerShell history; distinguish skipped writes and existing memberships, and retain honest missing-detail handling for older records.
+- Document all PowerShell client functions and their non-obvious implementation details; expand function help and inline documentation for runtime handlers, the shared module, web serving, Bicep infrastructure, installation and updates without changing executable behavior.
+
+### Removed
+
+- Intune Scope Tags in rules, runtime assignment/creation, client history and post-enrollment retries. This workflow only processes pre-enrollment devices. Old policy input retains its effective Group Tag but no Scope Tag action; old pending records use normal audit retention. RBAC read access replaces the write requirement, and managed-device write permission is no longer required. Existing tags and historical role grants are not automatically removed.
 
 ### Added
 
-- Named device policies with a web editor (collapsible rules, per-rule saves, confirmed deletion, tag validation, attribute-slot selectors and modal Entra group/AU pickers with selectable named lists), Group/Scope Tag fallback, automatic Scope Tag creation and post-enrollment assignment, explicit single-line extension-attribute values (max. 1024 characters, no control characters; no rows means no writes), and policy-owned Entra device-group synchronization. Additional Graph write permissions are required; legacy authorization-only rules retain compatibility.
+- Separate Policy Managers tab, visible only after server-verified Azure Owner/Contributor access, with current-manager reloads, live user/group name/UPN/ID picking, removal and confirmed saves. Protect the installer, preserve unrelated settings and reject stale edits. Register delegated ARM consent for the SPA without new Function managed-identity permissions; manager-setting saves may restart the Function.
+- Named device policies with a web editor (collapsible rules, per-rule saves, confirmed deletion, tag validation, attribute-slot selectors and modal Entra group/AU pickers with selectable named lists), required Group Tags, explicit single-line extension-attribute values (max. 1024 characters, no control characters; no rows means no writes), and policy-owned Entra device-group synchronization. Device-group actions require additional Graph write permission; legacy authorization-only rules retain compatibility.
 
 ### Changed
 
@@ -23,7 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Synchronized the completed dev setup into nextversion while preserving 1.4, and made initial PR-policy activation compatible with strict protection and the existing default-branch workflow.
 - Clarified the operational difference between `Get-AutoPilotImportHistory` and `Get-AutoPilotImportStatus` so support and automation can distinguish the retained audit record from the live import workflow state.
 - Documented the live workflow fields returned by the status endpoint, including `workflowStatus`, `extensionAttributeStatus`, and the final-state interpretation used by the client.
-- Refreshed the project release metadata and README guidance for the current version so the public documentation matches the shipped service behavior.
+- Refreshed release metadata and README guidance, and rebuilt the versioned frontend and deployment package; the separately verified live deployment remains on 1.4.20261016.11.
 
 ## [1.3.20261008.1] - 2026-10-08
 

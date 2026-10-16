@@ -16,12 +16,13 @@ export function mountObjectPicker(
   searchObjects: SearchGroups,
   language: 'de' | 'en',
   label: string,
-  kind: 'userGroup' | 'deviceGroups' | 'administrativeUnit',
+  kind: 'userGroup' | 'deviceGroups' | 'administrativeUnit' | 'policyManagers',
   onChanged: () => void,
 ): { values: () => string[] } {
   const de = language === 'de';
   const au = kind === 'administrativeUnit';
-  const multiple = kind === 'deviceGroups';
+  const managers = kind === 'policyManagers';
+  const multiple = kind === 'deviceGroups' || managers;
   let values = [...initial];
   const names = new Map<string, string>();
   const section = document.createElement('section');
@@ -41,15 +42,17 @@ export function mountObjectPicker(
     element.textContent = text;
     return element;
   }
-  const add = button(au ? (de ? 'AU hinzufuegen' : 'Add AU') : (de ? 'Gruppe hinzufuegen' : 'Add group'));
-  const remove = button(au ? (de ? 'AU entfernen' : 'Remove AU') : (de ? 'Gruppe entfernen' : 'Remove group'));
+  const add = button(managers ? (de ? 'Manager hinzufuegen' : 'Add manager') : au ? (de ? 'AU hinzufuegen' : 'Add AU') : (de ? 'Gruppe hinzufuegen' : 'Add group'));
+  const remove = button(managers ? (de ? 'Manager entfernen' : 'Remove manager') : au ? (de ? 'AU entfernen' : 'Remove AU') : (de ? 'Gruppe entfernen' : 'Remove group'));
   remove.disabled = true;
   function render(): void {
     selected.replaceChildren();
     for (const value of values) {
       const option = document.createElement('option');
       option.value = value;
-      option.textContent = au ? value : names.get(value.toLowerCase()) ?? (de ? 'Gruppenname wird geladen ...' : 'Loading group name ...');
+      option.textContent = au ? value : names.get(value.toLowerCase()) ?? (managers
+        ? (de ? 'Objektname wird geladen ...' : 'Loading object name ...')
+        : (de ? 'Gruppenname wird geladen ...' : 'Loading group name ...'));
       option.title = value;
       selected.append(option);
     }
@@ -147,13 +150,15 @@ export function mountObjectPicker(
     for (const value of values) {
       void searchObjects(value).then(response => {
         const match = response.groups.find(group => group.id.toLowerCase() === value.toLowerCase());
-        if (!match) throw new Error(de ? `Gruppe nicht gefunden: ${value}` : `Group not found: ${value}`);
+        if (!match) throw new Error(managers
+          ? (de ? `Objekt nicht gefunden: ${value}` : `Object not found: ${value}`)
+          : (de ? `Gruppe nicht gefunden: ${value}` : `Group not found: ${value}`));
         names.set(value.toLowerCase(), match.displayName);
         const option = Array.from(selected.options).find(option => option.value === value);
         if (option) option.textContent = match.displayName;
       }).catch((error: unknown) => {
         const option = Array.from(selected.options).find(option => option.value === value);
-        if (option) option.textContent = de ? 'Gruppenname nicht aufloesbar' : 'Group name unavailable';
+        if (option) option.textContent = managers ? value : (de ? 'Gruppenname nicht aufloesbar' : 'Group name unavailable');
         status.textContent = error instanceof Error ? error.message : String(error);
       });
     }

@@ -448,6 +448,17 @@ available in the import history with their previous and new Group Tags.
 Closing or reloading the page stops live polling but does not cancel queued
 changes. Sign in again and use the history view to inspect the final result.
 
+The operation trace lists recorded steps chronologically: request accepted,
+Device Hash submitted, Entra work queued/started, Autopilot import completed,
+Group Tag confirmed, Entra device found, Extension Attributes written, device
+groups reconciled, AU membership reconciled, and completion. Queueing only
+schedules the background worker; it does not mean the device or its assignments
+are ready. Details include written attribute values, target/added/removed group
+object IDs and the target/removed AU names. Already-existing memberships and
+rules without attributes are not reported as new writes. Older records show
+only the timestamps/details actually stored; missing details are not reconstructed
+from today's policy.
+
 ## Autopilot Importer Management
 
 ### Check Installed and Deployed Versions
@@ -748,13 +759,18 @@ control characters are rejected by both editor and backend. Unicode and
 punctuation are otherwise allowed; Microsoft publishes no narrower character
 whitelist for these string properties. Empty values remain supported.
 
-Tag fields validate the existing project limits (128 characters, at least one
-tag, and no comma in the Group Tag) before saving. These are project/format
-constraints, not a Microsoft character whitelist. The Graph property documents
-for [Autopilot groupTag](https://learn.microsoft.com/en-us/graph/api/resources/intune-enrollment-windowsautopilotdeviceidentity?view=graph-rest-1.0)
-and [roleScopeTag displayName](https://learn.microsoft.com/en-us/graph/api/resources/intune-rbac-rolescopetag?view=graph-rest-beta)
-do not publish a complete allowed-character list. No additional ASCII-only or
+The required Group Tag validates the existing project limits (128 characters
+and no comma) before saving. These are project/format constraints, not a
+Microsoft character whitelist. The Graph property documentation for
+[Autopilot groupTag](https://learn.microsoft.com/en-us/graph/api/resources/intune-enrollment-windowsautopilotdeviceidentity?view=graph-rest-1.0)
+does not publish a complete allowed-character list. No additional ASCII-only or
 punctuation whitelist is imposed; service-side validation errors are surfaced.
+Successful rule saves display a localized confirmation dialog. The TagPolicies
+page hides Import History; the import selector displays rule names, not group
+object IDs.
+Switching to TagPolicies automatically fetches the current server rules.
+Unsaved local edits require confirmation before they are discarded; load
+failures remain visible. The manual reload button is still available.
 
 The same configuration can be supplied through PowerShell:
 
@@ -764,7 +780,6 @@ Set-AutoPilotTagPolicy -TagAuthorizationRule @(
         name = 'Sales Berlin'
         groupId = '11111111-1111-1111-1111-111111111111'
         groupTag = 'Sales'
-        scopeTag = ''
         extensionAttributes = @{
             extensionAttribute1 = 'Sales'
             extensionAttribute5 = 'Berlin'
@@ -777,18 +792,20 @@ Set-AutoPilotTagPolicy -TagAuthorizationRule @(
 ) -WhatIf
 ```
 
-Supply at least a Group Tag or Scope Tag. The omitted name defaults to the
-other tag's name (in this example both become `Sales`). Missing Intune Scope
-Tags are created when a manager saves the policy. The authorization group
+Supply a Group Tag. Intune Scope Tags are not managed: this workflow is limited
+to pre-enrollment devices, which have no Intune managed-device record.
+Existing rules remain readable; a deprecated scope-only rule's effective Group
+Tag is preserved on migration, but its Scope Tag action is discarded. No
+existing Intune tags are deleted. The authorization group
 (`groupId`) and device target groups (`deviceGroupIds`) have different purposes.
 Only static, cloud-managed Entra security groups can be device targets.
 
 On import/re-tagging, configured attribute values are applied and policy-owned
 device group memberships are synchronized; unrelated groups remain untouched.
-Scope Tags are applied to the Intune managed device **after enrollment**,
-with an hourly retry while enrollment is pending. Check the operation trace's
-Scope Tag status separately from import completion. An omitted attribute map
-keeps the existing deployment-wide extension-attribute behavior.
+No post-enrollment work is scheduled. The hourly history timer only applies
+the normal audit retention, including to older pending Scope Tag records.
+Legacy authorization-only rules keep the deployment-wide extension-attribute
+behavior; named action rules without an attribute map write no attributes.
 
 Existing rules remain compatible. For named rules, prefer full-rule replacement
 over group-based shortcuts, particularly if one user group has several rules.
@@ -797,6 +814,32 @@ in [the developer policy interface](./DEVELOPER.md#66-group-tag-policy-managemen
 upgrading application code alone does not grant them.
 
 ### Change Group Tag Managers
+
+The web **Policy managers** tab appears only after the server verifies an
+effective Azure `Owner` or `Contributor` assignment on the Function App or an
+ancestor scope. Merely being a policy manager does not expose this tab.
+Current managers are loaded each time the tab is opened. The installing user
+is displayed separately and cannot be removed. Additional users and groups
+are shown by their Entra names; select an entry to enable **Remove manager**.
+**Add manager** opens a live Entra object picker supporting name prefixes,
+user principal name prefixes and exact object IDs. Click **Save managers** to
+apply changes; unsaved edits require discard confirmation before reloading.
+The existing Intune Role Administrator access setting is preserved and shown
+separately; it is not an explicit manager that can be deleted in this list.
+
+Manager administration uses a separate delegated Azure Resource Manager
+`user_impersonation` token for the signed-in user, not elevated Function
+managed-identity permissions. If Azure consent or another sign-in is needed,
+use **Check Azure sign-in for manager administration**. Until authorization
+succeeds, the tab remains hidden. The normal import and TagPolicies tabs do
+not require this additional consent. The regular installer/updater registers
+this delegated ARM permission on the SPA; tenant policy may require admin
+consent. No new Graph application permissions are required for the picker
+(`User.ReadBasic.All` and `GroupMember.Read.All` are already used).
+
+Saving manager changes updates the Function App's application settings and
+can restart it. A confirmation is shown first. Concurrent manager-list edits
+are rejected with a reload request; unrelated settings are preserved.
 
 List the installing manager and all additionally configured managers:
 
@@ -1001,8 +1044,7 @@ For a standard installation, one installing administrator performs the complete 
 | Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
-| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.ReadWrite.All` | Checks Intune role membership and creates missing Scope Tags for named policies. |
-| Function App managed identity | Microsoft Graph, application | `DeviceManagementManagedDevices.ReadWrite.All` | Assigns Scope Tags after enrollment. |
+| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks Intune role membership for policy-manager authorization. |
 | Function App managed identity | Microsoft Graph, application | `GroupMember.ReadWrite.All` | Synchronizes policy-owned Entra device group memberships. |
 | Function App managed identity | Microsoft Graph, application | `GroupMember.Read.All`, `User.ReadBasic.All` | Checks the importing user's current membership in the Entra groups configured by the Group Tag policy. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
@@ -1161,6 +1203,7 @@ errors with Application Insights logs.
 | `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
+| `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
 
 ### Get Authorized Group Tags
 

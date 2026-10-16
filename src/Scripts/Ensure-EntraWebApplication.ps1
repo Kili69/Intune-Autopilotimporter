@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -9,7 +9,8 @@ Creates or updates the Entra single-page application for the web frontend.
 
 .DESCRIPTION
 Ensures a single-tenant SPA registration, its redirect URI, delegated access to
-the Autopilot import API, an enterprise application, and API preauthorization.
+the Autopilot import API and Azure Resource Manager, an enterprise application,
+and import API preauthorization.
 The SPA uses the authorization code flow with PKCE and requires no client secret.
 
 The script is called by Install-AutopilotImport.ps1 after the API application
@@ -23,6 +24,8 @@ The script performs the following operations:
 - Derives the matching auth.html silent redirect URI for each frontend URL so
   that MSAL can renew tokens in a hidden iframe without user interaction.
 - Requests the DeviceHash.Import delegated permission on the API application.
+- Requests ARM user_impersonation for Owner/Contributor manager administration;
+  this requires user/admin consent and does not grant Azure roles.
 - Creates the enterprise application for the SPA in the tenant.
 - Preauthorizes the SPA on the API application so that users are not prompted
   for an additional consent.
@@ -317,8 +320,10 @@ else {
 }
 # Microsoft Graph replaces nested collections during PATCH operations. Retain
 # every API permission that targets a resource other than the import API.
+$armResourceAppId = '797f4846-ba00-4fd7-ba43-dac1f8f63013'
+$armScopeId = '41094075-9dad-400e-a0bd-54e686782033'
 $otherResourceAccess = @($requiredResourceAccess | Where-Object {
-    [string] $_.resourceAppId -ne $ApiClientId.ToString()
+    [string] $_.resourceAppId -notin @($ApiClientId.ToString(), $armResourceAppId)
 } | ForEach-Object {
     $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
 })
@@ -338,6 +343,13 @@ $apiResourceAccess = @($existingApiAccess | Where-Object {
 } | ForEach-Object {
     @{ id = [string] $_.id; type = [string] $_.type }
 }) + @(@{ id = $ApiScopeId.ToString(); type = 'Scope' })
+$armResourceAccess = @($requiredResourceAccess | Where-Object {
+    [string] $_.resourceAppId -eq $armResourceAppId
+} | ForEach-Object { $_.resourceAccess } | Where-Object {
+    [string] $_.id -ne $armScopeId
+} | ForEach-Object {
+    @{ id = [string] $_.id; type = [string] $_.type }
+}) + @(@{ id = $armScopeId; type = 'Scope' })
 
 # Registering the URIs under spa selects the authorization code flow with PKCE,
 # which allows the browser client to operate without a client secret.
@@ -349,6 +361,10 @@ $updateBody = @{
         @{
             resourceAppId  = $ApiClientId.ToString()
             resourceAccess = $apiResourceAccess
+        }
+        @{
+            resourceAppId = $armResourceAppId
+            resourceAccess = $armResourceAccess
         }
     )
 } | ConvertTo-Json -Depth 20 -Compress

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -26,6 +26,37 @@ $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $modulePath = Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
 Remove-Module AutopilotImport -Force -ErrorAction SilentlyContinue
 Import-Module $modulePath -Force
+
+Describe 'Client module documentation' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $clientAst = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot '..\AutopilotImport.Client\AutopilotImport.Client.psm1'),
+            [ref] $tokens, [ref] $parseErrors)
+        $clientFunctions = $clientAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst]
+        }, $true)
+    }
+    It 'parses without errors' {
+        $parseErrors.Count | Should -Be 0
+    }
+    It 'documents the purpose, behavior, outputs and every parameter of all client functions' {
+        $clientFunctions.Count | Should -Be 31
+        foreach ($function in $clientFunctions) {
+            $help = $function.GetHelpContent()
+            $help.Synopsis | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Description | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Outputs | Should -Not -BeNullOrEmpty -Because $function.Name
+            foreach ($parameter in $function.Body.ParamBlock.Parameters) {
+                $name = $parameter.Name.VariablePath.UserPath
+                $help.Parameters[$name.ToUpperInvariant()] |
+                    Should -Not -BeNullOrEmpty -Because "$($function.Name) parameter $name"
+            }
+        }
+    }
+}
 
 Describe 'Client API error messages' {
     BeforeAll {
@@ -1193,6 +1224,14 @@ Describe 'Client import history' {
                         requestedByDisplayName = 'Ada Lovelace'
                         requestReceivedAtUtc = '2026-09-18T10:00:00.0000000Z'
                         graphImportCreatedAtUtc = '2026-09-18T10:00:01.0000000Z'
+                        graphImportCompletedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        autopilotGroupTagUpdatedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        appliedExtensionAttributes = [pscustomobject]@{ extensionAttribute5 = 'Berlin' }
+                        targetDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        addedDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        removedDeviceGroupIds = @()
+                        administrativeUnitName = 'Berlin Devices'
+                        removedAdministrativeUnits = @('Old AU')
                         queuedAtUtc = '2026-09-18T10:00:02.0000000Z'
                         processingStartedAtUtc = '2026-09-18T10:01:00.0000000Z'
                         entraDeviceResolvedAtUtc = '2026-09-18T10:02:00.0000000Z'
@@ -1229,6 +1268,14 @@ Describe 'Client import history' {
         $result[0].RequestedBy | Should -Be 'ada@example.com'
         $result[0].RequestedByDisplayName | Should -Be 'Ada Lovelace'
         $result[0].RequestReceivedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].GraphImportCompletedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AutopilotGroupTagUpdatedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AppliedExtensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $result[0].TargetDeviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
+        $result[0].AddedDeviceGroupIds | Should -Be $result[0].TargetDeviceGroupIds
+        $result[0].RemovedDeviceGroupIds.Count | Should -Be 0
+        $result[0].AdministrativeUnitName | Should -Be 'Berlin Devices'
+        $result[0].RemovedAdministrativeUnits | Should -Be @('Old AU')
         $result[0].ProcessingCompletedAtUtc.ToString('o') |
             Should -Be '2026-09-18T10:02:03.0000000+00:00'
         $result[1].RequestReceivedAtUtc | Should -BeNullOrEmpty
@@ -3880,6 +3927,14 @@ Describe 'Update script deployment discovery' {
         $rules[0].deviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
         $rules[0].administrativeUnitName | Should -Be 'Berlin Devices'
         @($rules[1].extensionAttributes.PSObject.Properties).Count | Should -Be 0
+        $normalized = AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $rules
+        $normalized.Count | Should -Be 2
+        $normalized[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
+        $normalized[0].groupTag | Should -Be 'Sales'
+        $normalized[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $normalized[0].deviceGroupIds | Should -Be $rules[0].deviceGroupIds
+        $normalized[0].administrativeUnitName | Should -Be 'Berlin Devices'
+        @($normalized[1].extensionAttributes.Keys).Count | Should -Be 0
     }
 
     It 'requests the raw policy response for deployment preservation' {
@@ -5360,7 +5415,7 @@ Describe 'Web frontend response types' {
         $frontendSource | Should -Match `
             'redirectUri:\s*config\.silentRedirectUri'
         $frontendSource | Should -Match `
-            'if \(redirectResult\?\.accessToken\) accessTokenResult = redirectResult'
+            '(?s)if \(redirectResult\?\.accessToken && redirectResult\.scopes\.some\(.*?scope\.toLowerCase\(\) === config\.scope\.toLowerCase\(\).*?accessTokenResult = redirectResult'
         $frontendSource | Should -Match `
             "error\.errorCode === 'monitor_window_timeout'"
         $frontendSource | Should -Match `
@@ -5412,6 +5467,7 @@ Describe 'Web frontend response types' {
             'ManageDeviceTags'  = 'api/devices/tags/assignments'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
+            'ManagePolicyManagers' = 'api/management/policy-managers'
             'WebFrontend'       = 'api/ui/{*path}'
         }
 
@@ -5965,6 +6021,8 @@ Describe 'Deployment package' {
                     'ManageDeviceTags/run.ps1'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
+                    'ManagePolicyManagers/function.json'
+                    'ManagePolicyManagers/run.ps1'
                     'RemoveExpiredImportHistory/function.json'
                     'RemoveExpiredImportHistory/run.ps1'
                     'proxies.json'
@@ -5978,6 +6036,15 @@ Describe 'Deployment package' {
             $entries | Where-Object {
                 $_ -match '/WebFrontend/wwwroot/assets/.+\.(css|js)$'
             } | Should -Not -BeNullOrEmpty
+            $runtimeFunctions = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'src\FunctionApp') -Directory |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'function.json') }
+            $installerText = Get-Content -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') -Raw
+            foreach ($runtimeFunction in $runtimeFunctions) {
+                $entries | Should -Contain "$packageRoot/$($runtimeFunction.Name)/function.json"
+                $installerText | Should -Match ([regex]::Escape(
+                    "(Join-Path `$functionAppRoot '$($runtimeFunction.Name)')"
+                ))
+            }
             $entries | Where-Object {
                 $_ -match `
                     '(^|/)(client\.settings\.json|local\.settings\.json|tests|\.git)(/|$)'

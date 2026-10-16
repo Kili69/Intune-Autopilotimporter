@@ -1,28 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { parsePolicyFields, PolicyFields, validatePolicyTags, validateExtensionAttributeValue, updateSingleRule } from './policy';
+import { getPolicyTagLabel, parsePolicyFields, PolicyFields, validatePolicyTags, validateExtensionAttributeValue, updateSingleRule } from './policy';
 
 const fields: PolicyFields = {
   name: 'Sales',
   groupId: '11111111-1111-1111-1111-111111111111',
   groupTag: 'Sales',
-  scopeTag: '',
   attributes: 'extensionAttribute1=Sales\nextensionAttribute5=Berlin',
   groups: '22222222-2222-2222-2222-222222222222',
   administrativeUnitName: '',
 };
 
 describe('Named policy editor', () => {
-  it('defaults a missing scope tag and preserves individual attribute values', () => {
+  it('shows distinct rule names without tag values or generated GUID names', () => {
+    expect(getPolicyTagLabel('Sales', [
+      { name: 'Berlin', tags: ['Sales'] },
+      { name: 'Berlin', tags: ['Sales'] },
+      { name: 'London', tags: ['Sales'] },
+      { name: 'Unrelated', tags: ['Other'] },
+      { name: `Policy ${fields.groupId}`, tags: ['Sales'] },
+    ])).toBe('Berlin / London');
+  });
+  it('uses the tag as a readable fallback for legacy or missing names', () => {
+    expect(getPolicyTagLabel('Sales', [{ name: `Policy ${fields.groupId}`, tags: ['Sales'] }])).toBe('Sales');
+    expect(getPolicyTagLabel('Sales')).toBe('Sales');
+  });
+  it('requires a Group Tag and preserves individual attribute values without scope actions', () => {
     const rule = parsePolicyFields(fields);
-    expect(rule.scopeTag).toBe('Sales');
+    expect(rule).not.toHaveProperty('scopeTag');
     expect(rule.extensionAttributes).toEqual({ extensionAttribute1: 'Sales', extensionAttribute5: 'Berlin' });
     expect(rule.deviceGroupIds).toEqual(['22222222-2222-2222-2222-222222222222']);
   });
-  it('defaults a missing group tag from the scope tag', () => {
-    expect(parsePolicyFields({ ...fields, groupTag: '', scopeTag: 'Scope' }).tags).toEqual(['Scope']);
+  it('rejects a missing group tag', () => {
+    expect(() => parsePolicyFields({ ...fields, groupTag: '' })).toThrow('Group Tag');
   });
   it.each([
-    { name: '' }, { groupTag: '', scopeTag: '' }, { groupId: 'bad' },
+    { name: '' }, { groupTag: '' }, { groupId: 'bad' },
     { attributes: 'extensionAttribute16=bad' },
     { attributes: 'extensionAttribute1=A\nextensionAttribute1=B' },
     { groups: 'not-a-guid' }, { groups: '00000000-0000-0000-0000-000000000000' },
@@ -30,10 +42,10 @@ describe('Named policy editor', () => {
     expect(() => parsePolicyFields({ ...fields, ...changes })).toThrow();
   });
   it('preserves an unchanged multi-tag legacy rule without introducing scope tag actions', () => {
-    const legacy = { groupId: fields.groupId, tags: ['A', 'B'] };
-    const result = parsePolicyFields({ ...fields, groupTag: 'A, B', scopeTag: '', attributes: '', groups: '' }, legacy);
+    const legacy = { groupId: fields.groupId, tags: ['A', 'B'], scopeTag: 'Obsolete' };
+    const result = parsePolicyFields({ ...fields, groupTag: 'A, B', attributes: '', groups: '' }, legacy);
     expect(result.tags).toEqual(['A', 'B']);
-    expect(result.scopeTag).toBeUndefined();
+    expect(result).not.toHaveProperty('scopeTag');
     expect(result.extensionAttributes).toBeUndefined();
   });
   it('does not write any attributes when none are entered', () => {
@@ -52,7 +64,7 @@ describe('Named policy editor', () => {
     const original = parsePolicyFields(fields);
     const other = { ...original, name: 'Other', groupTag: 'Other', tags: ['Other'] };
     it('updates only the chosen rule and preserves the latest other rules', () => {
-      const changedOther = { ...other, scopeTag: 'Changed remotely' };
+      const changedOther = { ...other, groupTag: 'Changed remotely' };
       const replacement = { ...original, name: 'Renamed', extensionAttributes: {} };
       expect(updateSingleRule([original, changedOther], original, replacement)).toEqual([replacement, changedOther]);
     });
@@ -60,7 +72,7 @@ describe('Named policy editor', () => {
       expect(updateSingleRule([original], undefined, other)).toEqual([original, other]);
     });
     it('rejects stale or deleted original rules', () => {
-      expect(() => updateSingleRule([{ ...original, scopeTag: 'Remote' }], original, other)).toThrow('changed on the server');
+      expect(() => updateSingleRule([{ ...original, groupTag: 'Remote' }], original, other)).toThrow('changed on the server');
       expect(() => updateSingleRule([other], original, original)).toThrow('changed on the server');
     });
     it('rejects duplicate rule identities including case-only differences', () => {
@@ -105,16 +117,13 @@ describe('Named policy editor', () => {
   });
   it.each(['Sales Berlin', 'München & Zürich', 'Ops+IT@HQ', '部門', 'A/B: C', 'Scope "quoted"'])(
     'does not invent a character whitelist for %s', value => {
-      expect(validatePolicyTags(value, value)).toBe('');
+      expect(validatePolicyTags(value)).toBe('');
     },
   );
-  it('validates tag limits and fallback on both fields', () => {
-    expect(validatePolicyTags('', '')).not.toBe('');
-    expect(validatePolicyTags('a'.repeat(128), '')).toBe('');
-    expect(validatePolicyTags('a'.repeat(129), '')).not.toBe('');
-    expect(validatePolicyTags('', 'a'.repeat(129))).not.toBe('');
-    expect(validatePolicyTags('A,B', 'Scope')).not.toBe('');
-    expect(validatePolicyTags('', 'A,B')).not.toBe('');
-    expect(validatePolicyTags('Group', 'A,B')).toBe('');
+  it('validates required Group Tag and its project limits', () => {
+    expect(validatePolicyTags('')).not.toBe('');
+    expect(validatePolicyTags('a'.repeat(128))).toBe('');
+    expect(validatePolicyTags('a'.repeat(129))).not.toBe('');
+    expect(validatePolicyTags('A,B')).not.toBe('');
   });
 });

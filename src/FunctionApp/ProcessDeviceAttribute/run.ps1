@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.6
+# Project-Version: 1.4.20261016.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -9,8 +9,8 @@ Completes the Entra configuration of an imported Autopilot device.
 Processes queued Autopilot imports after Intune has created the Entra device.
 It writes the policy's extension attribute values, synchronizes policy-managed
 device groups, and optionally adds the device to an administrative unit.
-Intune Scope Tags are applied immediately if enrolled, otherwise retried by the
-hourly timer. Legacy rules retain the deployment-selected extension attribute.
+Only pre-enrollment actions are supported. Legacy rules retain the
+deployment-selected extension attribute.
 An incomplete
 import throws so the Storage Queue trigger retries it according to host.json.
 Successful updates are idempotent.
@@ -208,6 +208,17 @@ else {
         -Token $secureToken `
         -ErrorAction Stop
 }
+if (-not $isTagChange -and $importedDevice.state.PSObject.Properties['deviceImportStatus'] -and
+    [string] $importedDevice.state.deviceImportStatus -ieq 'complete') {
+    $registrationProperties = @{
+        graphImportCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+    }
+    if ($registeredDevice.PSObject.Properties['groupTag'] -and
+        [string] $registeredDevice.groupTag -ceq $groupTag) {
+        $registrationProperties.autopilotGroupTagUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+    }
+    Set-ImportAuditRecord -ImportId $auditId -Properties $registrationProperties -AccessToken $auditToken
+}
 $entraDeviceId = [guid]::Empty
 if (-not [guid]::TryParse(
         [string] $registeredDevice.azureActiveDirectoryDeviceId,
@@ -244,7 +255,7 @@ if ($isTagChange -or
 # already succeeded; repeating the PATCH after a transient failure is harmless.
 $attributeNames = if ($payload.extensionAttributes -is [Collections.IDictionary]) {
     @($payload.extensionAttributes.Keys)
-} else { @($payload.extensionAttributes.PSObject.Properties.Name) }
+} else { @($payload.extensionAttributes.PSObject.Properties | ForEach-Object Name) }
 if ($attributeNames.Count -gt 0) {
     Invoke-RestMethod `
         -Method Patch `
@@ -256,33 +267,22 @@ if ($attributeNames.Count -gt 0) {
         -ErrorAction Stop | Out-Null
     Set-ImportAuditRecord -ImportId $auditId -Properties @{
         extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+        appliedExtensionAttributesJson = ConvertTo-Json -InputObject $payload.extensionAttributes -Depth 4 -Compress
     } -AccessToken $auditToken
     Write-Information "Updated $($attributeNames -join ', ') on Entra device '$entraDeviceId'."
 }
 else {
+    Set-ImportAuditRecord -ImportId $auditId -Properties @{
+        appliedExtensionAttributesJson = '{}'
+    } -AccessToken $auditToken
     Write-Information "Policy explicitly skips extension attributes on Entra device '$entraDeviceId'."
 }
 
 $managedGroups = @($tagAuthorizationPolicy | ForEach-Object {
     if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
 })
-$priorPending = if ($existingAuditRecord -and $existingAuditRecord.PSObject.Properties['requestReceivedAtUtc'] -and
-    -not [string]::IsNullOrWhiteSpace([string] $registeredDevice.serialNumber)) {
-@(Get-ImportAuditHistory -SerialNumber @([string] $registeredDevice.serialNumber) `
-    -SinceUtc ([datetimeoffset]'2000-01-01T00:00:00Z') -Top 1000 -AccessToken $auditToken | Where-Object {
-        $_.RowKey -ne [string] $auditId -and $_.PSObject.Properties['scopeTagStatus'] -and
-        $_.scopeTagStatus -eq 'pendingEnrollment' -and
-        [datetimeoffset] $_.requestReceivedAtUtc -lt [datetimeoffset] $existingAuditRecord.requestReceivedAtUtc
-    })
-} else { @() }
-foreach ($prior in $priorPending) {
-    Set-ImportAuditRecord -ImportId ([guid] $prior.RowKey) -AccessToken $auditToken -Properties @{ scopeTagStatus = 'superseded' }
-}
 $state = Get-DevicePolicyState -DeviceId $entraDeviceId -AccessToken $auditToken
 $previousGroupIds = @($state.groupIdsJson | ConvertFrom-Json)
-$scopeNames = @(@($tagAuthorizationPolicy | ForEach-Object {
-    if ($_.PSObject.Properties['scopeTag']) { $_.scopeTag }
-}) + @($state.scopeTagNamesJson | ConvertFrom-Json) | Sort-Object -Unique)
 if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 0 -or $previousGroupIds.Count -gt 0) {
     if ($deviceObjectId -eq [guid]::Empty) {
         $entraDevice = Invoke-RestMethod -Method Get `
@@ -292,25 +292,17 @@ if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 
     }
     # Persist the union before Graph writes so retries retain ownership after partial changes.
     Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds @($previousGroupIds + $targetGroups | Sort-Object -Unique) `
-        -ScopeTagNames $scopeNames -AccessToken $auditToken
-    Sync-DevicePolicyGroups -Policy $tagAuthorizationPolicy -TargetGroupIds $targetGroups -PreviousGroupIds $previousGroupIds `
-        -DeviceObjectId $deviceObjectId -AccessToken $secureToken
-    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds $targetGroups -ScopeTagNames $scopeNames -AccessToken $auditToken
+        -AccessToken $auditToken
+    $groupResult = Sync-DevicePolicyGroups -Policy $tagAuthorizationPolicy -TargetGroupIds $targetGroups -PreviousGroupIds $previousGroupIds `
+        -DeviceObjectId $deviceObjectId -AccessToken $secureToken -PassThru
+    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds $targetGroups -AccessToken $auditToken
     Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
         deviceGroupsUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+        targetDeviceGroupIdsJson = ConvertTo-Json -InputObject @($targetGroups) -Compress
+        addedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.AddedGroupIds) -Compress
+        removedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.RemovedGroupIds) -Compress
     }
 }
-if ($policyActions.PSObject.Properties['scopeTag']) {
-    $scopeComplete = Set-DevicePolicyScopeTag -EntraDeviceId $entraDeviceId `
-        -ScopeTag $policyActions.scopeTag -ManagedScopeTagNames $scopeNames -AccessToken $secureToken
-    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
-        entraDeviceId = $entraDeviceId.ToString()
-        scopeTagName = [string] $policyActions.scopeTag
-        managedScopeTagNamesJson = ConvertTo-Json -InputObject @($scopeNames) -Compress
-        scopeTagStatus = if ($scopeComplete) { 'complete' } else { 'pendingEnrollment' }
-    }
-}
-
 if ($deviceObjectId -ne [guid]::Empty) {
     $membershipResult = Sync-EntraDeviceAdministrativeUnits `
         -Policy $tagAuthorizationPolicy `
@@ -321,6 +313,8 @@ if ($deviceObjectId -ne [guid]::Empty) {
         -ImportId $auditId `
         -Properties @{
             administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
+            administrativeUnitName = [string] $administrativeUnitName
+            removedAdministrativeUnitsJson = ConvertTo-Json -InputObject @($membershipResult.RemovedAdministrativeUnits) -Compress
         } `
         -AccessToken $auditToken
     Write-Information "Synchronized policy-managed administrative units for Entra device '$entraDeviceId'."

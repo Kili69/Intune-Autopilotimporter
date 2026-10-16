@@ -5,7 +5,6 @@ export interface TagPolicyRule {
   groupId: string;
   tags: string[];
   groupTag?: string;
-  scopeTag?: string;
   extensionAttributes?: Record<string, string>;
   deviceGroupIds?: string[];
   administrativeUnitName?: string;
@@ -15,7 +14,6 @@ export interface PolicyFields {
   name: string;
   groupId: string;
   groupTag: string;
-  scopeTag: string;
   attributes: string | Record<string, string>;
   groups: string;
   administrativeUnitName: string;
@@ -23,11 +21,17 @@ export interface PolicyFields {
 
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function validatePolicyTags(group: string, scope: string): string {
-  const groupTag = group.trim() || scope.trim();
-  const scopeTag = scope.trim() || group.trim();
-  if (!groupTag) return 'Specify a Group Tag or Scope Tag.';
-  if (groupTag.length > 128 || scopeTag.length > 128) return 'Project limit: Group Tag and Scope Tag must not exceed 128 characters.';
+export function getPolicyTagLabel(tag: string, policies: Array<Pick<TagPolicyRule, 'name' | 'tags'>> = []): string {
+  const names = policies.filter(rule => rule.tags.includes(tag))
+    .map(rule => rule.name?.trim())
+    .filter((name): name is string => !!name && !guid.test(name.replace(/^Policy /i, '')));
+  return [...new Set(names)].join(' / ') || tag;
+}
+
+export function validatePolicyTags(group: string): string {
+  const groupTag = group.trim();
+  if (!groupTag) return 'Specify a Group Tag.';
+  if (groupTag.length > 128) return 'Project limit: Group Tag must not exceed 128 characters.';
   if (groupTag.includes(',')) return 'Group Tag must not contain a comma (policy format).';
   return '';
 }
@@ -41,20 +45,19 @@ export function validateExtensionAttributeValue(value: string): string {
 export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule): TagPolicyRule {
   const name = fields.name.trim();
   const groupId = fields.groupId.trim();
-  const groupTag = fields.groupTag.trim() || fields.scopeTag.trim();
-  const scopeTag = fields.scopeTag.trim() || fields.groupTag.trim();
+  const groupTag = fields.groupTag.trim();
   if (!name || name.length > 128) throw new Error('Policy name: 1..128 characters.');
   if (!guid.test(groupId) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(groupId)) {
     throw new Error('User group ID must be a non-empty GUID.');
   }
   // Legacy multi-tag rules need an explicit single-tag conversion before adding actions.
-  if (legacy && !legacy.groupTag && !legacy.scopeTag && !fields.scopeTag.trim() &&
+  if (legacy && !legacy.groupTag &&
       fields.groupTag.trim() === legacy.tags.join(', ') &&
       typeof fields.attributes === 'string' && !fields.attributes.trim() &&
       !fields.groups.trim()) {
-    return { ...legacy, name, groupId, administrativeUnitName: fields.administrativeUnitName.trim() };
+    return { name, groupId, tags: [...legacy.tags], administrativeUnitName: fields.administrativeUnitName.trim() };
   }
-  const tagError = validatePolicyTags(fields.groupTag, fields.scopeTag);
+  const tagError = validatePolicyTags(fields.groupTag);
   if (tagError) throw new Error(tagError);
   const extensionAttributes: Record<string, string> = {};
   const attributeEntries: Array<[string, string]> = typeof fields.attributes === 'string'
@@ -79,7 +82,7 @@ export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule):
     throw new Error('Device target groups must be non-empty GUIDs.');
   }
   const rule: TagPolicyRule = {
-    name, groupId, groupTag, scopeTag, tags: [groupTag], deviceGroupIds,
+    name, groupId, groupTag, tags: [groupTag], deviceGroupIds,
     administrativeUnitName: fields.administrativeUnitName.trim(),
   };
   rule.extensionAttributes = extensionAttributes;
@@ -122,24 +125,19 @@ export function mountPolicyEditor(
   onSaved: () => Promise<void>,
   searchGroups: SearchGroups,
   searchAdministrativeUnits: SearchGroups,
-): void {
+): { reload: () => Promise<void> } {
   const de = language === 'de';
   const text = {
     title: de ? 'TagPolicies verwalten' : 'Manage tag policies',
-    load: de ? 'Policies laden' : 'Load policies',
+    load: de ? 'Policies neu laden' : 'Reload policies',
     add: de ? 'Regel hinzufuegen' : 'Add rule',
     save: de ? 'Regel speichern' : 'Save rule',
     remove: de ? 'Regel entfernen' : 'Remove rule',
     confirm: de ? 'Sind Sie sicher, dass Sie diese Regel entfernen moechten?' : 'Are you sure you want to remove this rule?',
     saved: de ? 'Regel gespeichert.' : 'Rule saved.',
-    help: de
-      ? 'Nur Policy-Manager. Regeln zum Bearbeiten aufklappen. Mindestens ein Tag ist erforderlich; der fehlende Name wird vom anderen Tag uebernommen. Zielgruppen werden policy-gesteuert synchronisiert. Scope Tags folgen nach Enrollment (stuendliche Pruefung).'
-      : 'Policy managers only. Expand rules to edit. Supply at least one tag; the other defaults to the same name. Target groups are policy-synchronized. Scope Tags follow enrollment (hourly check).',
   };
   const heading = document.createElement('h2');
   heading.textContent = text.title;
-  const help = document.createElement('p');
-  help.textContent = text.help;
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
   const list = document.createElement('div');
@@ -153,6 +151,7 @@ export function mountPolicyEditor(
   add.disabled = true;
   let rows: Array<{ element: HTMLDetailsElement; dirty: () => boolean }> = [];
   let busy = false;
+  let loaded = false;
   function addRule(rule?: TagPolicyRule): HTMLDetailsElement {
     let original = rule;
     const details = document.createElement('details');
@@ -166,7 +165,6 @@ export function mountPolicyEditor(
       name: rule?.name ?? (rule ? `Policy ${rule.groupId}` : ''),
       groupId: rule?.groupId ?? '',
       groupTag: rule?.groupTag ?? rule?.tags.join(', ') ?? '',
-      scopeTag: rule?.scopeTag ?? '',
       attributes: rule?.extensionAttributes ?? {},
       groups: rule?.deviceGroupIds?.join('\n') ?? '',
       administrativeUnitName: rule?.administrativeUnitName ?? '',
@@ -175,7 +173,6 @@ export function mountPolicyEditor(
       name: de ? 'Policy-Name' : 'Policy name',
       groupId: de ? 'Berechtigte Benutzergruppe (Objekt-ID)' : 'Authorized user group (object ID)',
       groupTag: 'Autopilot Group Tag',
-      scopeTag: 'Intune Scope Tag',
       attributes: 'Extension Attributes',
       groups: de ? 'Entra-Geraetezielgruppen' : 'Entra device target groups',
       administrativeUnitName: 'Administrative Unit',
@@ -313,24 +310,18 @@ export function mountPolicyEditor(
     }
     const tagFeedback = document.createElement('p');
     tagFeedback.setAttribute('role', 'status');
-    const tagHelp = document.createElement('p');
-    tagHelp.textContent = de
-      ? 'Mindestens ein Tag; Projektgrenze: 128 Zeichen, kein Komma im Group Tag. Keine zusaetzliche Zeichen-Whitelist; weitere Einschraenkungen prueft Intune.'
-      : 'At least one tag; project limit: 128 characters, no comma in Group Tag. No additional character whitelist; Intune validates further restrictions.';
     function checkTags(): boolean {
       const group = inputs.get('groupTag')!;
-      const scope = inputs.get('scopeTag')!;
-      const legacyUnchanged = original && !original.groupTag && !original.scopeTag && group.value === original.tags.join(', ') && !scope.value;
-      const error = legacyUnchanged ? '' : validatePolicyTags(group.value, scope.value);
+      const legacyUnchanged = original && !original.groupTag && group.value === original.tags.join(', ');
+      const error = legacyUnchanged ? '' : validatePolicyTags(group.value);
       group.setCustomValidity(error);
-      scope.setCustomValidity(error);
       tagFeedback.textContent = error;
       return !error;
     }
-    for (const key of ['groupTag', 'scopeTag'] as const) {
+    for (const key of ['groupTag'] as const) {
       inputs.get(key)!.addEventListener('input', checkTags);
     }
-    inputs.get('scopeTag')!.parentElement!.after(tagHelp, tagFeedback);
+    inputs.get('groupTag')!.parentElement!.after(tagFeedback);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'button button-quiet';
@@ -372,11 +363,10 @@ export function mountPolicyEditor(
           if (!saved) throw new Error('Saved rule missing from server response. Reload policies.');
           original = saved;
           inputs.get('groupTag')!.value = saved.groupTag ?? saved.tags.join(', ');
-          inputs.get('scopeTag')!.value = saved.scopeTag ?? '';
           checkTags();
           baseline = stableJson(readFields());
           save.hidden = true;
-          rowStatus.textContent = text.saved;
+          window.alert(text.saved);
         } else {
           rows = rows.filter(value => value !== row);
           details.remove();
@@ -411,26 +401,35 @@ export function mountPolicyEditor(
     changed();
     return details;
   }
-  load.addEventListener('click', async () => {
+  async function reload(): Promise<void> {
+    if (busy) return;
     if (rows.some(row => row.dirty()) && !window.confirm(de ? 'Ungespeicherte Aenderungen verwerfen?' : 'Discard unsaved changes?')) return;
-    load.disabled = true;
+    busy = true;
+    load.disabled = add.disabled = true;
+    list.inert = true;
+    status.textContent = de ? 'Aktuelle Policies werden geladen ...' : 'Loading current policies ...';
     try {
       const response = await request<{ policy: TagPolicyRule[] }>();
       rows = [];
       list.replaceChildren();
       response.policy.forEach(addRule);
-      add.disabled = false;
+      loaded = true;
       status.textContent = '';
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : String(error);
     } finally {
+      busy = false;
       load.disabled = false;
+      add.disabled = !loaded;
+      list.inert = false;
     }
-  });
+  }
+  load.addEventListener('click', () => { void reload(); });
   add.addEventListener('click', () => {
     const details = addRule();
     details.scrollIntoView({ behavior: 'smooth', block: 'start' });
     details.querySelector('input')?.focus({ preventScroll: true });
   });
-  container.append(heading, help, load, add, status, list);
+  container.append(heading, load, add, status, list);
+  return { reload };
 }
