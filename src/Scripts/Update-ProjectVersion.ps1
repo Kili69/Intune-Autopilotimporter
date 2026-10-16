@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.1
+# Project-Version: 1.3.20261016.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -12,7 +12,7 @@ Increments and synchronizes the project version.
 
 .DESCRIPTION
 Reads the current version from VERSION, creates a version in the format
-1.3.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
+major.minor.yyyyMMdd.counter, and updates the Project-Version marker in every PowerShell
 script, module, and data file in the repository.
 
 The counter increases by IncrementBy when the existing version date matches
@@ -24,6 +24,13 @@ Number to add to the current day's counter. The default is 1.
 
 .PARAMETER Date
 UTC date used in the version. The default is the current UTC date.
+
+.PARAMETER Major
+Target major version. Defaults to the current major version.
+
+.PARAMETER Minor
+Target minor version. Defaults to the current minor version.
+When increasing Major, specify Minor explicitly, for example -Major 2 -Minor 0.
 
 .EXAMPLE
 .\src\Scripts\Update-ProjectVersion.ps1
@@ -44,7 +51,13 @@ param(
     [ValidateRange(1, 1000000)]
     [int] $IncrementBy = 1,
 
-    [datetime] $Date = [datetime]::UtcNow
+    [datetime] $Date = [datetime]::UtcNow,
+
+    [ValidateRange(0, 65535)]
+    [int] $Major,
+
+    [ValidateRange(0, 65535)]
+    [int] $Minor
 )
 
 Set-StrictMode -Version Latest
@@ -53,8 +66,6 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $versionPath = Join-Path $projectRoot 'VERSION'
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
-$targetMajor = 1
-$targetMinor = 3
 # The version appears in three different notations. Each pattern is anchored to
 # the start of a line so that documentation or examples are never rewritten.
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
@@ -66,14 +77,28 @@ $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($currentVersion -notmatch $versionPattern) {
     throw "VERSION contains '$currentVersion', which does not match major.minor.yyyyMMdd.counter."
 }
+$currentMajor = [int] $Matches.major
+$currentMinor = [int] $Matches.minor
+$currentDate = $Matches.date
+$currentCounter = [int] $Matches.counter
+$targetMajor = if ($PSBoundParameters.ContainsKey('Major')) { $Major } else { $currentMajor }
+$targetMinor = if ($PSBoundParameters.ContainsKey('Minor')) { $Minor } else { $currentMinor }
+if ($targetMajor -lt $currentMajor -or
+    ($targetMajor -eq $currentMajor -and $targetMinor -lt $currentMinor)) {
+    throw 'The major/minor version must not decrease.'
+}
 
 # Continue the counter only within the same major, minor, and date. Any other
 # change starts a new day, so the counter restarts at IncrementBy.
 $versionDate = $Date.ToUniversalTime().ToString('yyyyMMdd')
-$counter = if ([int] $Matches.major -eq $targetMajor -and
-    [int] $Matches.minor -eq $targetMinor -and
-    $Matches.date -eq $versionDate) {
-    [int] $Matches.counter + $IncrementBy
+if ($targetMajor -eq $currentMajor -and $targetMinor -eq $currentMinor -and
+    $versionDate -lt $currentDate) {
+    throw 'The version date must not move backwards within a release line.'
+}
+$counter = if ($currentMajor -eq $targetMajor -and
+    $currentMinor -eq $targetMinor -and
+    $currentDate -eq $versionDate) {
+    $currentCounter + $IncrementBy
 }
 else {
     $IncrementBy

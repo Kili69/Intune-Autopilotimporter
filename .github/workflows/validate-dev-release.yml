@@ -1,0 +1,30 @@
+name: Validate dev release version
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Dev release version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate dev version against main
+        shell: pwsh
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if ('${{ github.ref_name }}' -ne 'dev') { throw 'Run this workflow on dev.' }
+          ./src/Scripts/Test-BranchPromotion.ps1 `
+            -SourceBranch dev -TargetBranch main `
+            -SourceRepository $env:REPOSITORY -TargetRepository $env:REPOSITORY `
+            -BaseCommit origin/main -HeadCommit HEAD -DevCommit HEAD -ResultCommit HEAD
