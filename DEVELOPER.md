@@ -100,6 +100,12 @@ condensed public summary under the matching version and date. Every regular
 commit must update `CHANGELOG.md`, `History.md`, and `VERSION`; only automation
 commits marked with `[skip ci]` are exempt.
 
+The updater preserves the current major/minor by default. Explicitly start a
+future release with `-Minor 4` (for 1.4) or `-Major 2 -Minor 0` (for 2.0).
+Release-line downgrades and backwards dates within a release line are rejected.
+On `dev`, only date/counter changes are allowed until a PR from `nextversion`
+promotes the future release line.
+
 After a change is committed, verify that the changelog, version, and history
 are consistent:
 
@@ -1261,10 +1267,40 @@ All changes to `main` must be promoted through a pull request from the `dev`
 branch in this repository. Direct pushes, force pushes, branch deletion, and
 pull requests from other branches or forks are blocked.
 
-The `Enforce dev promotion` workflow validates the pull-request source. The
-`main` branch ruleset requires this check and requires a pull request before any
-update can be merged. Develop and validate changes on `dev`, then open a pull
-request from `dev` to `main`.
+The `Enforce dev promotion` workflow validates PR routes and the prospective
+merged `VERSION`, using trusted base-branch code without executing PR source.
+`main` requires `Require dev as source branch` and `Dev release version`: the
+latter runs on every `dev` push and requires a full version higher than `main`.
+Prepare that version in `dev` before promotion; never push a version bump
+directly to `main`.
+
+`dev` requires a PR and `Branch and version policy`. Feature/fix PRs must keep
+its major/minor. Only a same-repository PR from `nextversion` may increase that
+release line, and it must include the latest `dev` commit. Use merge commits
+for these long-lived branches so subsequent syncs retain their ancestry.
+
+`nextversion` starts from `dev` at least one minor (or a major) ahead. It may
+only be promoted to `dev`, never directly to `main`. Its required PR check
+rejects a dev sync that changes its major/minor. After promoting to `dev`,
+explicitly advance `nextversion` for the next cycle through a PR before further
+syncs; the automation never silently chooses a new release line.
+
+The `Sync dev to nextversion` workflow creates/updates the separate
+`sync/dev-to-nextversion` branch and opens a PR to `nextversion`. This branch
+contains dev ancestry, adopts nextversion's release line and advances only
+date/counter. It rebuilds the versioned frontend. It never modifies `dev` or
+force-pushes over conflict resolutions. Subsequent conflicting dev merges fail
+explicitly: resolve them on the sync branch and rerun the workflow. Conflicts
+between the sync branch and nextversion must also be resolved on the sync
+branch, preserving nextversion's major/minor and consolidating same-day history.
+
+Enable **Allow GitHub Actions to create and approve pull requests** in the
+repository's Actions settings. PRs created using `GITHUB_TOKEN` do not trigger
+other workflows: a maintainer must close/reopen the generated PR (or push a
+conflict resolution) to start its required checks. Never bypass the checks.
+Generated sync commits use `[skip ci]`; regular human commits retain the
+normal version/changelog/history requirements. Main is never merged or released
+automatically.
 
 ## 18. Operations and Security
 

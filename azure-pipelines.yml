@@ -67,7 +67,7 @@ stages:
                   Install-Module Pester -Scope CurrentUser -RequiredVersion 5.7.1 -Force -SkipPublisherCheck
                 }
                 Import-Module Pester -RequiredVersion 5.7.1 -Force
-                Invoke-Pester ./src/Tests/AutopilotImport.Tests.ps1 -CI
+                Invoke-Pester ./src/Tests -CI
           - task: PowerShell@2
             displayName: Build deployment package
             env:
