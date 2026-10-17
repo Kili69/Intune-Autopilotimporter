@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -46,6 +46,8 @@ param($Request, $TriggerMetadata, $TagPolicyBlob)
 $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $modulePath -Force
 
+# Keep the original arrival time for the asynchronous audit timeline and use
+# one correlation ID across this request's responses, logs and queued work.
 $requestReceivedAtUtc = [datetime]::UtcNow.ToString('o')
 $correlationId = [guid]::NewGuid().ToString()
 $responseHeaders = @{
@@ -62,6 +64,8 @@ function Send-JsonResponse {
         [object] $Body
     )
 
+    # The Functions host sends this binding as the HTTP response. The caller
+    # must return separately when no further processing should take place.
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
         StatusCode = $StatusCode
         Headers    = $responseHeaders
@@ -69,6 +73,8 @@ function Send-JsonResponse {
     })
 }
 
+# Prefer the centrally managed blob policy; the application setting supports
+# deployments that have not yet migrated their policy into Blob Storage.
 $tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
 
 if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
@@ -84,12 +90,15 @@ if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
 }
 
 try {
+    # Retain array semantics even when JSON contains only one policy rule.
     $tagAuthorizationPolicy = @($tagAuthorizationPolicyJson | ConvertFrom-Json)
     if ($tagAuthorizationPolicy.Count -eq 0) {
         throw 'Tag authorization policy is empty.'
     }
 }
 catch {
+    # This handler also retries the legacy setting after invalid/empty policy
+    # JSON, not just when binding content is absent. Neither source may be empty.
     try {
         $tagAuthorizationPolicy = @($env:TAG_AUTHORIZATION_POLICY | ConvertFrom-Json)
         if ($tagAuthorizationPolicy.Count -eq 0) {
@@ -106,6 +115,8 @@ catch {
     }
 }
 
+# Easy Auth validates the user token upstream and injects this trusted header.
+# The worker decodes the principal; this is not a replacement for Easy Auth.
 $principalHeader = $Request.Headers['x-ms-client-principal']
 if ([string]::IsNullOrWhiteSpace($principalHeader)) {
     Send-JsonResponse -StatusCode Unauthorized -Body @{
@@ -126,6 +137,8 @@ catch {
     return
 }
 
+# GET polls an existing import; it must never fall through to POST creation.
+# A valid ID identifies the imported Graph record, not an entire import batch.
 if ([string] $Request.Method -eq 'GET') {
     $importId = [string] $Request.Query.importId
     $parsedImportId = [guid]::Empty
@@ -138,6 +151,8 @@ if ([string] $Request.Method -eq 'GET') {
     }
 
     try {
+        # Graph requests run as the Function identity. Normalize Az.Accounts
+        # token types to the SecureString expected by the Graph calls/helpers.
         $tokenResult = Get-AzAccessToken `
             -ResourceUrl 'https://graph.microsoft.com/' `
             -ErrorAction Stop
@@ -147,6 +162,8 @@ if ([string] $Request.Method -eq 'GET') {
         else {
             ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
         }
+        # Recheck current policy-group memberships instead of trusting group
+        # claims that may be stale since the caller's token was issued.
         $principal = Get-CurrentPolicyPrincipal `
             -Principal $principal `
             -Policy $tagAuthorizationPolicy `
@@ -157,11 +174,15 @@ if ([string] $Request.Method -eq 'GET') {
             -Authentication Bearer `
             -Token $graphToken `
             -ErrorAction Stop
+        # Knowing an import ID is not sufficient: the caller must currently
+        # be allowed to use the Group Tag on the retrieved Graph record.
         $authorizedGroupTag = Resolve-AuthorizedGroupTag `
             -Principal $principal `
             -Policy $tagAuthorizationPolicy `
             -RequestedGroupTag ([string] $graphResponse.groupTag)
 
+        # Intune import completion and downstream Entra updates are separate
+        # stages; a completed Graph import does not finish the whole workflow.
         $intuneStatus = ([string] $graphResponse.state.deviceImportStatus).ToLowerInvariant()
         $extensionAttribute = if ([string]::IsNullOrWhiteSpace(
                 $env:DEVICE_TAG_EXTENSION_ATTRIBUTE)) {
@@ -178,9 +199,19 @@ if ([string] $Request.Method -eq 'GET') {
         }
         $extensionAttributeValue = $null
         $entraDeviceId = $null
+        # Legacy policies map the tag to one configured extension attribute.
+        # Explicit policy actions can replace that expectation with several
+        # attribute/value pairs, all of which must match on the Entra device.
+        $actions = Get-DevicePolicyActions -Policy $tagAuthorizationPolicy -GroupTag $authorizedGroupTag
+        $expectedAttributes = [ordered]@{ $extensionAttribute = $authorizedGroupTag }
+        if ($actions.PSObject.Properties['extensionAttributes']) {
+            $expectedAttributes = $actions.extensionAttributes | ConvertTo-Json -Depth 4 | ConvertFrom-Json -AsHashtable
+        }
 
         if ($intuneStatus -eq 'complete') {
             try {
+                # Follow imported identity -> registered Autopilot identity ->
+                # Entra device. These objects may appear at different times.
                 $registrationId = Get-AutoPilotDeviceRegistrationId `
                     -ImportedDevice $graphResponse
                 $registeredDevice = Invoke-RestMethod `
@@ -196,28 +227,53 @@ if ([string] $Request.Method -eq 'GET') {
                     throw 'The Entra device is not available yet.'
                 }
                 $entraDeviceId = $parsedEntraDeviceId.ToString()
+                # deviceId is the Entra device's alternate key, not its
+                # directory object ID; query it explicitly with devices(...).
                 $entraDevice = Invoke-RestMethod `
                     -Method Get `
                     -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=deviceId,extensionAttributes" `
                     -Authentication Bearer `
                     -Token $graphToken `
                     -ErrorAction Stop
-                $extensionProperty = $entraDevice.extensionAttributes.PSObject.Properties[
-                    $extensionAttribute
-                ]
+                $deviceAttributes = $entraDevice.extensionAttributes
+                $extensionProperty = if ($null -ne $deviceAttributes) {
+                    $deviceAttributes.PSObject.Properties[$extensionAttribute]
+                } else { $null }
                 if ($extensionProperty) {
                     $extensionAttributeValue = [string] $extensionProperty.Value
                 }
-                if ($extensionAttributeValue -ceq $authorizedGroupTag) {
+                # Missing attributes or case-sensitive value differences keep
+                # the workflow pending until every expected value is present.
+                $attributesMatch = $true
+                foreach ($key in $expectedAttributes.Keys) {
+                    $actual = if ($null -ne $deviceAttributes) { $deviceAttributes.PSObject.Properties[$key] } else { $null }
+                    if (-not $actual -or [string] $actual.Value -cne [string] $expectedAttributes[$key]) {
+                        $attributesMatch = $false
+                    }
+                }
+                if ($attributesMatch) {
                     $extensionAttributeStatus = 'complete'
                 }
             }
             catch {
+                # Entra resolution/read failures do not invalidate the Intune
+                # status. Leave attributes pending and allow subsequent polls.
                 Write-Information "[$correlationId] Extension attribute status is still pending for import '$parsedImportId': $($_.Exception.Message)"
+            }
+        }
+        if ($actions.PSObject.Properties['groupTag']) {
+            # Policies with a Group Tag action additionally require the queue
+            # worker's completion marker; matching attributes alone do not
+            # prove that downstream policy processing has finished.
+            $audit = (Get-ImportAuditRecords -ImportId $parsedImportId -AccessToken (Get-ImportAuditAccessToken))[[string] $parsedImportId]
+            if (-not $audit -or -not $audit.PSObject.Properties['processingCompletedAtUtc'] -or -not $audit.processingCompletedAtUtc) {
+                $extensionAttributeStatus = 'pending'
             }
         }
     }
     catch [System.UnauthorizedAccessException] {
+        # Distinguish a definitive authorization denial from an unavailable
+        # Graph/Storage lookup, which follows the generic 502 error path.
         Send-JsonResponse -StatusCode Forbidden -Body @{
             error         = 'importStatusNotAllowed'
             correlationId = $correlationId
@@ -233,6 +289,8 @@ if ([string] $Request.Method -eq 'GET') {
         return
     }
 
+    # A Graph import error takes precedence. Otherwise report complete only
+    # when both Intune and the downstream attribute check are complete.
     $workflowStatus = if ($intuneStatus -eq 'error') {
         'error'
     }
@@ -254,12 +312,15 @@ if ([string] $Request.Method -eq 'GET') {
         extensionAttributeName  = $extensionAttribute
         extensionAttributeStatus = $extensionAttributeStatus
         extensionAttributeValue = $extensionAttributeValue
+        expectedExtensionAttributes = $expectedAttributes
         entraDeviceId           = $entraDeviceId
         correlationId           = $correlationId
     }
     return
 }
 
+# POST creation starts here after the GET branch has returned. Refresh the
+# caller's memberships before using the requested tag to authorize any write.
 try {
     $tokenResult = Get-AzAccessToken `
         -ResourceUrl 'https://graph.microsoft.com/' `
@@ -285,6 +346,7 @@ catch {
 }
 
 try {
+    # The worker may provide either raw JSON or an already decoded body.
     $requestBody = if ($Request.Body -is [string]) {
         $Request.Body | ConvertFrom-Json
     }
@@ -292,6 +354,8 @@ try {
         $Request.Body
     }
 
+    # Resolve the permitted tag with its configured casing, then derive the
+    # administrative-unit target from policy rather than trusting client input.
     $groupTag = Resolve-AuthorizedGroupTag `
         -Principal $principal `
         -Policy $tagAuthorizationPolicy `
@@ -319,6 +383,8 @@ catch {
 }
 
 try {
+    # Delegate payload validation and Graph field mapping to the shared helper.
+    # Use the authorized tag, not the unchecked value from the request body.
     $graphPayload = ConvertTo-AutoPilotImportPayload `
         -RequestBody $requestBody `
         -GroupTag $groupTag
@@ -332,6 +398,8 @@ catch {
     return
 }
 
+# Capture caller identity for audit attribution. The Function identity performs
+# the Graph write, so Graph authentication alone would not identify this user.
 $actorId = @($principal.claims | Where-Object {
     $_.typ -in @('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier')
 } | Select-Object -First 1).val
@@ -350,6 +418,8 @@ $actorDisplayName = @($principal.claims | Where-Object {
 } | Select-Object -First 1).val
 
 try {
+    # Creating the imported identity starts Intune's asynchronous import.
+    # A successful Graph POST does not yet mean the device is fully processed.
     $graphResponse = Invoke-RestMethod `
         -Method Post `
         -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities' `
@@ -368,6 +438,8 @@ catch {
     return
 }
 
+# Carry the initial audit snapshot into queued processing so later steps can
+# retain request identity and timing even if the first Storage write fails.
 $graphImportCreatedAtUtc = [datetime]::UtcNow.ToString('o')
 $queuedAtUtc = [datetime]::UtcNow.ToString('o')
 $auditProperties = [ordered]@{
@@ -382,21 +454,29 @@ $auditProperties = [ordered]@{
     serialNumber              = [string] $graphPayload.serialNumber
     groupTag                  = [string] $groupTag
     administrativeUnitName    = [string] $administrativeUnitName
+    # Keep the hardware hash in the internal audit snapshot; the SHA-256 index
+    # supports history lookups without sending that raw hash as a filter.
     deviceHash                = [string] $graphPayload.hardwareIdentifier
     deviceHashSha256          = Get-DeviceHashSha256 `
         -DeviceHash ([string] $graphPayload.hardwareIdentifier)
 }
 try {
+    # The individual Graph record ID is the audit key; its importId property
+    # above is the separate batch identifier.
     Set-ImportAuditRecord `
         -ImportId ([guid] $graphResponse.id) `
         -Properties $auditProperties `
         -AccessToken (Get-ImportAuditAccessToken)
 }
 catch {
+    # Graph has already accepted the import. Preserve the queued retry path
+    # instead of reporting this initial audit-write failure as an import failure.
     Write-Warning "[$correlationId] Initial audit record for import '$($graphResponse.id)' could not be written and will be retried by queued processing: $($_.Exception.Message)"
 }
 
 Write-Information "[$correlationId] Autopilot import '$($graphResponse.id)' created for serial '$($graphPayload.serialNumber)' by '$actorId'."
+# Hand off to ProcessDeviceAttribute through the queue output binding. The
+# message includes the audit snapshot needed to resume downstream processing.
 Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
     importId = [string] $graphResponse.id
     groupTag = $groupTag
@@ -404,6 +484,8 @@ Push-OutputBinding -Name DeviceAttributeUpdate -Value (@{
         $administrativeUnitName
     audit = $auditProperties
 } | ConvertTo-Json -Compress)
+# HTTP 202 acknowledges accepted work, not completion. The caller can poll
+# this endpoint with GET and the returned importId to follow workflow status.
 Send-JsonResponse -StatusCode Accepted -Body @{
     importId      = $graphResponse.id
     serialNumber  = $graphResponse.serialNumber

@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -67,8 +67,8 @@ $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 #   and adds the imported device as a member.
 # - DeviceManagementServiceConfig.ReadWrite.All imports the Autopilot device
 #   identity into Intune.
-# - DeviceManagementRBAC.Read.All checks Intune role membership before a Group
-#   Tag change is accepted.
+# - DeviceManagementRBAC.Read.All checks Intune role assignments.
+# - GroupMember.ReadWrite.All synchronizes static security-group memberships.
 # - Device.ReadWrite.All writes the authorized Group Tag to the configured
 #   Entra device extension attribute.
 # - GroupMember.Read.All and User.ReadBasic.All evaluate the calling user's
@@ -77,6 +77,7 @@ $permissionNames = @(
     'AdministrativeUnit.ReadWrite.All'
     'DeviceManagementServiceConfig.ReadWrite.All'
     'DeviceManagementRBAC.Read.All'
+    'GroupMember.ReadWrite.All'
     'Device.ReadWrite.All'
     'GroupMember.Read.All'
     'User.ReadBasic.All'

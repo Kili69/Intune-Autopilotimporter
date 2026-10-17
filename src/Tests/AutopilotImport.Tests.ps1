@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -26,6 +26,37 @@ $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $modulePath = Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
 Remove-Module AutopilotImport -Force -ErrorAction SilentlyContinue
 Import-Module $modulePath -Force
+
+Describe 'Client module documentation' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $clientAst = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot '..\AutopilotImport.Client\AutopilotImport.Client.psm1'),
+            [ref] $tokens, [ref] $parseErrors)
+        $clientFunctions = $clientAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst]
+        }, $true)
+    }
+    It 'parses without errors' {
+        $parseErrors.Count | Should -Be 0
+    }
+    It 'documents the purpose, behavior, outputs and every parameter of all client functions' {
+        $clientFunctions.Count | Should -Be 32
+        foreach ($function in $clientFunctions) {
+            $help = $function.GetHelpContent()
+            $help.Synopsis | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Description | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Outputs | Should -Not -BeNullOrEmpty -Because $function.Name
+            foreach ($parameter in $function.Body.ParamBlock.Parameters) {
+                $name = $parameter.Name.VariablePath.UserPath
+                $help.Parameters[$name.ToUpperInvariant()] |
+                    Should -Not -BeNullOrEmpty -Because "$($function.Name) parameter $name"
+            }
+        }
+    }
+}
 
 Describe 'Client API error messages' {
     BeforeAll {
@@ -676,6 +707,7 @@ Describe 'Client configuration display' {
             'Get-AutoPilotImportHistory'
             'Get-AutoPilotImportStatus'
             'Get-AutoPilotTagPolicy'
+            'Get-AutoPilotTagPolicyHistory'
             'Get-AutoPilotTagPolicyManager'
             'Import-AutoPilotDevice'
             'New-AutoPilotImporterClientConfiguration'
@@ -897,11 +929,13 @@ Describe 'Client manager policy App Settings' {
             Select-Object -First 1
     }
 
-    It 'passes manager policy JSON to Az.Websites as a string value' {
+    It 'routes manager changes through the audited backend instead of direct settings writes' {
         $managerFunctionAst.Extent.Text | Should -Match `
-            '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
+            'Invoke-RestMethod -Method Put'
         $managerFunctionAst.Extent.Text | Should -Not -Match `
-            '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
+            'Set-AzWebApp -ResourceGroupName'
+        $managerFunctionAst.Extent.Text | Should -Match 'x-autopilot-arm-token'
+        $managerFunctionAst.Extent.Text | Should -Match 'expectedPolicy = \$appSettings.MANAGER_AUTHORIZATION_POLICY'
     }
 
     It 'discovers Azure details missing after URL bootstrap' {
@@ -930,6 +964,7 @@ Describe 'Client manager policy App Settings' {
                 Id = '/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg-autopilot-import/providers/Microsoft.Web/sites/func-autopilot-import'
                 SiteConfig = [pscustomobject]@{
                     AppSettings = @(
+                        [pscustomobject]@{ Name = 'API_AUDIENCE'; Value = 'api://test-api' }
                         [pscustomobject]@{
                             Name = 'MANAGER_AUTHORIZATION_POLICY'
                             Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":[],"allowIntuneRoleAdministrators":true}'
@@ -957,7 +992,9 @@ Describe 'Client manager policy App Settings' {
         }
         Mock Test-TagManagerPolicyAdministratorRole `
             -ModuleName AutopilotImport.Client { $true }
-        Mock Set-AzWebApp -ModuleName AutopilotImport.Client
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            @{ policy = @{ additionalPrincipalIds = @('11111111-1111-1111-1111-111111111111') } }
+        }
 
         $result = Update-AutoPilotTagPolicyManager `
             -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
@@ -965,6 +1002,9 @@ Describe 'Client manager policy App Settings' {
             -Confirm:$false
 
         $result.FunctionAppName | Should -Be 'func-autopilot-import'
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 1 -ParameterFilter {
+            $Method -eq 'Put' -and $Uri -eq 'https://func-autopilot-import.azurewebsites.net/api/management/policy-managers'
+        }
         Should -Invoke Resolve-ClientFunctionAppFromUrl `
             -ModuleName AutopilotImport.Client `
             -Times 1 `
@@ -1193,6 +1233,14 @@ Describe 'Client import history' {
                         requestedByDisplayName = 'Ada Lovelace'
                         requestReceivedAtUtc = '2026-09-18T10:00:00.0000000Z'
                         graphImportCreatedAtUtc = '2026-09-18T10:00:01.0000000Z'
+                        graphImportCompletedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        autopilotGroupTagUpdatedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        appliedExtensionAttributes = [pscustomobject]@{ extensionAttribute5 = 'Berlin' }
+                        targetDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        addedDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        removedDeviceGroupIds = @()
+                        administrativeUnitName = 'Berlin Devices'
+                        removedAdministrativeUnits = @('Old AU')
                         queuedAtUtc = '2026-09-18T10:00:02.0000000Z'
                         processingStartedAtUtc = '2026-09-18T10:01:00.0000000Z'
                         entraDeviceResolvedAtUtc = '2026-09-18T10:02:00.0000000Z'
@@ -1229,6 +1277,14 @@ Describe 'Client import history' {
         $result[0].RequestedBy | Should -Be 'ada@example.com'
         $result[0].RequestedByDisplayName | Should -Be 'Ada Lovelace'
         $result[0].RequestReceivedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].GraphImportCompletedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AutopilotGroupTagUpdatedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AppliedExtensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $result[0].TargetDeviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
+        $result[0].AddedDeviceGroupIds | Should -Be $result[0].TargetDeviceGroupIds
+        $result[0].RemovedDeviceGroupIds.Count | Should -Be 0
+        $result[0].AdministrativeUnitName | Should -Be 'Berlin Devices'
+        $result[0].RemovedAdministrativeUnits | Should -Be @('Old AU')
         $result[0].ProcessingCompletedAtUtc.ToString('o') |
             Should -Be '2026-09-18T10:02:03.0000000+00:00'
         $result[1].RequestReceivedAtUtc | Should -BeNullOrEmpty
@@ -1616,6 +1672,7 @@ Describe 'Client Group Tag policy display' {
             'AutopilotImport.TagPolicyRule'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
             Should -Be @(
+                'Name'
                 'GroupId'
                 'GroupName'
                 'Tags'
@@ -3500,7 +3557,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 15
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 16
         Remove-Module AutopilotImport.Client
     }
 }
@@ -3850,6 +3907,50 @@ Describe 'Update script deployment discovery' {
             '(?s)\$tagAuthorizationRules\s*=\s*@\('
     }
 
+    It 'preserves named actions and explicit empty attribute maps through updates' {
+        $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
+            [pscustomobject]@{
+                name = 'Sales'
+                description = "Sales devices`nBerlin"
+                ruleId = '66666666-6666-6666-6666-666666666666'
+                groupId = '11111111-1111-1111-1111-111111111111'
+                tags = @('Sales')
+                groupTag = 'Sales'
+                scopeTag = 'Sales scope'
+                extensionAttributes = [pscustomobject]@{ extensionAttribute5 = 'Berlin' }
+                deviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                administrativeUnitName = 'Berlin Devices'
+            }
+            [pscustomobject]@{
+                name = 'No attributes'
+                groupId = '33333333-3333-3333-3333-333333333333'
+                tags = @('Other')
+                groupTag = 'Other'
+                scopeTag = 'Other'
+                extensionAttributes = [pscustomobject]@{}
+                deviceGroupIds = @()
+            }
+        ))
+        $rules[0].name | Should -Be 'Sales'
+        $rules[0].description | Should -BeExactly "Sales devices`nBerlin"
+        $rules[0].ruleId | Should -Be '66666666-6666-6666-6666-666666666666'
+        $rules[0].groupTag | Should -Be 'Sales'
+        $rules[0].scopeTag | Should -Be 'Sales scope'
+        $rules[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $rules[0].deviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
+        $rules[0].administrativeUnitName | Should -Be 'Berlin Devices'
+        @($rules[1].extensionAttributes.PSObject.Properties).Count | Should -Be 0
+        $normalized = AutopilotImport\ConvertTo-TagAuthorizationPolicy -Rules $rules
+        $normalized.Count | Should -Be 2
+        $normalized[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
+        $normalized[0].groupTag | Should -Be 'Sales'
+        $normalized[0].description | Should -BeExactly "Sales devices`nBerlin"
+        $normalized[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $normalized[0].deviceGroupIds | Should -Be $rules[0].deviceGroupIds
+        $normalized[0].administrativeUnitName | Should -Be 'Berlin Devices'
+        @($normalized[1].extensionAttributes.Keys).Count | Should -Be 0
+    }
+
     It 'requests the raw policy response for deployment preservation' {
         $updateAst.Extent.Text | Should -Match `
             '(?s)Get-AutoPilotTagPolicy\s+.*?-Raw'
@@ -4139,7 +4240,25 @@ Describe 'Update script deployment discovery' {
 
         $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
-            'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+            'Contributor plus User Access Administrator'
+    }
+
+    It 'checks custom role definition permission before updating' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test'
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Message | Should -Match 'Custom role definitions'
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match 'custom role definition writes'
     }
 }
 
@@ -4598,13 +4717,31 @@ Describe 'Azure deployment permission validation' {
         $errorRecord.Exception.Message | Should -Match `
             'Create or update Azure role assignments'
         $errorRecord.Exception.Message | Should -Match `
-            'Contributor and Role Based Access Control Administrator'
+            'Contributor and User Access Administrator'
         $errorRecord.Exception.Message | Should -Match `
             "Checked scope: /subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-test"
         $errorRecord.Exception.Data['MissingActions'] | Should -Be `
-            'Microsoft.Authorization/roleAssignments/write'
+            'Microsoft.Authorization/roleAssignments/write,Microsoft.Authorization/roleDefinitions/write'
         $errorRecord.Exception.Data[ `
             'AutopilotDeploymentPermissionError'] | Should -BeTrue
+    }
+
+    It 'requires permission to define the manager visibility role before deployment' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' -ResourceGroupExists
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Data['MissingActions'] | Should -Be 'Microsoft.Authorization/roleDefinitions/write'
+        $errorRecord.Exception.Message | Should -Match 'manager access reader custom role'
     }
 
     It 'requires permission to create the Log Analytics workspace' {
@@ -5328,7 +5465,7 @@ Describe 'Web frontend response types' {
         $frontendSource | Should -Match `
             'redirectUri:\s*config\.silentRedirectUri'
         $frontendSource | Should -Match `
-            'if \(redirectResult\?\.accessToken\) accessTokenResult = redirectResult'
+            '(?s)if \(redirectResult\?\.accessToken && redirectResult\.scopes\.some\(.*?scope\.toLowerCase\(\) === config\.scope\.toLowerCase\(\).*?accessTokenResult = redirectResult'
         $frontendSource | Should -Match `
             "error\.errorCode === 'monitor_window_timeout'"
         $frontendSource | Should -Match `
@@ -5380,6 +5517,7 @@ Describe 'Web frontend response types' {
             'ManageDeviceTags'  = 'api/devices/tags/assignments'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
+            'ManagePolicyManagers' = 'api/management/policy-managers'
             'WebFrontend'       = 'api/ui/{*path}'
         }
 
@@ -5933,6 +6071,8 @@ Describe 'Deployment package' {
                     'ManageDeviceTags/run.ps1'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
+                    'ManagePolicyManagers/function.json'
+                    'ManagePolicyManagers/run.ps1'
                     'RemoveExpiredImportHistory/function.json'
                     'RemoveExpiredImportHistory/run.ps1'
                     'proxies.json'
@@ -5946,6 +6086,15 @@ Describe 'Deployment package' {
             $entries | Where-Object {
                 $_ -match '/WebFrontend/wwwroot/assets/.+\.(css|js)$'
             } | Should -Not -BeNullOrEmpty
+            $runtimeFunctions = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'src\FunctionApp') -Directory |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'function.json') }
+            $installerText = Get-Content -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') -Raw
+            foreach ($runtimeFunction in $runtimeFunctions) {
+                $entries | Should -Contain "$packageRoot/$($runtimeFunction.Name)/function.json"
+                $installerText | Should -Match ([regex]::Escape(
+                    "(Join-Path `$functionAppRoot '$($runtimeFunction.Name)')"
+                ))
+            }
             $entries | Where-Object {
                 $_ -match `
                     '(^|/)(client\.settings\.json|local\.settings\.json|tests|\.git)(/|$)'

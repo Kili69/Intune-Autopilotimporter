@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -7,8 +7,11 @@ Completes the Entra configuration of an imported Autopilot device.
 
 .DESCRIPTION
 Processes queued Autopilot imports after Intune has created the Entra device.
-It writes the authorized Group Tag to an extension attribute and optionally
-adds the device to a regular or restricted management administrative unit. An incomplete
+It writes the policy's extension attribute values, synchronizes policy-managed
+device groups, and optionally adds the device to an administrative unit.
+Only pre-enrollment actions are supported. Legacy rules retain the
+deployment-selected extension attribute.
+An incomplete
 import throws so the Storage Queue trigger retries it according to host.json.
 Successful updates are idempotent.
 
@@ -138,6 +141,16 @@ else {
 $payload = ConvertTo-EntraDeviceExtensionAttributes `
     -ExtensionAttribute $extensionAttribute `
     -GroupTag $groupTag
+$policyActions = Get-DevicePolicyActions -Policy $tagAuthorizationPolicy -GroupTag $groupTag
+if ($policyActions.PSObject.Properties['name']) {
+    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{ policyName = [string] $policyActions.name }
+}
+if ($policyActions.PSObject.Properties['extensionAttributes']) {
+    $payload = @{ extensionAttributes = $policyActions.extensionAttributes }
+}
+$targetGroups = if ($policyActions.PSObject.Properties['deviceGroupIds']) {
+    @($policyActions.deviceGroupIds)
+} else { @() }
 
 # Acquire a Microsoft Graph token through the managed Azure context initialized
 # by profile.ps1 and normalize Az.Accounts token formats to SecureString.
@@ -195,6 +208,17 @@ else {
         -Token $secureToken `
         -ErrorAction Stop
 }
+if (-not $isTagChange -and $importedDevice.state.PSObject.Properties['deviceImportStatus'] -and
+    [string] $importedDevice.state.deviceImportStatus -ieq 'complete') {
+    $registrationProperties = @{
+        graphImportCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+    }
+    if ($registeredDevice.PSObject.Properties['groupTag'] -and
+        [string] $registeredDevice.groupTag -ceq $groupTag) {
+        $registrationProperties.autopilotGroupTagUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+    }
+    Set-ImportAuditRecord -ImportId $auditId -Properties $registrationProperties -AccessToken $auditToken
+}
 $entraDeviceId = [guid]::Empty
 if (-not [guid]::TryParse(
         [string] $registeredDevice.azureActiveDirectoryDeviceId,
@@ -229,24 +253,56 @@ if ($isTagChange -or
 # Write the authorized Group Tag before adding optional AU membership. This
 # ordering ensures membership only marks a workflow whose attribute PATCH has
 # already succeeded; repeating the PATCH after a transient failure is harmless.
-Invoke-RestMethod `
-    -Method Patch `
-    -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')" `
-    -Authentication Bearer `
-    -Token $secureToken `
-    -ContentType 'application/json' `
-    -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
-    -ErrorAction Stop | Out-Null
-
-Set-ImportAuditRecord `
-    -ImportId $auditId `
-    -Properties @{
+$attributeNames = if ($payload.extensionAttributes -is [Collections.IDictionary]) {
+    @($payload.extensionAttributes.Keys)
+} else { @($payload.extensionAttributes.PSObject.Properties | ForEach-Object Name) }
+if ($attributeNames.Count -gt 0) {
+    Invoke-RestMethod `
+        -Method Patch `
+        -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')" `
+        -Authentication Bearer `
+        -Token $secureToken `
+        -ContentType 'application/json' `
+        -Body ($payload | ConvertTo-Json -Depth 4 -Compress) `
+        -ErrorAction Stop | Out-Null
+    Set-ImportAuditRecord -ImportId $auditId -Properties @{
         extensionAttributeUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
-    } `
-    -AccessToken $auditToken
+        appliedExtensionAttributesJson = ConvertTo-Json -InputObject $payload.extensionAttributes -Depth 4 -Compress
+    } -AccessToken $auditToken
+    Write-Information "Updated $($attributeNames -join ', ') on Entra device '$entraDeviceId'."
+}
+else {
+    Set-ImportAuditRecord -ImportId $auditId -Properties @{
+        appliedExtensionAttributesJson = '{}'
+    } -AccessToken $auditToken
+    Write-Information "Policy explicitly skips extension attributes on Entra device '$entraDeviceId'."
+}
 
-Write-Information "Autopilot Group Tag '$groupTag' written to $extensionAttribute on Entra device '$entraDeviceId'."
-
+$managedGroups = @($tagAuthorizationPolicy | ForEach-Object {
+    if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+})
+$state = Get-DevicePolicyState -DeviceId $entraDeviceId -AccessToken $auditToken
+$previousGroupIds = @($state.groupIdsJson | ConvertFrom-Json)
+if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 0 -or $previousGroupIds.Count -gt 0) {
+    if ($deviceObjectId -eq [guid]::Empty) {
+        $entraDevice = Invoke-RestMethod -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
+            -Authentication Bearer -Token $secureToken -ErrorAction Stop
+        $deviceObjectId = [guid] $entraDevice.id
+    }
+    # Persist the union before Graph writes so retries retain ownership after partial changes.
+    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds @($previousGroupIds + $targetGroups | Sort-Object -Unique) `
+        -AccessToken $auditToken
+    $groupResult = Sync-DevicePolicyGroups -Policy $tagAuthorizationPolicy -TargetGroupIds $targetGroups -PreviousGroupIds $previousGroupIds `
+        -DeviceObjectId $deviceObjectId -AccessToken $secureToken -PassThru
+    Set-DevicePolicyState -DeviceId $entraDeviceId -GroupIds $targetGroups -AccessToken $auditToken
+    Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
+        deviceGroupsUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
+        targetDeviceGroupIdsJson = ConvertTo-Json -InputObject @($targetGroups) -Compress
+        addedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.AddedGroupIds) -Compress
+        removedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.RemovedGroupIds) -Compress
+    }
+}
 if ($deviceObjectId -ne [guid]::Empty) {
     $membershipResult = Sync-EntraDeviceAdministrativeUnits `
         -Policy $tagAuthorizationPolicy `
@@ -257,6 +313,8 @@ if ($deviceObjectId -ne [guid]::Empty) {
         -ImportId $auditId `
         -Properties @{
             administrativeUnitAssignedAtUtc = [datetime]::UtcNow.ToString('o')
+            administrativeUnitName = [string] $administrativeUnitName
+            removedAdministrativeUnitsJson = ConvertTo-Json -InputObject @($membershipResult.RemovedAdministrativeUnits) -Compress
         } `
         -AccessToken $auditToken
     Write-Information "Synchronized policy-managed administrative units for Entra device '$entraDeviceId'."

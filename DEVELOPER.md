@@ -302,6 +302,7 @@ Graph error details are never returned to the client.
 | `api/devices/tags/assignments` | `GET`, `POST` | `ManageDeviceTags` | Lists eligible devices and queues authorized Group Tag changes. |
 | `api/management/imports` | `GET`, `POST` | `GetImportHistory` | Returns filtered import audit history. |
 | `api/management/tag-policy` | `GET`, `PUT` | `ManageTagPolicy` | Reads and replaces the Group Tag authorization policy. |
+| `api/management/policy-managers` | `GET`, `PUT` | `ManagePolicyManagers` | Reads/updates explicit managers using caller-delegated Azure RBAC; `search` looks up Entra users/groups. |
 | `api/ui/{*path}` | `GET` | `WebFrontend` | Serves the compiled frontend and its runtime configuration. |
 
 ### 6.2. Device Import Interface
@@ -372,6 +373,20 @@ Use `POST` when filter lists are too long for a query string. Hardware hashes
 are stored only as SHA-256 values, so the history exposes no reusable device
 hash.
 
+History adds `graphImportCompletedAtUtc`, `entraDeviceId`,
+`appliedExtensionAttributes`, `targetDeviceGroupIds`, `addedDeviceGroupIds`,
+`removedDeviceGroupIds`, `administrativeUnitName` and
+`removedAdministrativeUnits`. The worker writes action details only after
+successful Graph calls; explicit empty attribute maps identify skipped writes.
+An import's Group Tag completion timestamp is recorded only when the registered
+Autopilot device returns the expected tag. Import submission and completed
+registration are distinct events. No new history endpoint Graph calls are
+needed for these details: values come from the audit record.
+The web timeline orders recorded timestamps, explains background queueing and
+distinguishes membership reconciliation from newly added membership. Legacy
+records keep absent details as null and are never backfilled from current rules.
+PowerShell history output retains the same additive fields.
+
 ### 6.6. Group Tag Policy Management Interface
 
 `ManageTagPolicy` serves `/api/management/tag-policy`. It requires a principal
@@ -390,6 +405,224 @@ is either the string form `<group-object-id>=<tag1>,<tag2>` or an object with
 each referenced administrative unit is resolved through Microsoft Graph before
 the policy is persisted. The policy is stored in the private blob
 `configuration/tag-authorization-policy.json`.
+
+Named device-action rules use this schema:
+
+```json
+{
+  "name": "Sales Berlin",
+  "groupId": "11111111-1111-1111-1111-111111111111",
+  "groupTag": "Sales",
+  "extensionAttributes": {
+    "extensionAttribute1": "Sales",
+    "extensionAttribute5": "Berlin"
+  },
+  "deviceGroupIds": ["22222222-2222-2222-2222-222222222222"],
+  "administrativeUnitName": "RMAU-Sales"
+}
+```
+
+`name` is required for action rules (1..128 characters). `groupId` identifies
+the **user authorization group**, not a device target group. `groupTag` is
+required. Deprecated `scopeTag` input is ignored as an action; older scope-only
+rules retain their effective Group Tag through migration. Normalized output
+does not contain `scopeTag`.
+Each rule has one Group Tag; several named rules may authorize the same user
+group. Identical Group Tags must have identical device actions across rules,
+otherwise saving fails before Graph writes. Tags are still exposed as
+`tags` for existing import clients. Legacy string/multi-tag rules receive a
+stable display name but do not start device-group assignment automatically.
+
+`extensionAttributes` supports string values for extensionAttribute1..15,
+up to 1024 characters each. Unspecified attributes are untouched. Omitting the
+map on a named device-action rule is normalized to an empty map and skips
+attribute writes. The web editor always persists explicit maps; no attribute
+rows means no writes. Only legacy authorization-only rules retain the old
+deployment-wide Group-Tag attribute behavior. Intune Scope Tags are not managed
+because this application targets pre-enrollment devices only.
+
+`deviceGroupIds` must reference cloud-managed, static, non-role-assignable Entra
+security groups. Target groups are validated on save and before membership
+changes. Import and re-tagging add the selected targets and remove memberships
+in other policy-managed targets, preserving unrelated groups. Durable
+`devicePolicies` entities in the existing audit table retain device ownership
+across the normal audit-retention period, including previous targets removed
+from the policy. Ownership is persisted before Graph writes to allow safe
+retries after partial updates. Do not use this partition as expiring import
+history.
+
+The hourly `RemoveExpiredImportHistory` timer only applies normal 30-day audit
+retention. It does not acquire a Graph token or perform post-enrollment work.
+Older pending Scope Tag records now expire under the same retention policy.
+Existing Intune tags and historical stored properties are not actively deleted,
+but scope progress is no longer exposed in API/client history output.
+The history API, PowerShell result and web trace expose pre-enrollment policy
+and group-sync progress. Import `workflowStatus=complete` means the
+pre-enrollment workflow has finished, not that enrollment has occurred.
+
+The web **TagPolicies** tab uses the same manager-authorized GET/PUT endpoint,
+but exposes per-rule saves. Before saving or deleting one rule it fetches the
+latest server policy, checks that the original rule has not changed, and merges
+only that rule. Other local drafts are never serialized. The API still replaces
+the whole blob, so this is not an atomic compare-and-swap across concurrent
+clients. Local writes are serialized; stale edits fail visibly. Deletions require
+confirmation, and the last server rule cannot be deleted. Save buttons appear
+only for changed/new rules; new entries are scrolled into view and focused.
+Non-managers receive the normal forbidden response and cannot load/edit rules.
+Successful saves show a localized modal confirmation. Import History is hidden
+on the policy page, and the import tag selector shows rule names only.
+Entering the policy tab reloads current rules via the no-cache manager endpoint,
+including keyboard navigation; unsaved drafts require discard confirmation.
+Reload and save are serialized, and load failures are shown in the editor.
+
+Rules preserve an optional `description` string (up to 2048 UTF-16 code units;
+multiline text is allowed, other control characters are rejected). The shared
+normalizer, client policy edit commands and updater preserve it.
+
+Both management endpoints support `GET ?history=true&continuation=<row-key>`,
+returning `{ events, continuation }` with up to 25 newest-first events. Policy
+history uses normal policy-manager authorization; manager history always
+requires delegated Owner/Contributor authorization, never eligibility alone.
+Policy history additionally requires `ruleId=<GUID>` (missing/invalid: 400).
+Rules expose persistent `ruleId`, preserved through renames, client edits and
+upgrades. Pre-ID rules derive a deterministic initial GUID from group/name;
+new web drafts receive a new GUID. Clients must retain returned IDs on edits.
+Filtering runs server-side and returns only changed before/after snapshots of
+the selected rule; unchanged rules in a bulk write never appear in its history.
+Applied policy events now also retain snapshots so confirmation is attributable.
+Older applied events lacking snapshots are omitted from rule history.
+Storage reads stay bounded at 25 events; a filtered empty page can still have
+a continuation. Consumers must continue until the token is empty.
+Each editor row owns its popup/button (disabled until first save); no global
+policy history button remains. `Get-AutoPilotTagPolicyHistory -RuleId` exposes
+the same paged API response in PowerShell. Normal policy output now also
+preserves Description and RuleId. Rule deletion removes the UI entry, not
+manager history or shared audit records.
+Each event includes `operationId`, `stage`, `atUtc`, `actorId`, optional
+`actorName`, and requested `before`/`after` snapshots. The UI uses text nodes
+for history values, including descriptions, not HTML.
+
+`Write-ManagementAuditEvent` inserts unique rows into `management-policies` or
+`management-managers` partitions of the existing audit table. No merge/delete
+operation exists for these events, and import cleanup queries only `imports`.
+Requested events must persist before mutation; applied events confirm its
+completion. Missing confirmation is reported as an uncertain save, not success.
+Snapshots are size-limited and chunked below Table property/entity limits;
+oversized changes fail before mutation. There is no time cutoff for reads.
+`Set-ManagementPolicyBlob` replaces the former output binding with synchronous
+UTF-8 Storage writes, an expected-content check and conditional ETag/create
+headers, so completion is not recorded before a deferred binding write.
+The PowerShell manager mutation command uses the same audited API, sending both
+API and delegated ARM tokens and the expected manager policy. No direct-write
+fallback bypasses auditing. Azure administrative edits outside the application
+are not captured; storage is not WORM-locked against administrators.
+
+The separate **Policy managers** tab is gated by
+`GET /api/management/policy-managers`, independently of policy-manager access.
+Except for the read-only visibility check described below, `ManagePolicyManagers`
+requires the platform-validated API principal plus a
+delegated ARM token in `x-autopilot-arm-token` for the same user/tenant.
+Decoded token claims only identify the caller; ARM must accept the token
+before any authorization is inferred. The endpoint queries effective
+`assignedTo` role assignments (including group/ancestor assignments), follows
+ARM pagination and uses the shared strict Owner/Contributor scope check.
+The target `FUNCTION_RESOURCE_ID` comes from Bicep, never from request input.
+Every manager-data request, including object searches and writes, repeats this
+delegated check. The identity's new role-assignment read permission is used
+only for the separate visibility check.
+
+GET returns `{ policy, expectedPolicy, correlationId }`, with the installer,
+additional principal IDs and existing Intune Role Administrator setting.
+PUT takes `{ additionalPrincipalIds: string[], expectedPolicy: string }`;
+the installer is retained server-side, new IDs must resolve to users/groups,
+and stale manager-policy snapshots return 409. Settings are read again after
+Graph validation and all unrelated settings are round-tripped using the
+caller's ARM token. ARM also enforces write/deny permissions. As with the
+existing PowerShell command, app-settings replacement is not an atomic ETag
+compare-and-swap against arbitrary simultaneous Azure settings changes.
+An app-settings update can restart the Function; the UI confirms before save
+and explicitly reports failures/uncertain outcomes rather than assuming success.
+
+`GET .../policy-managers?search=<text>` returns the shared picker response,
+combining bounded Graph user/group queries, with 25 total results and `hasMore`.
+User searches accept display-name/UPN prefixes or exact IDs. Existing Graph
+application permissions `User.ReadBasic.All` and `GroupMember.Read.All` suffice.
+Graph optimizes `id eq` to entity lookup, returning 404 for a user ID on
+`/groups` or group ID on `/users`. Only this exact-ID 404 becomes an empty
+type-specific result; prefix-search errors and other HTTP failures propagate.
+Names are display-only; unavailable/deleted objects retain visible IDs/errors.
+The SPA registration adds ARM delegated `user_impersonation`, preserving its
+other permissions. Before acquiring a delegated ARM token, the SPA calls
+`GET /api/management/policy-managers?access=true` with its normal API token.
+The server uses the Function identity to query ARM `assignedTo(callerOid)`
+at the fixed Function resource ID, follows pagination and checks only built-in
+Owner/Contributor at that scope or an ancestor. Caller identity comes only
+from Easy Auth, never a query parameter. This mode returns only a boolean and
+correlation ID; it cannot read manager settings, search the directory or write.
+The custom identity role grants only `Microsoft.Authorization/roleAssignments/read`,
+assigned at Function scope with an RG-scoped role definition. Bootstrap/update
+permission checks require `roleDefinitions/write` as well as assignment writes.
+Missing identity permissions/token/ARM failures return a logged 502, not a
+success-shaped negative result. No match returns a normal false result.
+
+Only after eligibility succeeds does MSAL silently probe existing ARM consent;
+when interaction is needed, the eligible user's sign-in button starts an ARM
+redirect. Non-Azure policy managers see neither button nor manager tab.
+Normal manager reads/searches/writes still require the caller's delegated ARM
+token and recheck roles, with no identity-token fallback. This does not grant
+Azure roles. Redirect ARM tokens are never cached as import API tokens.
+Normal import/policy access does not require ARM consent. Tabs reload on entry,
+including keyboard navigation, and both management tabs hide Import History.
+
+The PowerShell full-rule setter supports the same schema.
+Legacy group-based add/remove/update shortcuts preserve action fields
+or reject ambiguous multi-rule updates; use the full-rule setter for these.
+The regular updater preserves name, Group Tags, attribute maps (including
+explicit empty maps), device-group IDs and the per-rule AU. Installer policy
+serialization always uses an array and sufficient JSON depth, including when
+upgrading a deployment with only one rule.
+Its transient input may retain deprecated scope metadata for migration; the
+shared normalizer removes it before active policy storage. Required Graph roles
+are now `DeviceManagementRBAC.Read.All` for manager checks, with no
+`DeviceManagementManagedDevices.ReadWrite.All` requirement. The grant script
+does not revoke historical write grants: an administrator must explicitly
+review and remove permissions no longer needed.
+
+The authorized-user-group object picker calls
+`GET /api/management/tag-policy?groupSearch=<text>` after the same manager
+authorization checks. The search accepts 2..128 characters and returns
+`{ groups: [{ id, displayName }], hasMore, correlationId }`. It uses Graph v1.0
+`startswith(displayName,...)` or an exact GUID filter, escapes OData literals,
+and limits each request to 25 results with a prompt to refine the search.
+Only basic group properties are read using the existing `GroupMember.Read.All`
+application permission. Selecting a result writes its ID to `groupId`; group
+names are display-only, not policy identifiers.
+**Add group** opens a modal picker; selected lists show Graph-resolved names,
+with lookup errors explicitly reported. A shared remove button is enabled only
+when a list entry is selected. The same picker supports multiple device targets.
+`auSearch=<text>` on the same manager endpoint searches Administrative Units.
+Because the AU list API documents `eq`, not `startswith`, AU prefix matching is
+performed locally over its paginated collection; results are capped at 25.
+The existing `AdministrativeUnit.ReadWrite.All` permission covers this lookup.
+Only one AU is allowed, so adding is disabled while one is assigned; removal
+requires selection. The existing name-based policy schema is preserved.
+Rules use native `details`/`summary` disclosure controls, existing rules start
+collapsed, and invalid rules are expanded on save. Extension-attribute rows use
+unique selectors for slots 1..15 and always persist an explicit attribute map.
+No rows means no writes, with no deployment-default switch. Tag inputs use the same existing
+required Group Tag and 128-character/comma policy-format checks as the backend, with inline
+feedback and no invented Microsoft character whitelist. The editor omits a
+permanent validation-help paragraph; validation messages still appear for invalid input.
+Attribute values use single-line text inputs with a 1024 UTF-16 code-unit
+limit. Both the TypeScript parser and PowerShell normalizer reject Unicode
+categories Cc, Zl and Zp. Invalid pasted line breaks are reported rather than
+silently joined; invalid stored values require correction before saving.
+
+Before enabling these features on an existing deployment, an administrator must
+grant `DeviceManagementRBAC.Read.All` and `GroupMember.ReadWrite.All`
+to the Function managed identity using the updated permission script.
+Existing device, administrative-unit and user/group-read permissions remain
+required. No permissions are granted merely by editing code or policies.
 
 ### 6.7. Web Frontend Interface
 
@@ -486,7 +719,8 @@ actually consumes it, and cover authorization-relevant changes in
 The Function managed identity requires the Microsoft Graph application
 permissions `AdministrativeUnit.ReadWrite.All`,
 `DeviceManagementServiceConfig.ReadWrite.All`,
-`DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`,
+`DeviceManagementRBAC.Read.All`,
+`GroupMember.ReadWrite.All`, `Device.ReadWrite.All`,
 `GroupMember.Read.All`, and `User.ReadBasic.All`. The installer assigns these
 permissions. Clients receive only the delegated `DeviceHash.Import` scope and
 therefore cannot call Microsoft Graph on behalf of the Function.
@@ -601,7 +835,7 @@ By default, the installer searches the selected tenant for an app registration n
 The installer compares the existing application with the desired configuration before writing. A user with read access can therefore reuse an already compliant application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, and `User.ReadBasic.All` permissions.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, and `User.ReadBasic.All`.
 
 The installer configures:
 
@@ -943,7 +1177,7 @@ installer to update Azure resources, required permissions, Function code, and th
 
 Each invocation creates a new log file. An update writes its activity to `Intune-Autopilotimport-update-<timestamp>-<unique-id>.log`, and the installer invoked by the update writes its own `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log` in the current user's temporary directory. If either script stops with an error, its transcript is closed before detailed error and stack information is appended to avoid file-lock conflicts.
 
-The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `Role Based Access Control Administrator` or `User Access Administrator`, because the Bicep template also maintains Storage role assignments. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
+The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `User Access Administrator`, including custom role definition writes, because the Bicep template maintains Storage role assignments and the Function-scoped manager-access reader role. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
 
 Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
@@ -1040,7 +1274,7 @@ exposed through these paths.
 
 ### 9.3. Assign the Graph Permission
 
-This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
+This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser

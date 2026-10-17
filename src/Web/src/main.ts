@@ -6,7 +6,12 @@ import {
   PublicClientApplication,
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
-import { buildApiRequestOptions } from './api';
+import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from './api';
+import { getHistoryStatus, getImportError, getImportTimeline, ImportTimelineRecord } from './import-status';
+import { getPolicyTagLabel, mountPolicyEditor } from './policy';
+import type { GroupSearchResult } from './group-picker';
+import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
+import type { ManagementHistory } from './management-history';
 import './style.css';
 
 interface RuntimeConfig {
@@ -19,6 +24,8 @@ interface RuntimeConfig {
   tagsUrl: string;
   deviceTagAssignmentsUrl: string;
   importHistoryUrl: string;
+  tagPolicyUrl: string;
+  policyManagersUrl?: string;
 }
 
 interface ApiError {
@@ -43,7 +50,7 @@ interface ExistingAutopilotDevice {
   administrativeUnits: string[];
 }
 
-interface ImportHistoryRecord {
+interface ImportHistoryRecord extends ImportTimelineRecord {
   importId?: string;
   operationType?: string;
   serialNumber?: string;
@@ -53,6 +60,7 @@ interface ImportHistoryRecord {
   requestedBy?: string;
   requestedByDisplayName?: string;
   deviceErrorName?: string;
+  deviceErrorCode?: number;
   requestReceivedAtUtc?: string;
   graphImportCreatedAtUtc?: string;
   queuedAtUtc?: string;
@@ -62,6 +70,8 @@ interface ImportHistoryRecord {
   extensionAttributeUpdatedAtUtc?: string;
   administrativeUnitAssignedAtUtc?: string;
   processingCompletedAtUtc?: string;
+  policyName?: string;
+  deviceGroupsUpdatedAtUtc?: string;
   lastUpdatedAtUtc?: string;
 }
 
@@ -73,7 +83,7 @@ const translations = {
     login: 'Mit Microsoft Entra ID anmelden', hashLabel: 'Device Hash erstellen', hashIntro: 'Auf dem Zielgerät während der Windows-Ersteinrichtung:',
     hashStep1: 'Mit Umschalt + F10 die Eingabeaufforderung öffnen', hashStep2: 'powershell.exe starten', hashStep3: 'Install-Script Get-WindowsAutopilotInfo -Force ausführen',
     hashStep4: 'Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv ausführen', hashNote: 'Den Laufwerksbuchstaben bei Bedarf an den USB-Stick anpassen.',
-    register: 'Geräte in Microsoft Intune registrieren', registerIntro: 'CSV prüfen, autorisierten Tag auswählen und Import starten.',
+    register: 'Geräte in Microsoft Intune registrieren',
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Verarbeitungsstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', operationId: 'Vorgangs-ID', status: 'Status', details: 'Details',
@@ -88,10 +98,9 @@ const translations = {
     noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
     devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
     importTab: 'Import', retagTab: 'Re-Tagging',
+    policyTab: 'TagPolicies',
+    policyNameLabel: 'Policy',
     lastUpdated: 'Letzte Aktualisierung', traceTitle: 'Vorgangsverlauf', close: 'Schließen', traceCurrentStatus: 'Aktueller Status',
-    traceRequested: 'Anfrage wurde entgegengenommen', traceCreatedInIntune: 'Gerät wurde an Intune übermittelt', traceQueued: 'Nachbearbeitung wurde eingeplant',
-    traceStarted: 'Nachbearbeitung wurde gestartet', traceDeviceResolved: 'Entra-Gerät wurde gefunden', traceAutopilotTagUpdated: 'Autopilot Group Tag wurde aktualisiert',
-    traceAttributeUpdated: 'Geräteattribut wurde aktualisiert', traceAuUpdated: 'Administrative Unit wurde aktualisiert', traceCompleted: 'Vorgang wurde abgeschlossen',
     traceError: 'Fehler', groupTagLabel: 'Group Tag', previousGroupTagLabel: 'Vorheriger Group Tag', traceOpen: 'Vorgangsverlauf öffnen',
   },
   en: {
@@ -99,7 +108,7 @@ const translations = {
     login: 'Sign in with Microsoft Entra ID', hashLabel: 'Create a device hash', hashIntro: 'On the target device during Windows setup:',
     hashStep1: 'Press Shift + F10 to open Command Prompt', hashStep2: 'Start powershell.exe', hashStep3: 'Run Install-Script Get-WindowsAutopilotInfo -Force',
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
-    register: 'Register devices in Microsoft Intune', registerIntro: 'Validate the CSV, select an authorized tag, and start the import.',
+    register: 'Register devices in Microsoft Intune',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', details: 'Details',
@@ -114,10 +123,9 @@ const translations = {
     noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
     devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
     importTab: 'Import', retagTab: 'Re-tagging',
+    policyTab: 'Tag policies',
+    policyNameLabel: 'Policy',
     lastUpdated: 'Last updated', traceTitle: 'Operation trace', close: 'Close', traceCurrentStatus: 'Current status',
-    traceRequested: 'Request was received', traceCreatedInIntune: 'Device was submitted to Intune', traceQueued: 'Post-processing was queued',
-    traceStarted: 'Post-processing started', traceDeviceResolved: 'Entra device was resolved', traceAutopilotTagUpdated: 'Autopilot Group Tag was updated',
-    traceAttributeUpdated: 'Device attribute was updated', traceAuUpdated: 'Administrative unit was updated', traceCompleted: 'Operation completed',
     traceError: 'Error', groupTagLabel: 'Group Tag', previousGroupTagLabel: 'Previous Group Tag', traceOpen: 'Open operation trace',
   },
 } as const;
@@ -179,7 +187,6 @@ app.innerHTML = `
     <section id="workspace" class="workspace hidden">
       <div class="intro">
         <h1>${t('register')}</h1>
-        <p>${t('registerIntro')}</p>
       </div>
 
       <div id="alert" class="alert hidden" role="alert"></div>
@@ -187,7 +194,10 @@ app.innerHTML = `
       <div class="workspace-tabs" role="tablist" aria-label="${t('register')}">
         <button id="import-tab" class="workspace-tab" type="button" role="tab" aria-selected="true" aria-controls="import-tab-panel">${t('importTab')}</button>
         <button id="retag-tab" class="workspace-tab" type="button" role="tab" aria-selected="false" aria-controls="retag-tab-panel" tabindex="-1">${t('retagTab')}</button>
+        <button id="policy-tab" class="workspace-tab hidden" type="button" role="tab" aria-selected="false" aria-controls="policy-tab-panel" tabindex="-1">${t('policyTab')}</button>
+        <button id="managers-tab" class="workspace-tab hidden" type="button" role="tab" aria-selected="false" aria-controls="managers-tab-panel" tabindex="-1">${language === 'de' ? 'Policy-Manager' : 'Policy managers'}</button>
       </div>
+      <button id="check-manager-access" class="button button-quiet hidden" type="button">${language === 'de' ? 'Azure-Anmeldung fuer Manager-Verwaltung pruefen' : 'Check Azure sign-in for manager administration'}</button>
 
       <div id="import-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="import-tab">
         <div class="step-grid">
@@ -229,6 +239,7 @@ app.innerHTML = `
               <p class="section-intro">${t('changeTagsIntro')}</p>
             </div>
             <span id="device-count" class="progress-label"></span>
+            <button id="reload-devices" class="button button-quiet" type="button">${language === 'de' ? 'Geraete laden' : 'Load devices'}</button>
           </div>
           <div class="table-wrap">
             <table>
@@ -255,7 +266,10 @@ app.innerHTML = `
         </section>
       </div>
 
-      <section class="panel results-panel">
+      <section id="policy-tab-panel" class="tab-panel panel hidden" role="tabpanel" aria-labelledby="policy-tab"></section>
+      <section id="managers-tab-panel" class="tab-panel panel hidden" role="tabpanel" aria-labelledby="managers-tab"></section>
+
+      <section id="activity-panel" class="panel results-panel">
         <section id="results-panel" class="activity-section hidden">
           <div class="results-header">
             <div>
@@ -327,6 +341,13 @@ const importTab = element<HTMLButtonElement>('import-tab');
 const retagTab = element<HTMLButtonElement>('retag-tab');
 const importTabPanel = element<HTMLElement>('import-tab-panel');
 const retagTabPanel = element<HTMLElement>('retag-tab-panel');
+const reloadDevices = element<HTMLButtonElement>('reload-devices');
+const activityPanel = element<HTMLElement>('activity-panel');
+const policyTab = element<HTMLButtonElement>('policy-tab');
+const policyTabPanel = element<HTMLElement>('policy-tab-panel');
+const managersTab = element<HTMLButtonElement>('managers-tab');
+const managersTabPanel = element<HTMLElement>('managers-tab-panel');
+const checkManagerAccess = element<HTMLButtonElement>('check-manager-access');
 const loginButton = element<HTMLButtonElement>('login');
 const logoutButton = element<HTMLButtonElement>('logout');
 const accountName = element<HTMLElement>('account-name');
@@ -366,15 +387,32 @@ let existingDevices: ExistingAutopilotDevice[] = [];
 let results: ImportResult[] = [];
 let pollTimer: number | undefined;
 let processing = false;
+let policyEditor: ReturnType<typeof mountPolicyEditor> | undefined;
+let managerEditor: ReturnType<typeof mountManagerEditor> | undefined;
+const armScope = 'https://management.azure.com/user_impersonation';
 
-function activateWorkspaceTab(tab: 'import' | 'retag'): void {
+function activateWorkspaceTab(tab: 'import' | 'retag' | 'policy' | 'managers'): void {
+  if (tab === 'policy' && policyTab.classList.contains('hidden')) return;
+  if (tab === 'managers' && managersTab.classList.contains('hidden')) return;
+  const enteringPolicy = tab === 'policy' && policyTab.getAttribute('aria-selected') !== 'true';
+  const enteringManagers = tab === 'managers' && managersTab.getAttribute('aria-selected') !== 'true';
   const showImport = tab === 'import';
   importTab.setAttribute('aria-selected', String(showImport));
   importTab.tabIndex = showImport ? 0 : -1;
-  retagTab.setAttribute('aria-selected', String(!showImport));
-  retagTab.tabIndex = showImport ? -1 : 0;
+  retagTab.setAttribute('aria-selected', String(tab === 'retag'));
+  retagTab.tabIndex = tab === 'retag' ? 0 : -1;
+  policyTab.setAttribute('aria-selected', String(tab === 'policy'));
+  policyTab.tabIndex = tab === 'policy' ? 0 : -1;
+  managersTab.setAttribute('aria-selected', String(tab === 'managers'));
+  managersTab.tabIndex = tab === 'managers' ? 0 : -1;
   importTabPanel.classList.toggle('hidden', !showImport);
-  retagTabPanel.classList.toggle('hidden', showImport);
+  retagTabPanel.classList.toggle('hidden', tab !== 'retag');
+  policyTabPanel.classList.toggle('hidden', tab !== 'policy');
+  managersTabPanel.classList.toggle('hidden', tab !== 'managers');
+  activityPanel.classList.toggle('hidden', tab === 'policy' || tab === 'managers');
+  historyPanel.classList.toggle('hidden', tab === 'policy' || tab === 'managers');
+  if (enteringPolicy) void policyEditor?.reload();
+  if (enteringManagers) void managerEditor?.reload();
 }
 
 document.querySelectorAll<HTMLButtonElement>('[data-language]').forEach((button) => {
@@ -462,15 +500,6 @@ function formatHistoryDate(value?: string): string {
   }).format(date);
 }
 
-function getHistoryStatus(record: ImportHistoryRecord): 'pending' | 'complete' | 'error' {
-  const normalized = record.status?.toLowerCase();
-  if (record.deviceErrorName || normalized === 'error' || normalized === 'failed') {
-    return 'error';
-  }
-  if (record.processingCompletedAtUtc) return 'complete';
-  return 'pending';
-}
-
 function openHistoryTrace(record: ImportHistoryRecord): void {
   const status = getHistoryStatus(record);
   const summaryValues: Array<[TranslationKey, string]> = [
@@ -486,6 +515,7 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
   if (record.previousGroupTag) {
     summaryValues.push(['previousGroupTagLabel', record.previousGroupTag]);
   }
+  if (record.policyName) summaryValues.push(['policyNameLabel', record.policyName]);
   traceSummary.replaceChildren(...summaryValues.map(([label, value]) => {
     const item = document.createElement('div');
     const term = document.createElement('strong');
@@ -496,31 +526,21 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
     return item;
   }));
 
-  const timeline: Array<[TranslationKey, string | undefined]> = [
-    ['traceRequested', record.requestReceivedAtUtc],
-    ['traceCreatedInIntune', record.graphImportCreatedAtUtc],
-    ['traceQueued', record.queuedAtUtc],
-    ['traceStarted', record.processingStartedAtUtc],
-    ['traceDeviceResolved', record.entraDeviceResolvedAtUtc],
-    ['traceAutopilotTagUpdated', record.autopilotGroupTagUpdatedAtUtc],
-    ['traceAttributeUpdated', record.extensionAttributeUpdatedAtUtc],
-    ['traceAuUpdated', record.administrativeUnitAssignedAtUtc],
-    ['traceCompleted', record.processingCompletedAtUtc],
-  ];
-  traceSteps.replaceChildren(...timeline
-    .filter(([, timestamp]) => Boolean(timestamp))
-    .map(([label, timestamp]) => {
+  traceSteps.replaceChildren(...getImportTimeline(record, language)
+    .map(({ title: label, detail, timestamp }) => {
       const item = document.createElement('li');
       const marker = document.createElement('span');
       marker.className = 'trace-marker';
       marker.setAttribute('aria-hidden', 'true');
       const content = document.createElement('div');
       const title = document.createElement('strong');
-      title.textContent = t(label);
+      title.textContent = label;
+      const description = document.createElement('span');
+      description.textContent = detail;
       const time = document.createElement('time');
       time.dateTime = timestamp ?? '';
       time.textContent = formatHistoryDate(timestamp);
-      content.append(title, time);
+      content.append(title, description, time);
       item.append(marker, content);
       return item;
     }));
@@ -534,7 +554,7 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
     const title = document.createElement('strong');
     title.textContent = t('traceError');
     const detail = document.createElement('span');
-    detail.textContent = record.deviceErrorName ?? t('statusError');
+    detail.textContent = getImportError(record) ?? t('statusError');
     content.append(title, detail);
     item.append(marker, content);
     traceSteps.append(item);
@@ -543,7 +563,8 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
 }
 
 function renderHistory(records: ImportHistoryRecord[]): void {
-  historyPanel.classList.remove('hidden');
+  historyPanel.classList.toggle('hidden', policyTab.getAttribute('aria-selected') === 'true' ||
+    managersTab.getAttribute('aria-selected') === 'true');
   historyBody.replaceChildren(...records.map((record) => {
     const row = document.createElement('tr');
     row.className = 'history-row';
@@ -647,13 +668,13 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const detail = body.message ?? body.error ?? `HTTP ${response.status}`;
     const correlation = body.correlationId ? ` Correlation ID: ${body.correlationId}.` : '';
-    throw new Error(`${detail}.${correlation}`);
+    throw new ApiRequestError(`${detail}.${correlation}`, response.status);
   }
   return body;
 }
 
 async function loadTags(): Promise<void> {
-  const response = await apiRequest<{ tags: string[] }>(config.tagsUrl);
+  const response = await apiRequest<{ tags: string[]; policies?: Array<{ name: string; tags: string[] }> }>(config.tagsUrl);
   for (const select of [tagSelect, newTagSelect]) {
     select.replaceChildren();
     const placeholder = document.createElement('option');
@@ -663,7 +684,7 @@ async function loadTags(): Promise<void> {
     for (const tag of response.tags) {
       const option = document.createElement('option');
       option.value = tag;
-      option.textContent = tag;
+      option.textContent = getPolicyTagLabel(tag, response.policies);
       select.append(option);
     }
     select.disabled = response.tags.length === 0;
@@ -716,12 +737,20 @@ function renderExistingDevices(): void {
 }
 
 async function loadExistingDevices(): Promise<void> {
-  if (!config.deviceTagAssignmentsUrl) return;
-  const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
-    config.deviceTagAssignmentsUrl,
-  );
-  existingDevices = response.devices ?? [];
-  renderExistingDevices();
+  if (reloadDevices.disabled) return;
+  reloadDevices.disabled = true;
+  reloadDevices.textContent = language === 'de' ? 'Geraete werden geladen ...' : 'Loading devices ...';
+  try {
+    if (!config.deviceTagAssignmentsUrl) return;
+    const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
+      config.deviceTagAssignmentsUrl,
+    );
+    existingDevices = response.devices ?? [];
+    renderExistingDevices();
+  } finally {
+    reloadDevices.disabled = false;
+    reloadDevices.textContent = language === 'de' ? 'Geraete laden' : 'Load devices';
+  }
 }
 
 async function loadImportHistory(): Promise<void> {
@@ -749,6 +778,77 @@ async function loadImportHistory(): Promise<void> {
   }
 }
 
+async function loadPolicyAccess(): Promise<void> {
+  policyTab.classList.add('hidden');
+  if (policyTab.getAttribute('aria-selected') === 'true') activateWorkspaceTab('import');
+  policyTabPanel.replaceChildren();
+  policyEditor = undefined;
+  if (!await canManageTagPolicies(() => apiRequest(config.tagPolicyUrl))) return;
+  policyEditor = mountPolicyEditor(policyTabPanel, <T>(init?: RequestInit) => apiRequest<T>(config.tagPolicyUrl, init),
+    language, async () => { await Promise.all([loadTags(), loadExistingDevices()]); },
+    query => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('groupSearch', query);
+      return apiRequest<GroupSearchResult>(url.toString());
+    },
+    query => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('auSearch', query);
+      return apiRequest<GroupSearchResult>(url.toString());
+    }, (ruleId, continuation) => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('history', 'true');
+      url.searchParams.set('ruleId', ruleId);
+      if (continuation) url.searchParams.set('continuation', continuation);
+      return apiRequest<ManagementHistory>(url.toString());
+    });
+  policyTab.classList.remove('hidden');
+}
+
+async function managerRequest<T>(init?: RequestInit, search?: string, continuation?: string): Promise<T> {
+  if (!account || !config.policyManagersUrl) throw new Error(t('signInRequired'));
+  const token = await msal.acquireTokenSilent({
+    account, scopes: [armScope], redirectUri: config.silentRedirectUri,
+  });
+  const url = new URL(config.policyManagersUrl, window.location.origin);
+  if (search !== undefined) url.searchParams.set('search', search);
+  if (continuation !== undefined) {
+    url.searchParams.set('history', 'true');
+    if (continuation) url.searchParams.set('continuation', continuation);
+  }
+  return apiRequest<T>(url.toString(), {
+    ...init, headers: { 'x-autopilot-arm-token': token.accessToken },
+  });
+}
+
+async function loadManagerAccess(): Promise<void> {
+  managersTab.classList.add('hidden');
+  checkManagerAccess.classList.add('hidden');
+  if (managersTab.getAttribute('aria-selected') === 'true') activateWorkspaceTab('import');
+  managerEditor = undefined;
+  managersTabPanel.replaceChildren();
+  if (!config.policyManagersUrl) return;
+  try {
+    const url = new URL(config.policyManagersUrl, window.location.origin);
+    url.searchParams.set('access', 'true');
+    const access = await getManagerAdministrationAccess(
+      () => apiRequest<ManagerAccessResponse>(url.toString()),
+      () => managerRequest<ManagerPolicyResponse>());
+    if (access === 'denied') return;
+    if (access === 'signInRequired') {
+      checkManagerAccess.classList.remove('hidden');
+      return;
+    }
+    managerEditor = mountManagerEditor(managersTabPanel,
+      init => managerRequest<ManagerPolicyResponse>(init),
+      query => managerRequest<GroupSearchResult>(undefined, query), language,
+      continuation => managerRequest<ManagementHistory>(undefined, undefined, continuation ?? ''));
+    managersTab.classList.remove('hidden');
+  } catch (error) {
+    showAlert(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void> {
   account = selectedAccount;
   msal.setActiveAccount(account);
@@ -759,7 +859,7 @@ async function setAuthenticatedView(selectedAccount: AccountInfo): Promise<void>
   signinView.classList.add('hidden');
   workspace.classList.remove('hidden');
   try {
-    await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices()]);
+    await Promise.all([loadTags(), loadImportHistory(), loadExistingDevices(), loadPolicyAccess(), loadManagerAccess()]);
   } catch (error) {
     showAlert(error instanceof Error ? error.message : t('tagsLoadFailed'));
   }
@@ -860,13 +960,14 @@ async function pollResults(): Promise<void> {
         workflowStatus: string;
         status: string;
         deviceErrorName?: string;
+        deviceErrorCode?: number;
       }>(statusUrl);
       if (status.workflowStatus === 'complete') {
         item.status = 'complete';
         item.detail = t('completedDetail');
       } else if (status.workflowStatus === 'error') {
         item.status = 'error';
-        item.detail = status.deviceErrorName ?? status.status;
+        item.detail = getImportError(status) ?? status.status;
       } else {
         item.detail = status.status;
       }
@@ -905,13 +1006,34 @@ historyTraceDialog.addEventListener('click', (event) => {
 tagSelect.addEventListener('change', updateImportButton);
 importTab.addEventListener('click', () => activateWorkspaceTab('import'));
 retagTab.addEventListener('click', () => activateWorkspaceTab('retag'));
-for (const tab of [importTab, retagTab]) {
+reloadDevices.addEventListener('click', () => {
+  clearAlert();
+  void loadExistingDevices().catch((error: unknown) => {
+    showAlert(error instanceof Error ? error.message : String(error));
+  });
+});
+policyTab.addEventListener('click', () => activateWorkspaceTab('policy'));
+managersTab.addEventListener('click', () => activateWorkspaceTab('managers'));
+checkManagerAccess.addEventListener('click', () => {
+  if (!account) return;
+  void msal.acquireTokenRedirect({
+    account, scopes: [armScope], redirectUri: config.redirectUri,
+  }).catch((error: unknown) => { showAlert(error instanceof Error ? error.message : String(error)); });
+});
+const workspaceTabs = [importTab, retagTab, policyTab, managersTab];
+for (const tab of workspaceTabs) {
   tab.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const showImport = event.key === 'ArrowLeft' || event.key === 'Home';
-    activateWorkspaceTab(showImport ? 'import' : 'retag');
-    (showImport ? importTab : retagTab).focus();
+    const visibleTabs = workspaceTabs.filter(button => !button.classList.contains('hidden'));
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? visibleTabs.length - 1
+      : (visibleTabs.indexOf(tab) + (event.key === 'ArrowLeft' ? visibleTabs.length - 1 : 1)) % visibleTabs.length;
+    const button = visibleTabs[index];
+    const target = button === importTab ? 'import' : button === retagTab ? 'retag' : button === policyTab ? 'policy' : 'managers';
+    if (button) {
+      activateWorkspaceTab(target);
+      button.focus();
+    }
   });
 }
 newTagSelect.addEventListener('change', updateTagChangeButton);
@@ -1024,7 +1146,9 @@ async function initialize(): Promise<void> {
     });
     await msal.initialize();
     const redirectResult = await msal.handleRedirectPromise();
-    if (redirectResult?.accessToken) accessTokenResult = redirectResult;
+    if (redirectResult?.accessToken && redirectResult.scopes.some(
+      scope => scope.toLowerCase() === config.scope.toLowerCase(),
+    )) accessTokenResult = redirectResult;
     const selectedAccount = redirectResult?.account ?? msal.getAllAccounts()[0];
     if (selectedAccount) await setAuthenticatedView(selectedAccount);
   } catch (error) {

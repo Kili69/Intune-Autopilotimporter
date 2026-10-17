@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -8,7 +8,8 @@ Removes import audit records after the 30-day retention period.
 .DESCRIPTION
 Runs hourly and deletes Azure Table Storage entities whose request time is
 older than 30 days. The Function uses the system-assigned managed identity and
-the same private audit table as the import workflow.
+the same private audit table as the import workflow. It does not access Intune
+managed devices or perform post-enrollment actions.
 #>
 
 param($Timer)
@@ -17,10 +18,10 @@ $modulePath = Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.ps
 Import-Module $modulePath -Force
 
 $retentionCutoffUtc = Get-ImportAuditRetentionCutoffUtc
+$auditToken = Get-ImportAuditAccessToken
 $removedCount = Remove-ExpiredImportAuditRecords `
     -BeforeUtc $retentionCutoffUtc `
-    -AccessToken (Get-ImportAuditAccessToken)
-
+    -AccessToken $auditToken
 Write-Information (
     "Removed $removedCount import audit record(s) older than " +
     "$($retentionCutoffUtc.ToString('o')).")

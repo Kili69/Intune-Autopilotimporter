@@ -448,6 +448,17 @@ available in the import history with their previous and new Group Tags.
 Closing or reloading the page stops live polling but does not cancel queued
 changes. Sign in again and use the history view to inspect the final result.
 
+The operation trace lists recorded steps chronologically: request accepted,
+Device Hash submitted, Entra work queued/started, Autopilot import completed,
+Group Tag confirmed, Entra device found, Extension Attributes written, device
+groups reconciled, AU membership reconciled, and completion. Queueing only
+schedules the background worker; it does not mean the device or its assignments
+are ready. Details include written attribute values, target/added/removed group
+object IDs and the target/removed AU names. Already-existing memberships and
+rules without attributes are not reported as new writes. Older records show
+only the timestamps/details actually stored; missing details are not reconstructed
+from today's policy.
+
 ## Autopilot Importer Management
 
 ### Check Installed and Deployed Versions
@@ -556,6 +567,11 @@ principal name, and Entra object ID. UTC timestamps record when the request was
 received, the Graph import was created, processing was queued and started, the
 Entra device was resolved, its extension attribute was updated, optional
 administrative-unit membership was confirmed, and processing completed.
+Microsoft Graph's error name `None` with error code `0` means no import error:
+the web overview and trace do not display it as a failure. Actual error names,
+nonzero codes and failed statuses remain visible even if a completion timestamp
+exists. A successful Graph import remains pending until its queued processing
+has completed.
 Audit metadata is stored for 30 days in the deployment's private Azure Table
 Storage. The raw DeviceHash and its SHA-256 search index are stored with the
 audit record; product keys are not stored. Neither value is returned in history
@@ -703,7 +719,197 @@ updated policy is saved. Both units with and without
 `isMemberManagementRestricted` enabled are supported. Without a configured
 unit on the matching rule, imports continue without automatic membership.
 
+#### Named Device Policies and Web Editor
+
+Use the **TagPolicies** tab after signing in as a configured policy manager.
+The tab stays hidden until the server confirms manager access; users without
+that permission do not see it, including in keyboard tab navigation. Authorization
+and dependency failures other than the expected permission-denied response are
+reported rather than silently ignored.
+Load the existing rules, edit their names, tags, attribute/value pairs and Entra
+device target groups. Each new or changed rule has its own **Save rule** button.
+Saving one rule leaves other local drafts unsaved. Removing a rule requires
+confirmation and persists its deletion immediately; the last rule cannot be
+deleted. Adding a rule scrolls to and focuses the new entry.
+
+Rules are initially collapsed; select the rule name to expand its fields.
+For **Authorized user group** and **Entra device target groups**, select
+**Add group** to open an Entra object picker. Enter at least two
+characters from the start of the group name (or an exact object ID), select
+**Search**, then choose a result. Selected groups display their Entra names;
+IDs remain the stored identifiers. Select a list entry to enable **Remove group**.
+Searches return up to 25 groups; refine the name
+prefix if more results are available. The search uses the managed identity's
+existing `GroupMember.Read.All` permission and is restricted to policy managers.
+Device target groups support multiple selections and individual removal.
+Administrative Units use the same dialog pattern: **Add AU** is available only
+when no AU is assigned, and **Remove AU** requires selecting the assigned entry.
+The API still stores one AU display name and rejects ambiguous AU names on save.
+
+Extension attributes use individual rows: select `extensionAttribute1` through
+`extensionAttribute15`, enter the value, and add or remove rows as needed.
+Already-selected attributes cannot be selected again. No rows means no extension
+attributes are written: new/edited device-action rules persist an explicit empty
+map and never automatically copy the Group Tag into an attribute. Previously
+existing legacy authorization-only rules retain their compatibility behavior
+until explicitly converted to a device-action rule.
+Attribute values are single-line strings of at most 1024 UTF-16 code units
+(the Microsoft Graph limit). Line breaks, Unicode line/paragraph separators and
+control characters are rejected by both editor and backend. Unicode and
+punctuation are otherwise allowed; Microsoft publishes no narrower character
+whitelist for these string properties. Empty values remain supported.
+
+The required Group Tag validates the existing project limits (128 characters
+and no comma) before saving. These are project/format constraints, not a
+Microsoft character whitelist. The Graph property documentation for
+[Autopilot groupTag](https://learn.microsoft.com/en-us/graph/api/resources/intune-enrollment-windowsautopilotdeviceidentity?view=graph-rest-1.0)
+does not publish a complete allowed-character list. No additional ASCII-only or
+punctuation whitelist is imposed; service-side validation errors are surfaced.
+Successful rule saves display a localized confirmation dialog. The TagPolicies
+page hides Import History; the import selector displays rule names, not group
+object IDs.
+Switching to TagPolicies automatically fetches the current server rules.
+Unsaved local edits require confirmation before they are discarded; load
+failures remain visible. The manual reload button is still available.
+
+Each rule has an optional multiline **Description** immediately below its name
+(maximum 2048 characters). It is persisted with the rule, including through
+PowerShell edits and deployment upgrades.
+
+Each saved rule in **TagPolicies** provides its own **Change history** button.
+The popup contains only changes to that rule, including after a rename.
+The button is disabled for new, unsaved rules. Saving shows **Rule updated**.
+**Policy managers** retains its separate **Change history** popup.
+It shows the timestamp, authenticated caller, operation ID and before/after
+values. Policy history is visible to policy managers; manager history requires
+Azure Owner/Contributor on the Function App, just like manager administration.
+The backend inserts a requested event before changing configuration and a
+separate confirmation after saving. An unconfirmed request is **not** proof
+that a change was applied; reload the configuration to check uncertain results.
+If the initial audit write fails, the configuration is not changed.
+History summaries show **Information** for normal events and **Error** for
+recorded failures; the request/completion phase remains in the event details.
+Save or confirmation failures produce a separate failure event when audit storage
+is available. A failure event does not imply that a partially completed save was
+rolled back; reload the configuration to verify its actual state.
+
+Management histories are retained indefinitely and are not deleted by the import
+history retention job. There is no application delete action. This is not locked
+immutable storage against Azure administrators: direct Azure/Storage edits,
+including edits outside the application, are outside this audit trail. Changes
+made before auditing was enabled cannot be reconstructed.
+
+Rule IDs are stable and exposed as `ruleId` in REST and `RuleId` in normal
+PowerShell output; descriptions are also present in normal output, not just
+`-Raw`. Preserve the ID when replacing or renaming a rule through REST or
+`Set-AutoPilotTagPolicy`. Client add/remove edits and deployment upgrades retain
+existing IDs. For example:
+
+```powershell
+$rule = Get-AutoPilotTagPolicy | Where-Object Name -eq 'Sales Berlin'
+$page = Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId
+$page.events
+# If continuation is nonempty, request the next page with the same RuleId:
+# Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId -Continuation $page.continuation
+```
+
+REST uses `GET /api/management/tag-policy?history=true&ruleId=<GUID>`.
+An invalid/missing ID returns 400. History contains only the selected rule's
+before/after values, not other rules from the same save. Filtered pages can be
+empty with a continuation; continue until the token is empty. Existing pre-ID
+snapshots are matched by their initial name/group identity; old confirmation
+events without snapshots cannot be attributed to a rule and are omitted.
+Deleting a rule removes its history button. Existing audit records remain
+retained; deleting rule history is not required for deleting the rule and
+does not affect the permanently retained manager history.
+
+In **Re-Tagging**, **Load devices** manually refreshes the serial-number list.
+The button is disabled while a refresh is running; errors remain visible.
+Import results/history panels are hidden on both management tabs.
+
+The same configuration can be supplied through PowerShell:
+
+```powershell
+Set-AutoPilotTagPolicy -TagAuthorizationRule @(
+    @{
+        name = 'Sales Berlin'
+        description = 'Pre-enrollment settings for Sales devices in Berlin.'
+        groupId = '11111111-1111-1111-1111-111111111111'
+        groupTag = 'Sales'
+        extensionAttributes = @{
+            extensionAttribute1 = 'Sales'
+            extensionAttribute5 = 'Berlin'
+        }
+        deviceGroupIds = @(
+            '22222222-2222-2222-2222-222222222222'
+            '33333333-3333-3333-3333-333333333333'
+        )
+    }
+) -WhatIf
+```
+
+Supply a Group Tag. Intune Scope Tags are not managed: this workflow is limited
+to pre-enrollment devices, which have no Intune managed-device record.
+Existing rules remain readable; a deprecated scope-only rule's effective Group
+Tag is preserved on migration, but its Scope Tag action is discarded. No
+existing Intune tags are deleted. The authorization group
+(`groupId`) and device target groups (`deviceGroupIds`) have different purposes.
+Only static, cloud-managed Entra security groups can be device targets.
+
+On import/re-tagging, configured attribute values are applied and policy-owned
+device group memberships are synchronized; unrelated groups remain untouched.
+No post-enrollment work is scheduled. The hourly history timer only applies
+the normal audit retention, including to older pending Scope Tag records.
+Legacy authorization-only rules keep the deployment-wide extension-attribute
+behavior; named action rules without an attribute map write no attributes.
+
+Existing rules remain compatible. For named rules, prefer full-rule replacement
+over group-based shortcuts, particularly if one user group has several rules.
+These features require the additional Graph application permissions documented
+in [the developer policy interface](./DEVELOPER.md#66-group-tag-policy-management-interface);
+upgrading application code alone does not grant them.
+
 ### Change Group Tag Managers
+
+The web **Policy managers** tab appears only after the server verifies an
+effective Azure `Owner` or `Contributor` assignment on the Function App or an
+ancestor scope. Merely being a policy manager does not expose this tab.
+Current managers are loaded each time the tab is opened. The installing user
+is displayed separately and cannot be removed. Additional users and groups
+are shown by their Entra names; select an entry to enable **Remove manager**.
+**Add manager** opens a live Entra object picker supporting name prefixes,
+user principal name prefixes and exact object IDs. Click **Save managers** to
+apply changes; unsaved edits require discard confirmation before reloading.
+The existing Intune Role Administrator access setting is preserved and shown
+separately; it is not an explicit manager that can be deleted in this list.
+
+Manager administration uses a separate delegated Azure Resource Manager
+`user_impersonation` token for the signed-in user, not elevated Function
+managed-identity write permissions. Before showing either the tab or its
+sign-in button, the server checks the authenticated user's effective Azure
+Owner/Contributor assignments, including group and inherited assignments.
+An explicit policy-manager entry alone never enables either control.
+If an eligible Azure administrator needs ARM consent or another sign-in,
+use **Check Azure sign-in for manager administration**. Until delegated
+authorization succeeds, the tab remains hidden. The normal import and TagPolicies tabs do
+not require this additional consent. The regular installer/updater registers
+this delegated ARM permission on the SPA; tenant policy may require admin
+consent. No new Graph application permissions are required for the picker
+(`User.ReadBasic.All` and `GroupMember.Read.All` are already used).
+
+This visibility check uses a custom role with only
+`Microsoft.Authorization/roleAssignments/read`, assigned to the Function's
+managed identity at the Function App scope. It cannot read app settings,
+change Azure roles or administer managers. The role definition is scoped to
+the resource group. Installation/upgrades require
+`Microsoft.Authorization/roleDefinitions/write` in addition to role-assignment
+writes (for example Owner, or Contributor plus User Access Administrator);
+Role Based Access Control Administrator alone does not create custom roles.
+Verification failures are reported and leave both controls hidden.
+
+Saving manager changes updates the Function App's application settings and
+can restart it. A confirmation is shown first. Concurrent manager-list edits
+are rejected with a reload request; unrelated settings are preserved.
 
 List the installing manager and all additionally configured managers:
 
@@ -747,7 +953,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 
 - An Azure subscription and an active Intune tenant
 - For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
-- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
+- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `User Access Administrator` (including custom role definition writes); alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
 - For a least-privilege Entra installation, the installing administrator needs the `Application Administrator`, `Privileged Role Administrator`, and `Global Reader` directory roles.
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
@@ -899,8 +1105,8 @@ For a standard installation, one installing administrator performs the complete 
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
-| Installing administrator | Azure subscription | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Creates the resource group and resources, then assigns the scoped Storage data roles required for keyless access. |
-| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `Role Based Access Control Administrator` or `User Access Administrator` on the resource group; alternatively `Owner` on the resource group | Deploys and manages resources in the existing resource group while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
+| Installing administrator | Azure subscription | `Contributor` plus `User Access Administrator` including custom role definition writes; alternatively `Owner` | Creates the resource group and resources, the manager-access reader custom role, and scoped identity role assignments. |
+| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `User Access Administrator` including custom role definition writes on the resource group; alternatively `Owner` on the resource group | Deploys resources, custom role and assignments while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
 | Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
 | Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
 | Installing administrator | Entra ID | `Global Reader` | Reads tenant and directory configuration required during installation. |
@@ -908,7 +1114,8 @@ For a standard installation, one installing administrator performs the complete 
 | Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
-| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks Intune role membership for policy-manager authorization. |
+| Function App managed identity | Microsoft Graph, application | `GroupMember.ReadWrite.All` | Synchronizes policy-owned Entra device group memberships. |
 | Function App managed identity | Microsoft Graph, application | `GroupMember.Read.All`, `User.ReadBasic.All` | Checks the importing user's current membership in the Entra groups configured by the Group Tag policy. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
 | Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |
@@ -1066,6 +1273,8 @@ errors with Application Insights logs.
 | `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
+| `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
+| `GET` | `/api/management/policy-managers?access=true` | API authentication | Check only the caller's Azure Owner/Contributor eligibility; no ARM browser consent or manager data |
 
 ### Get Authorized Group Tags
 

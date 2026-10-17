@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.3
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -305,6 +305,7 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\ManageDeviceTags'; Destination = 'ManageDeviceTags' }
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
+    @{ Source = 'src\FunctionApp\ManagePolicyManagers'; Destination = 'ManagePolicyManagers' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
     @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
