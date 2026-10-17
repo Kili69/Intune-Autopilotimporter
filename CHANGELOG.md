@@ -6,15 +6,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261017.5] - 2026-10-17
+## [1.4.20261017.6] - 2026-10-17
 
 ### Changed
 
 - Show Information or Error in management history summaries, retaining request/completion phase in details. Record policy and manager save/confirmation failures when audit storage is available; errors do not imply rollback.
+- Rename management history buttons and popup headings to "Policy changes" ("Policy-Aenderungen" in German).
+- Use a required single-line authorized user group with "Change group", no removal or object-ID label suffix. Require successful group resolution before saving; keep device-group multi-selection. Validate search lengths and reject control/invisible formatting characters while supporting Unicode names and punctuation.
+- Display localized save-blocking popups listing every missing policy name, authorized user group and Autopilot Group Tag; show other local validation failures in a popup without sending invalid rules.
 - Replace global policy history with a History button in each saved rule. Filter changes server-side by persistent rule ID, preserve identity across renames and show a short "Rule updated" confirmation after saving. Keep Policy Manager history separate and permanently retained.
 - Require `ruleId` for REST policy-history queries and return only that rule's changed before/after snapshots, including completion events. Preserve IDs through client policy edits and upgrades; support pre-ID snapshots without inventing missing confirmations.
 - Introduce a Function-scoped custom identity role containing only `Microsoft.Authorization/roleAssignments/read` for consent-independent eligibility checks, including inherited/group assignments. Require custom role definition write permission during installation/update and surface role-verification failures without enabling access.
-- Rebuild versioned release artifacts and expand API, browser/UI, least-privilege and installer permission regression coverage.
+- Rebuild the versioned frontend and nextversion installation package and expand API, browser/UI, least-privilege and installer permission regression coverage. The group-picker and required-field changes were verified live on 1.4.20261017.5 without application-setting changes; this release's history-label rename has not been redeployed.
 - Audit before configuration mutations, confirm only after completed saves, and report uncertain outcomes explicitly. Use synchronous conditional policy blob writes and route PowerShell manager mutations through the audited backend. Manager history remains restricted to Azure Owner/Contributor.
 - Align Entra device-group and Administrative Unit headings with Extension Attributes; remove the empty activity panel from both management tabs.
 

@@ -10,6 +10,14 @@ export interface GroupSearchResult {
 
 export type SearchGroups = (query: string) => Promise<GroupSearchResult>;
 
+export function validateObjectSearch(value: string): string {
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)) {
+    return 'Use single-line text without control or invisible formatting characters.';
+  }
+  if (value.trim().length < 2 || value.length > 128) return 'Enter 2 to 128 characters.';
+  return '';
+}
+
 export function mountObjectPicker(
   container: HTMLElement,
   initial: string[],
@@ -18,8 +26,9 @@ export function mountObjectPicker(
   label: string,
   kind: 'userGroup' | 'deviceGroups' | 'administrativeUnit' | 'policyManagers',
   onChanged: () => void,
-): { values: () => string[] } {
+): { values: () => string[]; reportValidity: () => boolean } {
   const de = language === 'de';
+  const userGroup = kind === 'userGroup';
   const au = kind === 'administrativeUnit';
   const managers = kind === 'policyManagers';
   const multiple = kind === 'deviceGroups' || managers;
@@ -40,7 +49,8 @@ export function mountObjectPicker(
     listLabel.append(document.createTextNode(label));
   }
   const selected = document.createElement('select');
-  selected.size = multiple ? 4 : 2;
+  selected.size = userGroup ? 1 : multiple ? 4 : 2;
+  selected.required = userGroup;
   listLabel.append(selected);
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
@@ -51,11 +61,23 @@ export function mountObjectPicker(
     element.textContent = text;
     return element;
   }
-  const add = button(managers ? (de ? 'Manager hinzufuegen' : 'Add manager') : au ? (de ? 'AU hinzufuegen' : 'Add AU') : (de ? 'Gruppe hinzufuegen' : 'Add group'));
+  const add = button(userGroup ? (de ? 'Gruppe aendern' : 'Change group') : managers ? (de ? 'Manager hinzufuegen' : 'Add manager') : au ? (de ? 'AU hinzufuegen' : 'Add AU') : (de ? 'Gruppe hinzufuegen' : 'Add group'));
   const remove = button(managers ? (de ? 'Manager entfernen' : 'Remove manager') : au ? (de ? 'AU entfernen' : 'Remove AU') : (de ? 'Gruppe entfernen' : 'Remove group'));
   remove.disabled = true;
+  function validateSelection(): void {
+    const value = values[0];
+    selected.setCustomValidity(userGroup && (values.length !== 1 || !value || !names.has(value.toLowerCase()))
+      ? (de ? 'Bitte eine gueltige Benutzergruppe auswaehlen. Die Gruppe muss erfolgreich geladen sein.' : 'Select a valid user group. The group must be successfully loaded.')
+      : '');
+  }
   function render(): void {
     selected.replaceChildren();
+    if (userGroup && !values.length) {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = de ? 'Bitte Gruppe auswaehlen' : 'Select a group';
+      selected.append(placeholder);
+    }
     for (const value of values) {
       const option = document.createElement('option');
       option.value = value;
@@ -65,7 +87,8 @@ export function mountObjectPicker(
       option.title = value;
       selected.append(option);
     }
-    selected.selectedIndex = -1;
+    selected.selectedIndex = userGroup ? 0 : -1;
+    validateSelection();
     remove.disabled = true;
     add.disabled = au && values.length > 0;
   }
@@ -96,17 +119,35 @@ export function mountObjectPicker(
   close.addEventListener('click', () => dialog.close());
   let revision = 0;
   dialog.addEventListener('close', () => { revision++; });
+  function validateSearch(value = search.value): boolean {
+    const error = validateObjectSearch(value);
+    const message = !error || !de ? error : error === 'Enter 2 to 128 characters.'
+      ? 'Bitte 2 bis 128 Zeichen eingeben.'
+      : 'Nur einzeiliger Text ohne Steuerzeichen oder unsichtbare Formatierungszeichen erlaubt.';
+    search.setCustomValidity(message);
+    feedback.textContent = message;
+    return !error;
+  }
   search.addEventListener('input', () => {
     revision++;
     results.replaceChildren();
-    feedback.textContent = '';
+    validateSearch();
+  });
+  search.addEventListener('paste', event => {
+    const pasted = event.clipboardData?.getData('text/plain');
+    if (pasted !== undefined && /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(pasted)) {
+      event.preventDefault();
+      revision++;
+      results.replaceChildren();
+      validateSearch(pasted);
+    }
   });
   async function runSearch(): Promise<void> {
     const query = search.value.trim();
     if (searchButton.disabled) return;
     results.replaceChildren();
-    if (query.length < 2 || query.length > 128) {
-      feedback.textContent = de ? 'Bitte 2 bis 128 Zeichen eingeben.' : 'Enter 2 to 128 characters.';
+    if (!validateSearch()) {
+      search.reportValidity();
       return;
     }
     const current = ++revision;
@@ -146,13 +187,16 @@ export function mountObjectPicker(
   });
   add.addEventListener('click', () => {
     search.value = '';
+    search.setCustomValidity('');
     results.replaceChildren();
     feedback.textContent = '';
     dialog.showModal();
     search.focus();
   });
   dialog.append(title, searchLabel, searchButton, feedback, results, close);
-  section.append(listLabel, add, remove, status, dialog);
+  section.append(listLabel, add);
+  if (!userGroup) section.append(remove);
+  section.append(status, dialog);
   container.append(section);
   render();
   if (!au) {
@@ -163,6 +207,7 @@ export function mountObjectPicker(
           ? (de ? `Objekt nicht gefunden: ${value}` : `Object not found: ${value}`)
           : (de ? `Gruppe nicht gefunden: ${value}` : `Group not found: ${value}`));
         names.set(value.toLowerCase(), match.displayName);
+        validateSelection();
         const option = Array.from(selected.options).find(option => option.value === value);
         if (option) option.textContent = match.displayName;
       }).catch((error: unknown) => {
@@ -172,5 +217,8 @@ export function mountObjectPicker(
       });
     }
   }
-  return { values: () => [...values] };
+  return { values: () => [...values], reportValidity: () => {
+    validateSelection();
+    return selected.reportValidity();
+  } };
 }

@@ -25,6 +25,12 @@ export interface PolicyFields {
 
 const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export function getMissingPolicyFields(
+  fields: Pick<PolicyFields, 'name' | 'groupId' | 'groupTag'>,
+): Array<'name' | 'groupId' | 'groupTag'> {
+  return (['name', 'groupId', 'groupTag'] as const).filter(key => !fields[key].trim());
+}
+
 export function getPolicyTagLabel(tag: string, policies: Array<Pick<TagPolicyRule, 'name' | 'tags'>> = []): string {
   const names = policies.filter(rule => rule.tags.includes(tag))
     .map(rule => rule.name?.trim())
@@ -188,7 +194,7 @@ export function mountPolicyEditor(
     const labels: Record<keyof PolicyFields, string> = {
       name: de ? 'Policy-Name' : 'Policy name',
       description: de ? 'Beschreibung' : 'Description',
-      groupId: de ? 'Berechtigte Benutzergruppe (Objekt-ID)' : 'Authorized user group (object ID)',
+      groupId: de ? 'Berechtigte Benutzergruppe' : 'Authorized user group',
       groupTag: 'Autopilot Group Tag',
       attributes: 'Extension Attributes',
       groups: de ? 'Entra-Geraetezielgruppen' : 'Entra device target groups',
@@ -196,7 +202,7 @@ export function mountPolicyEditor(
     };
     const inputs = new Map<keyof PolicyFields, HTMLInputElement | HTMLTextAreaElement>();
     const attributeRows: Array<{ select: HTMLSelectElement; value: HTMLInputElement }> = [];
-    const objectPickers = new Map<keyof PolicyFields, { values: () => string[] }>();
+    const objectPickers = new Map<keyof PolicyFields, ReturnType<typeof mountObjectPicker>>();
     const save = document.createElement('button');
     save.type = 'button';
     save.className = 'button';
@@ -357,7 +363,15 @@ export function mountPolicyEditor(
     remove.textContent = text.remove;
     const row = { element: details, dirty };
     const read = (): TagPolicyRule => {
+      details.open = true;
       const fields = readFields();
+      const missing = getMissingPolicyFields(fields);
+      if (missing.length) {
+        throw new Error(`${de ? 'Fehlende Pflichtfelder' : 'Missing required fields'}: ${missing.map(key => labels[key]).join(', ')}.`);
+      }
+      if (!objectPickers.get('groupId')!.reportValidity()) {
+        throw new Error(de ? 'Bitte eine gueltige Benutzergruppe auswaehlen.' : 'Select a valid user group.');
+      }
       if (new Set(attributeRows.map(row => row.select.value)).size !== attributeRows.length) {
         details.open = true;
         throw new Error('Duplicate extension attribute.');
@@ -420,7 +434,12 @@ export function mountPolicyEditor(
     });
     save.addEventListener('click', () => {
       try { void persist(read()); }
-      catch (error) { rowStatus.textContent = error instanceof Error ? error.message : String(error); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const message = `${de ? 'Die Regel kann nicht gespeichert werden.' : 'The rule cannot be saved.'}\n${reason}`;
+        rowStatus.textContent = message;
+        window.alert(message);
+      }
     });
     fieldset.addEventListener('input', changed);
     fieldset.addEventListener('change', changed);

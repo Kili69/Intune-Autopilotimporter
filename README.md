@@ -728,16 +728,25 @@ and dependency failures other than the expected permission-denied response are
 reported rather than silently ignored.
 Load the existing rules, edit their names, tags, attribute/value pairs and Entra
 device target groups. Each new or changed rule has its own **Save rule** button.
+If required fields are empty, saving is blocked with a popup listing all missing
+fields: policy name, authorized user group and Autopilot Group Tag. Other local
+validation failures also explain why the rule cannot be saved in a popup.
 Saving one rule leaves other local drafts unsaved. Removing a rule requires
 confirmation and persists its deletion immediately; the last rule cannot be
 deleted. Adding a rule scrolls to and focuses the new entry.
 
 Rules are initially collapsed; select the rule name to expand its fields.
-For **Authorized user group** and **Entra device target groups**, select
-**Add group** to open an Entra object picker. Enter at least two
+**Authorized user group** is a single-line selection with **Change group** to
+open the Entra object picker. Exactly one successfully resolved group is required
+before saving; it can be replaced but not removed.
+For **Entra device target groups**, select **Add group**.
+Enter at least two
 characters from the start of the group name (or an exact object ID), select
 **Search**, then choose a result. Selected groups display their Entra names;
-IDs remain the stored identifiers. Select a list entry to enable **Remove group**.
+IDs remain the stored identifiers. Search input is limited to 2–128 characters;
+control characters, line breaks and invisible formatting characters are rejected
+in the dialog. Unicode names and punctuation remain supported.
+Select a device target list entry to enable **Remove group**.
 Searches return up to 25 groups; refine the name
 prefix if more results are available. The search uses the managed identity's
 existing `GroupMember.Read.All` permission and is restricted to policy managers.
@@ -776,10 +785,10 @@ Each rule has an optional multiline **Description** immediately below its name
 (maximum 2048 characters). It is persisted with the rule, including through
 PowerShell edits and deployment upgrades.
 
-Each saved rule in **TagPolicies** provides its own **Change history** button.
+Each saved rule in **TagPolicies** provides its own **Policy changes** button.
 The popup contains only changes to that rule, including after a rename.
 The button is disabled for new, unsaved rules. Saving shows **Rule updated**.
-**Policy managers** retains its separate **Change history** popup.
+**Policy managers** retains its separate **Policy changes** popup.
 It shows the timestamp, authenticated caller, operation ID and before/after
 values. Policy history is visible to policy managers; manager history requires
 Azure Owner/Contributor on the Function App, just like manager administration.

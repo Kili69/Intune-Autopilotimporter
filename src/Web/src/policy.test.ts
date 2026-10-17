@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getPolicyTagLabel, parsePolicyFields, PolicyFields, validatePolicyTags, validateExtensionAttributeValue, updateSingleRule } from './policy';
+import { getMissingPolicyFields, getPolicyTagLabel, parsePolicyFields, PolicyFields, validatePolicyTags, validateExtensionAttributeValue, updateSingleRule } from './policy';
 
 const fields: PolicyFields = {
   name: 'Sales',
@@ -11,6 +11,20 @@ const fields: PolicyFields = {
 };
 
 describe('Named policy editor', () => {
+  it.each([
+    { missing: [] },
+    { missing: ['name'] },
+    { missing: ['groupId'] },
+    { missing: ['groupTag'] },
+    { missing: ['name', 'groupId'] },
+    { missing: ['name', 'groupTag'] },
+    { missing: ['groupId', 'groupTag'] },
+    { missing: ['name', 'groupId', 'groupTag'] },
+  ] as const)('lists all missing required fields: $missing', ({ missing }) => {
+    const input = { ...fields };
+    for (const key of missing) input[key] = '   ';
+    expect(getMissingPolicyFields(input)).toEqual(missing);
+  });
   it('preserves free-text descriptions including line breaks', () => {
     expect(parsePolicyFields({ ...fields, description: 'Sales devices\nBerlin and Hamburg' }).description)
       .toBe('Sales devices\nBerlin and Hamburg');
@@ -55,7 +69,9 @@ describe('Named policy editor', () => {
     expect(() => parsePolicyFields({ ...fields, groupTag: '' })).toThrow('Group Tag');
   });
   it.each([
-    { name: '' }, { groupTag: '' }, { groupId: 'bad' },
+    { name: '' }, { groupTag: '' }, { groupId: 'bad' }, { groupId: '' },
+    { groupId: '00000000-0000-0000-0000-000000000000' },
+    { groupId: `${fields.groupId},${fields.groupId}` },
     { attributes: 'extensionAttribute16=bad' },
     { attributes: 'extensionAttribute1=A\nextensionAttribute1=B' },
     { groups: 'not-a-guid' }, { groups: '00000000-0000-0000-0000-000000000000' },

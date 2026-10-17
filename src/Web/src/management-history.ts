@@ -45,7 +45,7 @@ export function mountManagementHistoryButton(
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'button button-quiet';
-  button.textContent = de ? 'Aenderungshistorie' : 'Change history';
+  button.textContent = de ? 'Policy-Aenderungen' : 'Policy changes';
   const dialog = document.createElement('dialog');
   dialog.className = 'object-picker-dialog management-history-dialog';
   const heading = document.createElement('h2');
