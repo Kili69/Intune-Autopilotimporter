@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -704,7 +704,7 @@ function ConvertTo-UpdateTagAuthorizationRules {
             groupId = ([guid] $_.groupId).ToString()
             tags = $tags
         }
-        foreach ($key in @('name', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
+        foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
             # Include legacy scopeTag input for the shared migration logic;
             # the updater does not independently reinterpret action semantics.
             if ($_.PSObject.Properties[$key]) {
@@ -975,6 +975,7 @@ function Assert-AzureUpdatePermissions {
         'Microsoft.Web/sites/write'
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
+        'Microsoft.Authorization/roleDefinitions/write'
     )
     $permissionsResponse = try {
         Invoke-AzRestMethod `
@@ -983,11 +984,11 @@ function Assert-AzureUpdatePermissions {
     }
     catch {
         Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
-        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
     if ($permissionsResponse.StatusCode -ge 400) {
         Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
-        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
 
     $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
@@ -1025,11 +1026,15 @@ function Assert-AzureUpdatePermissions {
                 'Microsoft.Web/sites/write' { 'Function Apps' }
                 'Microsoft.Web/sites/config/write' { 'Function App configuration' }
                 'Microsoft.Authorization/roleAssignments/write' { 'Azure role assignments' }
+                'Microsoft.Authorization/roleDefinitions/write' { 'Custom role definitions' }
             }
         } | Select-Object -Unique)
         $roleAssignmentMissing = $missingActions -contains `
             'Microsoft.Authorization/roleAssignments/write'
-        $requiredRoles = if ($roleAssignmentMissing) {
+        $requiredRoles = if ($missingActions -contains 'Microsoft.Authorization/roleDefinitions/write') {
+            'Owner, or Contributor plus User Access Administrator (including custom role definition writes)'
+        }
+        elseif ($roleAssignmentMissing) {
             'Owner, or Contributor plus Role Based Access Control Administrator or User Access Administrator'
         }
         else {

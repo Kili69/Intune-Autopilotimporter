@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -7,6 +7,7 @@ Describe 'Named device policy normalization' {
     BeforeEach {
         $rule = @{
             name = 'Sales'
+            description = "Sales devices`nBerlin"
             groupId = '11111111-1111-1111-1111-111111111111'
             groupTag = 'Sales'
         }
@@ -17,6 +18,39 @@ Describe 'Named device policy normalization' {
         $policy[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
         $policy[0].tags | Should -Be @('Sales')
         @($policy[0].extensionAttributes.Keys).Count | Should -Be 0
+    }
+    It 'assigns stable IDs to existing rules and preserves them across renames' {
+        $first = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
+        $again = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
+        $first[0].ruleId | Should -Be $again[0].ruleId
+        $first[0].name = 'Renamed'
+        $first[0].groupId = '22222222-2222-2222-2222-222222222222'
+        (ConvertTo-TagAuthorizationPolicy -Rules @($first))[0].ruleId | Should -Be $again[0].ruleId
+        $rule.ruleId = 'invalid'
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*ruleId*'
+    }
+    It 'rejects assigning the same persistent ID to two different rules' {
+        $rule.ruleId = '22222222-2222-2222-2222-222222222222'
+        $other = $rule.Clone()
+        $other.name = 'Other'
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule, $other) } | Should -Throw '*unique ruleId*'
+    }
+    It 'preserves multiline descriptions for named and legacy rules' {
+        $rule.description = "Sales devices`nBerlin and Hamburg"
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
+        $policy[0].description | Should -BeExactly $rule.description
+        $legacy = @{ groupId = $rule.groupId; tags = @('Sales'); description = $rule.description }
+        (ConvertTo-TagAuthorizationPolicy -Rules @($legacy))[0].description | Should -BeExactly $rule.description
+    }
+    It 'enforces description length and rejects non-text controls' {
+        $rule.description = 'x' * 2048
+        (ConvertTo-TagAuthorizationPolicy -Rules @($rule))[0].description.Length | Should -Be 2048
+        $rule.description += 'x'
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*description*'
+        $rule.description = "bad$([char]0)value"
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*description*'
+        $rule.description = 123
+        { ConvertTo-TagAuthorizationPolicy -Rules @($rule) } | Should -Throw '*description*'
     }
     It 'migrates the effective group tag from an older scope-only rule without retaining scope actions' {
         $rule.Remove('groupTag')
@@ -211,6 +245,8 @@ Describe 'Device policy Graph actions' {
                 if ($Method -eq 'Get') {
                     [pscustomobject]@{ policy = @([pscustomobject]@{
                         name = 'Sales'
+                        description = "Sales devices`nBerlin"
+                        ruleId = '66666666-6666-6666-6666-666666666666'
                         groupId = '11111111-1111-1111-1111-111111111111'
                         tags = @('Sales')
                         groupTag = 'Sales'
@@ -226,6 +262,8 @@ Describe 'Device policy Graph actions' {
             Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 1 -Exactly -ParameterFilter {
                 $Method -eq 'Put' -and
                 ($Body | ConvertFrom-Json).policy[0].name -eq 'Sales' -and
+                ($Body | ConvertFrom-Json).policy[0].description -eq "Sales devices`nBerlin" -and
+                ($Body | ConvertFrom-Json).policy[0].ruleId -eq '66666666-6666-6666-6666-666666666666' -and
                 ($Body | ConvertFrom-Json).policy[0].extensionAttributes.extensionAttribute5 -eq 'Berlin' -and
                 ($Body | ConvertFrom-Json).policy[0].deviceGroupIds -contains '22222222-2222-2222-2222-222222222222' -and
                 'scopeTag' -notin ($Body | ConvertFrom-Json).policy[0].PSObject.Properties.Name
@@ -576,6 +614,9 @@ BeforeAll {
                 }
                 Mock Push-OutputBinding {}
                 Mock Write-Error {}
+                Mock Write-ManagementAuditEvent {}
+                Mock Set-ManagementPolicyBlob {}
+                Mock Get-ManagementAuditHistory { @{ events = @(); continuation = '' } }
             }
             It 'returns groups independently of policy blob contents' {
                 & $managerHandler -Request $request -TagPolicyBlob ''
@@ -584,6 +625,61 @@ BeforeAll {
                 }
                 Should -Invoke Find-EntraPolicyGroups -Times 1 -Exactly -ParameterFilter { $SearchText -eq 'Sales' }
             }
+                It 'authorizes policy history before reading its permanent records' {
+                    $request.Query = @{ history = 'true'; ruleId = '11111111-1111-1111-1111-111111111111' }
+                    & $managerHandler -Request $request
+                    Should -Invoke Get-ManagementAuditHistory -Times 1 -ParameterFilter {
+                        $Kind -eq 'policies' -and $RuleId -eq '11111111-1111-1111-1111-111111111111'
+                    }
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                        $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).ruleId -eq '11111111-1111-1111-1111-111111111111'
+                    }
+                }
+                It 'denies policy history to non-managers' {
+                    $request.Query = @{ history = 'true' }
+                    Mock Test-TagPolicyManagerPrincipal { $false }
+                    & $managerHandler -Request $request
+                    Should -Invoke Get-ManagementAuditHistory -Times 0
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter { $Value.StatusCode -eq 403 }
+                }
+                It 'requires a specific valid rule ID for policy history' -TestCases @(
+                    @{ Id = '' }; @{ Id = 'bad' }; @{ Id = '00000000-0000-0000-0000-000000000000' }
+                ) {
+                    param($Id)
+                    $request.Query = @{ history = 'true'; ruleId = $Id }
+                    & $managerHandler -Request $request
+                    Should -Invoke Get-ManagementAuditHistory -Times 0
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                        $Value.StatusCode -eq 400 -and ($Value.Body | ConvertFrom-Json).error -eq 'ruleIdRequired'
+                    }
+                }
+                It 'reports invalid policy-history pagination explicitly' {
+                    $request.Query = @{ history = 'true'; ruleId = '11111111-1111-1111-1111-111111111111'; continuation = 'invalid' }
+                    Mock Get-ManagementAuditHistory { throw [ArgumentException]::new('Invalid continuation') }
+                    & $managerHandler -Request $request
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter { $Value.StatusCode -eq 400 }
+                }
+                It 'does not write policy configuration if its initial audit insertion fails' {
+                    $request.Method = 'PUT'
+                    $request.Query = @{}
+                    $request.Body = @{ policy = @(@{ groupId = '11111111-1111-1111-1111-111111111111'; tags = @('New') }) }
+                    Mock Write-ManagementAuditEvent { throw 'Audit unavailable' }
+                    & $managerHandler -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["Old"]}]'
+                    Should -Invoke Set-ManagementPolicyBlob -Times 0
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter { $Value.StatusCode -eq 502 }
+                }
+                It 'reports an unconfirmed policy write when completion auditing fails' {
+                    $request.Method = 'PUT'
+                    $request.Query = @{}
+                    $request.Body = @{ policy = @(@{ groupId = '11111111-1111-1111-1111-111111111111'; tags = @('New') }) }
+                    Mock Write-ManagementAuditEvent { throw 'Confirmation failed' } -ParameterFilter { $Stage -eq 'applied' }
+                    & $managerHandler -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["Old"]}]'
+                    Should -Invoke Set-ManagementPolicyBlob -Times 1
+                    Should -Invoke Write-ManagementAuditEvent -Times 1 -ParameterFilter { $Stage -eq 'failed' }
+                    Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                        $Value.StatusCode -eq 502 -and ($Value.Body | ConvertFrom-Json).error -eq 'policySaveUnconfirmed'
+                    }
+                }
             It 'returns a flat policy array for <Count> legacy rules' -TestCases @(
                 @{ Count = 1 }
                 @{ Count = 2 }
@@ -614,11 +710,10 @@ BeforeAll {
                     })
                 }
                 Mock Invoke-RestMethod { throw 'Unexpected Graph request' }
-                & $managerHandler -Request $request
-                Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
-                    $Name -eq 'UpdatedTagPolicyBlob' -and
-                    ($Value | ConvertFrom-Json)[0].groupTag -eq 'Sales' -and
-                    'scopeTag' -notin ($Value | ConvertFrom-Json)[0].PSObject.Properties.Name
+                & $managerHandler -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["Sales"]}]'
+                Should -Invoke Set-ManagementPolicyBlob -Times 1 -Exactly -ParameterFilter {
+                    ($Json | ConvertFrom-Json)[0].groupTag -eq 'Sales' -and
+                    'scopeTag' -notin ($Json | ConvertFrom-Json)[0].PSObject.Properties.Name
                 }
                 Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
                     $Name -eq 'Response' -and $Value.StatusCode -eq 200

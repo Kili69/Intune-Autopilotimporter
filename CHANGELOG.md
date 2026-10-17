@@ -6,6 +6,29 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261017.5] - 2026-10-17
+
+### Changed
+
+- Show Information or Error in management history summaries, retaining request/completion phase in details. Record policy and manager save/confirmation failures when audit storage is available; errors do not imply rollback.
+- Replace global policy history with a History button in each saved rule. Filter changes server-side by persistent rule ID, preserve identity across renames and show a short "Rule updated" confirmation after saving. Keep Policy Manager history separate and permanently retained.
+- Require `ruleId` for REST policy-history queries and return only that rule's changed before/after snapshots, including completion events. Preserve IDs through client policy edits and upgrades; support pre-ID snapshots without inventing missing confirmations.
+- Introduce a Function-scoped custom identity role containing only `Microsoft.Authorization/roleAssignments/read` for consent-independent eligibility checks, including inherited/group assignments. Require custom role definition write permission during installation/update and surface role-verification failures without enabling access.
+- Rebuild versioned release artifacts and expand API, browser/UI, least-privilege and installer permission regression coverage.
+- Audit before configuration mutations, confirm only after completed saves, and report uncertain outcomes explicitly. Use synchronous conditional policy blob writes and route PowerShell manager mutations through the audited backend. Manager history remains restricted to Azure Owner/Contributor.
+- Align Entra device-group and Administrative Unit headings with Extension Attributes; remove the empty activity panel from both management tabs.
+
+### Added
+
+- `Get-AutoPilotTagPolicyHistory -RuleId` with pagination and explicit API errors. Include rule IDs and descriptions in normal PowerShell policy output.
+- Manual Re-Tagging device reload and persisted multiline policy descriptions, retained by PowerShell edits and deployment updates.
+- Permanent policy and Policy Manager change histories with authenticated caller, timestamp and before/after details in paginated popups. No application deletion or import-retention expiry; not WORM-locked against Azure administrators.
+
+### Fixed
+
+- Compare normalized policy content rather than raw JSON when saving rules, avoiding false concurrent-change errors caused by blob-binding formatting. Preserve ETag-conditional writes and reject actual rule or description changes.
+- Hide manager administration and its Azure sign-in button for ordinary policy managers. Only server-confirmed Azure Owner/Contributor assignments enable the controls; delegated ARM authorization remains mandatory for manager reads, searches and changes.
+
 ## [1.4.20261016.12] - 2026-10-16
 
 ### Changed

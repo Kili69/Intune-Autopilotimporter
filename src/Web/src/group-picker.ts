@@ -29,7 +29,16 @@ export function mountObjectPicker(
   section.className = 'object-picker';
   const listLabel = document.createElement('label');
   listLabel.className = 'field-label';
-  listLabel.append(document.createTextNode(label));
+  if (kind === 'deviceGroups' || au) {
+    const heading = document.createElement('span');
+    heading.className = 'policy-section-title';
+    heading.setAttribute('role', 'heading');
+    heading.setAttribute('aria-level', '3');
+    heading.textContent = label;
+    listLabel.append(heading);
+  } else {
+    listLabel.append(document.createTextNode(label));
+  }
   const selected = document.createElement('select');
   selected.size = multiple ? 4 : 2;
   listLabel.append(selected);

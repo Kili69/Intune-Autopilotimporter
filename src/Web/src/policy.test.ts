@@ -11,6 +11,27 @@ const fields: PolicyFields = {
 };
 
 describe('Named policy editor', () => {
+  it('preserves free-text descriptions including line breaks', () => {
+    expect(parsePolicyFields({ ...fields, description: 'Sales devices\nBerlin and Hamburg' }).description)
+      .toBe('Sales devices\nBerlin and Hamburg');
+    expect(parsePolicyFields({ ...fields, description: '' }).description).toBe('');
+    expect(parsePolicyFields({ ...fields, description: 'x'.repeat(2048) }).description?.length).toBe(2048);
+  });
+  it('preserves the persistent rule identity through renames and field changes', () => {
+    const original = { ...parsePolicyFields(fields), ruleId: '33333333-3333-3333-3333-333333333333' };
+    const replacement = parsePolicyFields({ ...fields, name: 'Renamed', description: 'Updated' }, original);
+    expect(replacement.ruleId).toBe(original.ruleId);
+    expect(updateSingleRule([original], original, replacement)).toEqual([replacement]);
+  });
+  it('rejects duplicate names even when the rules have different persistent IDs', () => {
+    const original = { ...parsePolicyFields(fields), ruleId: '33333333-3333-3333-3333-333333333333' };
+    expect(() => updateSingleRule([original], undefined, { ...original, ruleId: '44444444-4444-4444-4444-444444444444' }))
+      .toThrow('already exists');
+  });
+  it('rejects oversized descriptions and non-text control characters', () => {
+    expect(() => parsePolicyFields({ ...fields, description: 'x'.repeat(2049) })).toThrow('description');
+    expect(() => parsePolicyFields({ ...fields, description: 'Bad\u0000value' })).toThrow('description');
+  });
   it('shows distinct rule names without tag values or generated GUID names', () => {
     expect(getPolicyTagLabel('Sales', [
       { name: 'Berlin', tags: ['Sales'] },

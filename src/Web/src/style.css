@@ -279,6 +279,18 @@ footer a:hover { color: #0d5bd7; }
 .object-picker-dialog input { width: 100%; padding: 0.65rem; margin: 0.5rem 0; font: inherit; }
 .object-picker > button { margin: 0.5rem 0.5rem 0 0; }
 .object-picker select { min-height: 4rem; }
+.policy-section-title {
+  display: block;
+  margin: 0.8rem 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.management-history-dialog { width: min(64rem, calc(100vw - 3rem)); }
+.management-history-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; }
+.management-history-dialog details > p { padding: 0 1rem; overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
   .policy-attribute-row { grid-template-columns: 1fr; }

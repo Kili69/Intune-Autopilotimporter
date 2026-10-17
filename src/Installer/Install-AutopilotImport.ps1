@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -1199,6 +1199,7 @@ function Assert-AzureDeploymentPermissions {
         'Microsoft.Web/sites/write'
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
+        'Microsoft.Authorization/roleDefinitions/write'
     )
     if (-not $ResourceGroupExists) {
         $requiredActions += 'Microsoft.Resources/subscriptions/resourceGroups/write'
@@ -1211,11 +1212,11 @@ function Assert-AzureDeploymentPermissions {
     }
     catch {
         Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
-        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
     if ($permissionsResponse.StatusCode -ge 400) {
         Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
-        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
 
     $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
@@ -1266,6 +1267,8 @@ function Assert-AzureDeploymentPermissions {
                 'Create or update Function App configuration'
             'Microsoft.Authorization/roleAssignments/write' = `
                 'Create or update Azure role assignments'
+            'Microsoft.Authorization/roleDefinitions/write' = `
+                'Create or update the manager access reader custom role'
         }
         $missingActionDetails = @($missingActions | ForEach-Object {
             "  - $_ ($($actionDescriptions[$_]))"
@@ -1274,7 +1277,10 @@ function Assert-AzureDeploymentPermissions {
             'Microsoft.Authorization/roleAssignments/write'
         $resourceGroupWriteMissing = $missingActions -contains `
             'Microsoft.Resources/subscriptions/resourceGroups/write'
-        $requiredRoles = if ($roleAssignmentWriteMissing) {
+        $requiredRoles = if ($missingActions -contains 'Microsoft.Authorization/roleDefinitions/write') {
+            'Assign Owner, or assign both Contributor and User Access Administrator, including permission to create custom role definitions.'
+        }
+        elseif ($roleAssignmentWriteMissing) {
             'Assign Owner, or assign both Contributor and Role Based Access Control Administrator (alternatively User Access Administrator).'
         }
         else {
@@ -2422,7 +2428,7 @@ catch {
         -ErrorAction Continue
     if ($errorDetails -match `
         'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
-        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
+        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with User Access Administrator (including custom role definition writes), at the target resource group or subscription scope.'
     }
     throw
 }

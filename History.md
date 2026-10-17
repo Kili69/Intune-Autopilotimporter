@@ -2,6 +2,17 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261017.5` - 2026-10-17
+
+- Hide both Policy Manager administration and its Azure sign-in button for ordinary policy managers. Check the authenticated caller's direct, group and inherited Azure Owner/Contributor assignments server-side before requesting delegated ARM consent; retain delegated authorization for every manager-data operation and report verification failures explicitly.
+- Add a custom role granting only `Microsoft.Authorization/roleAssignments/read`, assigned to the Function identity at Function App scope. Installation and updates now also verify custom role definition write permission; no additional identity configuration/write rights are granted. Preserve existing policy and manager settings during upgrade.
+- Add a manual Re-Tagging device reload and persisted multiline policy descriptions, preserving descriptions through client edits and upgrades. Match target-group/AU headings to Extension Attributes and hide empty activity panels on both management tabs.
+- Add permanent policy and manager change histories with caller, timestamp, operation ID and before/after details in paginated popups. Insert audit requests before writes, confirm only after synchronous conditional policy saves or manager updates, and report uncertain outcomes explicitly. Route client manager writes through the same audited backend; retain existing admin-only authorization for manager history. Import cleanup never deletes management events; no application delete action or administrator-proof WORM guarantee is provided.
+- Show policy history per saved rule using persistent rule IDs, including after renames; remove the global history control and confirm saves with "Rule updated". Require ruleId on REST history queries, return only that rule's changed snapshots and preserve legacy history without fabricated confirmations. Add Get-AutoPilotTagPolicyHistory with pagination; preserve rule IDs and descriptions in normal client output, edits and upgrades. Deleting a rule removes its history view while stored audit records remain retained.
+- Fix false concurrent-change failures when saving rules by comparing normalized policy content instead of raw blob-binding JSON formatting. Retain ETag-conditional writes and reject actual concurrent rule/description changes; cover reordered properties and trailing newlines with regression tests.
+- Show Information/Error event severity in management history summaries instead of request/completion labels; retain the audit phase in details so pending requests cannot be mistaken for saved changes. Record failure events after policy or manager save/confirmation errors when audit storage remains available, without hiding uncertain outcomes.
+- Rebuild the frontend and deployment package for this release; add API, UI, least-privilege and deployment-permission regression tests.
+
 ## `1.4.20261016.12` - 2026-10-16
 
 - Simplified the policy workspace: localized save confirmation dialogs, no Import History on the policy tab, readable rule-only tag labels, and no redundant introductory/help paragraphs. Entering TagPolicies automatically reloads current rules, with discard confirmation for unsaved edits and visible load errors.

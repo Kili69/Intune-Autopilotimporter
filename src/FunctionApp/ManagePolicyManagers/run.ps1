@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -6,6 +6,9 @@
 Reads and updates explicit policy managers using the caller's Azure RBAC rights.
 .DESCRIPTION
 Requires Easy Auth and a separate delegated ARM token in x-autopilot-arm-token.
+GET ?access=true only checks visibility using the Function identity's
+Function-scoped roleAssignments/read permission, without a delegated ARM token.
+It returns canManagePolicyManagers, never manager settings or directory data.
 ARM validates that token; its user must match the Easy Auth user. Effective
 Owner/Contributor assignments on this Function App or an ancestor are required
 on every request, including directory searches. No managed-identity ARM write
@@ -20,6 +23,7 @@ param($Request, $TriggerMetadata)
 
 Import-Module (Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1') -Force
 $correlationId = [guid]::NewGuid().ToString()
+$auditRequested = $false
 function Send-ManagerResponse {
     param([HttpStatusCode] $StatusCode, [object] $Body)
     $Body.correlationId = $correlationId
@@ -29,7 +33,7 @@ function Send-ManagerResponse {
         Body = ConvertTo-Json -InputObject $Body -Depth 10 -Compress
     })
 }
-function Invoke-CallerArm {
+function Invoke-ManagerArm {
     param([string] $Uri, [string] $Method = 'GET', [object] $Body)
     if (-not $Uri.StartsWith('https://management.azure.com/', [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Unexpected ARM response URL.'
@@ -64,7 +68,13 @@ if ([string]::IsNullOrWhiteSpace([string] $Request.Headers['x-ms-client-principa
     Send-ManagerResponse Unauthorized @{ error = 'authenticationRequired' }
     return
 }
-if ([string]::IsNullOrWhiteSpace([string] $Request.Headers['x-autopilot-arm-token'])) {
+$accessCheck = $Request.Query -and $null -ne $Request.Query['access']
+if ($accessCheck -and ($Request.Method -ine 'GET' -or $Request.Query['access'] -ine 'true' -or
+    $null -ne $Request.Query['search'] -or $null -ne $Request.Query['history'])) {
+    Send-ManagerResponse BadRequest @{ error = 'invalidAccessCheck' }
+    return
+}
+if (-not $accessCheck -and [string]::IsNullOrWhiteSpace([string] $Request.Headers['x-autopilot-arm-token'])) {
     Send-ManagerResponse Unauthorized @{ error = 'azureAuthenticationRequired' }
     return
 }
@@ -79,26 +89,37 @@ try {
         $_.typ -in @('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier')
     } | Select-Object -First 1).val)
     if ($callerId -eq [guid]::Empty) { throw 'Missing user object ID.' }
-    $plainToken = [string] $Request.Headers['x-autopilot-arm-token']
-    $payload = $plainToken.Split('.')[1].Replace('-', '+').Replace('_', '/')
-    $payload = $payload.PadRight($payload.Length + ((4 - $payload.Length % 4) % 4), '=')
-    $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
-    if ([guid] $claims.oid -ne $callerId -or [guid] $claims.tid -ne [guid] $env:TENANT_ID) {
-        throw 'Azure and API accounts must match.'
+    if (-not $accessCheck) {
+        $plainToken = [string] $Request.Headers['x-autopilot-arm-token']
+        $payload = $plainToken.Split('.')[1].Replace('-', '+').Replace('_', '/')
+        $payload = $payload.PadRight($payload.Length + ((4 - $payload.Length % 4) % 4), '=')
+        $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
+        if ([guid] $claims.oid -ne $callerId -or [guid] $claims.tid -ne [guid] $env:TENANT_ID) {
+            throw 'Azure and API accounts must match.'
+        }
+        $armToken = ConvertTo-SecureString $plainToken -AsPlainText -Force
     }
-    $armToken = ConvertTo-SecureString $plainToken -AsPlainText -Force
 }
 catch {
-    Send-ManagerResponse Unauthorized @{ error = 'invalidAzureAuthentication'; message = 'Azure and API accounts must match.' }
+    Send-ManagerResponse Unauthorized @{ error = $(if ($accessCheck) { 'invalidPrincipal' } else { 'invalidAzureAuthentication' }) }
     return
 }
 try {
+    if ($accessCheck) {
+        $armToken = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop).Token
+        if ($armToken -isnot [Security.SecureString]) {
+            $armToken = ConvertTo-SecureString $armToken -AsPlainText -Force
+        }
+    }
     # Decoded claims are not authorization: ARM must first accept the token.
     $filter = [uri]::EscapeDataString("assignedTo('$callerId')")
     $next = "https://management.azure.com$resourceId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=$filter"
     $assignments = @(
         do {
-            $page = Invoke-CallerArm $next
+            $page = Invoke-ManagerArm $next
+            if (-not $page.PSObject.Properties['value'] -or $page.value -isnot [array]) {
+                throw 'Invalid ARM role-assignment response.'
+            }
             foreach ($assignment in $page.value) {
                 $roleId = ([string] $assignment.properties.roleDefinitionId).Split('/')[-1]
                 $roleName = switch ($roleId) {
@@ -111,14 +132,21 @@ try {
             $next = if ($page.PSObject.Properties['nextLink']) { [string] $page.nextLink } else { '' }
         } while ($next)
     )
-    if (-not (Test-TagManagerPolicyAdministratorRole $assignments $resourceId)) {
+    $canManage = Test-TagManagerPolicyAdministratorRole $assignments $resourceId
+    if ($accessCheck) {
+        Send-ManagerResponse OK @{ canManagePolicyManagers = [bool] $canManage }
+        return
+    }
+    if (-not $canManage) {
         Send-ManagerResponse Forbidden @{ error = 'policyManagerAdministrationForbidden' }
         return
     }
 }
 catch {
-    $status = $_.Exception.Response.StatusCode
-    if ($status -in @(401, 403)) {
+    $status = if ($_.Exception -is [Microsoft.PowerShell.Commands.HttpResponseException]) {
+        $_.Exception.Response.StatusCode
+    } else { $null }
+    if (-not $accessCheck -and $status -in @(401, 403)) {
         Send-ManagerResponse Forbidden @{ error = 'policyManagerAdministrationForbidden' }
     } else {
         Write-Error "[$correlationId] Azure role verification failed: $($_.Exception.Message)" -ErrorAction Continue
@@ -128,6 +156,16 @@ catch {
 }
 
 try {
+    if ($Request.Method -ieq 'GET' -and $Request.Query -and $Request.Query['history'] -eq 'true') {
+        try {
+            $history = Get-ManagementAuditHistory -Kind managers -Continuation ([string] $Request.Query['continuation'])
+        } catch [ArgumentException] {
+            Send-ManagerResponse BadRequest @{ error = 'invalidHistoryContinuation' }
+            return
+        }
+        Send-ManagerResponse OK $history
+        return
+    }
     if ($Request.Method -ieq 'GET' -and $Request.Query -and $null -ne $Request.Query['search']) {
         $query = ([string] $Request.Query['search']).Trim()
         if ($query.Length -lt 2 -or $query.Length -gt 128) {
@@ -149,7 +187,7 @@ try {
         return
     }
     $settingsUri = "https://management.azure.com$resourceId/config/appsettings"
-    $settings = Invoke-CallerArm "${settingsUri}/list?api-version=2022-03-01" POST
+    $settings = Invoke-ManagerArm "${settingsUri}/list?api-version=2022-03-01" POST
     $policyJson = [string] $settings.properties.MANAGER_AUTHORIZATION_POLICY
     $policy = Read-ManagerPolicy $policyJson
     if ($Request.Method -ieq 'GET') {
@@ -191,18 +229,30 @@ try {
             return
         }
     }
-    $settings = Invoke-CallerArm "${settingsUri}/list?api-version=2022-03-01" POST
+    $settings = Invoke-ManagerArm "${settingsUri}/list?api-version=2022-03-01" POST
     if ([string] $settings.properties.MANAGER_AUTHORIZATION_POLICY -cne $policyJson) {
         Send-ManagerResponse Conflict @{ error = 'managerPolicyChanged'; message = 'Reload managers before saving.' }
         return
     }
     $policy.additionalPrincipalIds = $ids
     $updatedJson = ConvertTo-Json -InputObject $policy -Depth 10 -Compress
+    Write-ManagementAuditEvent -Kind managers -OperationId $correlationId -Stage requested `
+        -Principal $principal -Before ($policyJson | ConvertFrom-Json) -After $policy
+    $auditRequested = $true
     $settings.properties.MANAGER_AUTHORIZATION_POLICY = $updatedJson
-    $null = Invoke-CallerArm "${settingsUri}?api-version=2022-03-01" PUT @{ properties = $settings.properties }
+    $null = Invoke-ManagerArm "${settingsUri}?api-version=2022-03-01" PUT @{ properties = $settings.properties }
+    Write-ManagementAuditEvent -Kind managers -OperationId $correlationId -Stage applied -Principal $principal
     Send-ManagerResponse OK @{ policy = $policy; expectedPolicy = $updatedJson }
 }
 catch {
     Write-Error "[$correlationId] Manager operation failed: $($_.Exception.Message)" -ErrorAction Continue
-    Send-ManagerResponse BadGateway @{ error = 'managerOperationFailed'; message = 'Could not read or update policy managers. Reload to verify the current state.' }
+    if ($auditRequested) {
+        try {
+            Write-ManagementAuditEvent -Kind managers -OperationId $correlationId -Stage failed `
+                -Principal $principal -Before ($policyJson | ConvertFrom-Json) -After $policy
+        } catch {
+            Write-Error "[$correlationId] Manager failure audit could not be recorded: $($_.Exception.Message)" -ErrorAction Continue
+        }
+    }
+    Send-ManagerResponse BadGateway @{ error = 'managerOperationFailed'; message = 'Could not read, update or confirm the manager audit record. Reload managers and history to verify the current state.' }
 }

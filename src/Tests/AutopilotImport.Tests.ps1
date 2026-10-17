@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -43,7 +43,7 @@ Describe 'Client module documentation' {
         $parseErrors.Count | Should -Be 0
     }
     It 'documents the purpose, behavior, outputs and every parameter of all client functions' {
-        $clientFunctions.Count | Should -Be 31
+        $clientFunctions.Count | Should -Be 32
         foreach ($function in $clientFunctions) {
             $help = $function.GetHelpContent()
             $help.Synopsis | Should -Not -BeNullOrEmpty -Because $function.Name
@@ -707,6 +707,7 @@ Describe 'Client configuration display' {
             'Get-AutoPilotImportHistory'
             'Get-AutoPilotImportStatus'
             'Get-AutoPilotTagPolicy'
+            'Get-AutoPilotTagPolicyHistory'
             'Get-AutoPilotTagPolicyManager'
             'Import-AutoPilotDevice'
             'New-AutoPilotImporterClientConfiguration'
@@ -928,11 +929,13 @@ Describe 'Client manager policy App Settings' {
             Select-Object -First 1
     }
 
-    It 'passes manager policy JSON to Az.Websites as a string value' {
+    It 'routes manager changes through the audited backend instead of direct settings writes' {
         $managerFunctionAst.Extent.Text | Should -Match `
-            '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
+            'Invoke-RestMethod -Method Put'
         $managerFunctionAst.Extent.Text | Should -Not -Match `
-            '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
+            'Set-AzWebApp -ResourceGroupName'
+        $managerFunctionAst.Extent.Text | Should -Match 'x-autopilot-arm-token'
+        $managerFunctionAst.Extent.Text | Should -Match 'expectedPolicy = \$appSettings.MANAGER_AUTHORIZATION_POLICY'
     }
 
     It 'discovers Azure details missing after URL bootstrap' {
@@ -961,6 +964,7 @@ Describe 'Client manager policy App Settings' {
                 Id = '/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg-autopilot-import/providers/Microsoft.Web/sites/func-autopilot-import'
                 SiteConfig = [pscustomobject]@{
                     AppSettings = @(
+                        [pscustomobject]@{ Name = 'API_AUDIENCE'; Value = 'api://test-api' }
                         [pscustomobject]@{
                             Name = 'MANAGER_AUTHORIZATION_POLICY'
                             Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":[],"allowIntuneRoleAdministrators":true}'
@@ -988,7 +992,9 @@ Describe 'Client manager policy App Settings' {
         }
         Mock Test-TagManagerPolicyAdministratorRole `
             -ModuleName AutopilotImport.Client { $true }
-        Mock Set-AzWebApp -ModuleName AutopilotImport.Client
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            @{ policy = @{ additionalPrincipalIds = @('11111111-1111-1111-1111-111111111111') } }
+        }
 
         $result = Update-AutoPilotTagPolicyManager `
             -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
@@ -996,6 +1002,9 @@ Describe 'Client manager policy App Settings' {
             -Confirm:$false
 
         $result.FunctionAppName | Should -Be 'func-autopilot-import'
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 1 -ParameterFilter {
+            $Method -eq 'Put' -and $Uri -eq 'https://func-autopilot-import.azurewebsites.net/api/management/policy-managers'
+        }
         Should -Invoke Resolve-ClientFunctionAppFromUrl `
             -ModuleName AutopilotImport.Client `
             -Times 1 `
@@ -3548,7 +3557,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 15
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 16
         Remove-Module AutopilotImport.Client
     }
 }
@@ -3902,6 +3911,8 @@ Describe 'Update script deployment discovery' {
         $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
             [pscustomobject]@{
                 name = 'Sales'
+                description = "Sales devices`nBerlin"
+                ruleId = '66666666-6666-6666-6666-666666666666'
                 groupId = '11111111-1111-1111-1111-111111111111'
                 tags = @('Sales')
                 groupTag = 'Sales'
@@ -3921,6 +3932,8 @@ Describe 'Update script deployment discovery' {
             }
         ))
         $rules[0].name | Should -Be 'Sales'
+        $rules[0].description | Should -BeExactly "Sales devices`nBerlin"
+        $rules[0].ruleId | Should -Be '66666666-6666-6666-6666-666666666666'
         $rules[0].groupTag | Should -Be 'Sales'
         $rules[0].scopeTag | Should -Be 'Sales scope'
         $rules[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
@@ -3931,6 +3944,7 @@ Describe 'Update script deployment discovery' {
         $normalized.Count | Should -Be 2
         $normalized[0].PSObject.Properties.Name | Should -Not -Contain 'scopeTag'
         $normalized[0].groupTag | Should -Be 'Sales'
+        $normalized[0].description | Should -BeExactly "Sales devices`nBerlin"
         $normalized[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
         $normalized[0].deviceGroupIds | Should -Be $rules[0].deviceGroupIds
         $normalized[0].administrativeUnitName | Should -Be 'Berlin Devices'
@@ -4226,7 +4240,25 @@ Describe 'Update script deployment discovery' {
 
         $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
-            'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+            'Contributor plus User Access Administrator'
+    }
+
+    It 'checks custom role definition permission before updating' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test'
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Message | Should -Match 'Custom role definitions'
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match 'custom role definition writes'
     }
 }
 
@@ -4685,13 +4717,31 @@ Describe 'Azure deployment permission validation' {
         $errorRecord.Exception.Message | Should -Match `
             'Create or update Azure role assignments'
         $errorRecord.Exception.Message | Should -Match `
-            'Contributor and Role Based Access Control Administrator'
+            'Contributor and User Access Administrator'
         $errorRecord.Exception.Message | Should -Match `
             "Checked scope: /subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-test"
         $errorRecord.Exception.Data['MissingActions'] | Should -Be `
-            'Microsoft.Authorization/roleAssignments/write'
+            'Microsoft.Authorization/roleAssignments/write,Microsoft.Authorization/roleDefinitions/write'
         $errorRecord.Exception.Data[ `
             'AutopilotDeploymentPermissionError'] | Should -BeTrue
+    }
+
+    It 'requires permission to define the manager visibility role before deployment' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' -ResourceGroupExists
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Data['MissingActions'] | Should -Be 'Microsoft.Authorization/roleDefinitions/write'
+        $errorRecord.Exception.Message | Should -Match 'manager access reader custom role'
     }
 
     It 'requires permission to create the Log Analytics workspace' {

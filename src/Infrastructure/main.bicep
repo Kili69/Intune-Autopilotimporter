@@ -319,6 +319,40 @@ resource installerStorageBlobDataContributor 'Microsoft.Authorization/roleAssign
   }
 }
 
+resource managerAccessReaderRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, functionAppName, 'manager-access-reader')
+  properties: {
+    roleName: 'Autopilot manager access reader ${uniqueString(resourceGroup().id, functionAppName)}'
+    description: 'Checks caller Owner/Contributor assignments for manager UI visibility. No configuration or write access.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.Authorization/roleAssignments/read'
+        ]
+        notActions: []
+        dataActions: []
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      resourceGroup().id
+    ]
+  }
+}
+
+// Inherited caller assignments are queried at the Function scope, not by
+// granting the Function identity Reader on the subscription or resource group.
+resource functionManagerAccessReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionApp.id, managerAccessReaderRole.id)
+  scope: functionApp
+  properties: {
+    roleDefinitionId: managerAccessReaderRole.id
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Easy Auth validates requests before the PowerShell handlers execute and
 // supplies the trusted x-ms-client-principal header they consume.
 resource authentication 'Microsoft.Web/sites/config@2023-12-01' = {

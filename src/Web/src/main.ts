@@ -10,7 +10,8 @@ import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from '.
 import { getHistoryStatus, getImportError, getImportTimeline, ImportTimelineRecord } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
-import { mountManagerEditor, type ManagerPolicyResponse } from './managers';
+import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
+import type { ManagementHistory } from './management-history';
 import './style.css';
 
 interface RuntimeConfig {
@@ -238,6 +239,7 @@ app.innerHTML = `
               <p class="section-intro">${t('changeTagsIntro')}</p>
             </div>
             <span id="device-count" class="progress-label"></span>
+            <button id="reload-devices" class="button button-quiet" type="button">${language === 'de' ? 'Geraete laden' : 'Load devices'}</button>
           </div>
           <div class="table-wrap">
             <table>
@@ -267,7 +269,7 @@ app.innerHTML = `
       <section id="policy-tab-panel" class="tab-panel panel hidden" role="tabpanel" aria-labelledby="policy-tab"></section>
       <section id="managers-tab-panel" class="tab-panel panel hidden" role="tabpanel" aria-labelledby="managers-tab"></section>
 
-      <section class="panel results-panel">
+      <section id="activity-panel" class="panel results-panel">
         <section id="results-panel" class="activity-section hidden">
           <div class="results-header">
             <div>
@@ -339,6 +341,8 @@ const importTab = element<HTMLButtonElement>('import-tab');
 const retagTab = element<HTMLButtonElement>('retag-tab');
 const importTabPanel = element<HTMLElement>('import-tab-panel');
 const retagTabPanel = element<HTMLElement>('retag-tab-panel');
+const reloadDevices = element<HTMLButtonElement>('reload-devices');
+const activityPanel = element<HTMLElement>('activity-panel');
 const policyTab = element<HTMLButtonElement>('policy-tab');
 const policyTabPanel = element<HTMLElement>('policy-tab-panel');
 const managersTab = element<HTMLButtonElement>('managers-tab');
@@ -405,6 +409,7 @@ function activateWorkspaceTab(tab: 'import' | 'retag' | 'policy' | 'managers'): 
   retagTabPanel.classList.toggle('hidden', tab !== 'retag');
   policyTabPanel.classList.toggle('hidden', tab !== 'policy');
   managersTabPanel.classList.toggle('hidden', tab !== 'managers');
+  activityPanel.classList.toggle('hidden', tab === 'policy' || tab === 'managers');
   historyPanel.classList.toggle('hidden', tab === 'policy' || tab === 'managers');
   if (enteringPolicy) void policyEditor?.reload();
   if (enteringManagers) void managerEditor?.reload();
@@ -732,12 +737,20 @@ function renderExistingDevices(): void {
 }
 
 async function loadExistingDevices(): Promise<void> {
-  if (!config.deviceTagAssignmentsUrl) return;
-  const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
-    config.deviceTagAssignmentsUrl,
-  );
-  existingDevices = response.devices ?? [];
-  renderExistingDevices();
+  if (reloadDevices.disabled) return;
+  reloadDevices.disabled = true;
+  reloadDevices.textContent = language === 'de' ? 'Geraete werden geladen ...' : 'Loading devices ...';
+  try {
+    if (!config.deviceTagAssignmentsUrl) return;
+    const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
+      config.deviceTagAssignmentsUrl,
+    );
+    existingDevices = response.devices ?? [];
+    renderExistingDevices();
+  } finally {
+    reloadDevices.disabled = false;
+    reloadDevices.textContent = language === 'de' ? 'Geraete laden' : 'Load devices';
+  }
 }
 
 async function loadImportHistory(): Promise<void> {
@@ -782,17 +795,27 @@ async function loadPolicyAccess(): Promise<void> {
       const url = new URL(config.tagPolicyUrl, window.location.origin);
       url.searchParams.set('auSearch', query);
       return apiRequest<GroupSearchResult>(url.toString());
+    }, (ruleId, continuation) => {
+      const url = new URL(config.tagPolicyUrl, window.location.origin);
+      url.searchParams.set('history', 'true');
+      url.searchParams.set('ruleId', ruleId);
+      if (continuation) url.searchParams.set('continuation', continuation);
+      return apiRequest<ManagementHistory>(url.toString());
     });
   policyTab.classList.remove('hidden');
 }
 
-async function managerRequest<T>(init?: RequestInit, search?: string): Promise<T> {
+async function managerRequest<T>(init?: RequestInit, search?: string, continuation?: string): Promise<T> {
   if (!account || !config.policyManagersUrl) throw new Error(t('signInRequired'));
   const token = await msal.acquireTokenSilent({
     account, scopes: [armScope], redirectUri: config.silentRedirectUri,
   });
   const url = new URL(config.policyManagersUrl, window.location.origin);
   if (search !== undefined) url.searchParams.set('search', search);
+  if (continuation !== undefined) {
+    url.searchParams.set('history', 'true');
+    if (continuation) url.searchParams.set('continuation', continuation);
+  }
   return apiRequest<T>(url.toString(), {
     ...init, headers: { 'x-autopilot-arm-token': token.accessToken },
   });
@@ -800,28 +823,28 @@ async function managerRequest<T>(init?: RequestInit, search?: string): Promise<T
 
 async function loadManagerAccess(): Promise<void> {
   managersTab.classList.add('hidden');
+  checkManagerAccess.classList.add('hidden');
+  if (managersTab.getAttribute('aria-selected') === 'true') activateWorkspaceTab('import');
   managerEditor = undefined;
   managersTabPanel.replaceChildren();
   if (!config.policyManagersUrl) return;
-  checkManagerAccess.classList.remove('hidden');
   try {
-    await managerRequest<ManagerPolicyResponse>();
-    managerEditor = mountManagerEditor(managersTabPanel,
-      init => managerRequest<ManagerPolicyResponse>(init),
-      query => managerRequest<GroupSearchResult>(undefined, query), language);
-    managersTab.classList.remove('hidden');
-    checkManagerAccess.classList.add('hidden');
-  } catch (error) {
-    if (error instanceof InteractionRequiredAuthError) return;
-    if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-      checkManagerAccess.textContent = language === 'de'
-        ? 'Manager-Verwaltung: Azure Owner/Contributor erforderlich. Zugriff erneut pruefen'
-        : 'Manager administration requires Azure Owner/Contributor. Check access again';
-      checkManagerAccess.title = language === 'de'
-        ? 'Nur Azure Owner/Contributor dieser Function App duerfen Manager verwalten.'
-        : 'Only Azure Owners/Contributors of this Function App can administer managers.';
+    const url = new URL(config.policyManagersUrl, window.location.origin);
+    url.searchParams.set('access', 'true');
+    const access = await getManagerAdministrationAccess(
+      () => apiRequest<ManagerAccessResponse>(url.toString()),
+      () => managerRequest<ManagerPolicyResponse>());
+    if (access === 'denied') return;
+    if (access === 'signInRequired') {
+      checkManagerAccess.classList.remove('hidden');
       return;
     }
+    managerEditor = mountManagerEditor(managersTabPanel,
+      init => managerRequest<ManagerPolicyResponse>(init),
+      query => managerRequest<GroupSearchResult>(undefined, query), language,
+      continuation => managerRequest<ManagementHistory>(undefined, undefined, continuation ?? ''));
+    managersTab.classList.remove('hidden');
+  } catch (error) {
     showAlert(error instanceof Error ? error.message : String(error));
   }
 }
@@ -983,6 +1006,12 @@ historyTraceDialog.addEventListener('click', (event) => {
 tagSelect.addEventListener('change', updateImportButton);
 importTab.addEventListener('click', () => activateWorkspaceTab('import'));
 retagTab.addEventListener('click', () => activateWorkspaceTab('retag'));
+reloadDevices.addEventListener('click', () => {
+  clearAlert();
+  void loadExistingDevices().catch((error: unknown) => {
+    showAlert(error instanceof Error ? error.message : String(error));
+  });
+});
 policyTab.addEventListener('click', () => activateWorkspaceTab('policy'));
 managersTab.addEventListener('click', () => activateWorkspaceTab('managers'));
 checkManagerAccess.addEventListener('click', () => {

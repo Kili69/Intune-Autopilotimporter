@@ -772,12 +772,68 @@ Switching to TagPolicies automatically fetches the current server rules.
 Unsaved local edits require confirmation before they are discarded; load
 failures remain visible. The manual reload button is still available.
 
+Each rule has an optional multiline **Description** immediately below its name
+(maximum 2048 characters). It is persisted with the rule, including through
+PowerShell edits and deployment upgrades.
+
+Each saved rule in **TagPolicies** provides its own **Change history** button.
+The popup contains only changes to that rule, including after a rename.
+The button is disabled for new, unsaved rules. Saving shows **Rule updated**.
+**Policy managers** retains its separate **Change history** popup.
+It shows the timestamp, authenticated caller, operation ID and before/after
+values. Policy history is visible to policy managers; manager history requires
+Azure Owner/Contributor on the Function App, just like manager administration.
+The backend inserts a requested event before changing configuration and a
+separate confirmation after saving. An unconfirmed request is **not** proof
+that a change was applied; reload the configuration to check uncertain results.
+If the initial audit write fails, the configuration is not changed.
+History summaries show **Information** for normal events and **Error** for
+recorded failures; the request/completion phase remains in the event details.
+Save or confirmation failures produce a separate failure event when audit storage
+is available. A failure event does not imply that a partially completed save was
+rolled back; reload the configuration to verify its actual state.
+
+Management histories are retained indefinitely and are not deleted by the import
+history retention job. There is no application delete action. This is not locked
+immutable storage against Azure administrators: direct Azure/Storage edits,
+including edits outside the application, are outside this audit trail. Changes
+made before auditing was enabled cannot be reconstructed.
+
+Rule IDs are stable and exposed as `ruleId` in REST and `RuleId` in normal
+PowerShell output; descriptions are also present in normal output, not just
+`-Raw`. Preserve the ID when replacing or renaming a rule through REST or
+`Set-AutoPilotTagPolicy`. Client add/remove edits and deployment upgrades retain
+existing IDs. For example:
+
+```powershell
+$rule = Get-AutoPilotTagPolicy | Where-Object Name -eq 'Sales Berlin'
+$page = Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId
+$page.events
+# If continuation is nonempty, request the next page with the same RuleId:
+# Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId -Continuation $page.continuation
+```
+
+REST uses `GET /api/management/tag-policy?history=true&ruleId=<GUID>`.
+An invalid/missing ID returns 400. History contains only the selected rule's
+before/after values, not other rules from the same save. Filtered pages can be
+empty with a continuation; continue until the token is empty. Existing pre-ID
+snapshots are matched by their initial name/group identity; old confirmation
+events without snapshots cannot be attributed to a rule and are omitted.
+Deleting a rule removes its history button. Existing audit records remain
+retained; deleting rule history is not required for deleting the rule and
+does not affect the permanently retained manager history.
+
+In **Re-Tagging**, **Load devices** manually refreshes the serial-number list.
+The button is disabled while a refresh is running; errors remain visible.
+Import results/history panels are hidden on both management tabs.
+
 The same configuration can be supplied through PowerShell:
 
 ```powershell
 Set-AutoPilotTagPolicy -TagAuthorizationRule @(
     @{
         name = 'Sales Berlin'
+        description = 'Pre-enrollment settings for Sales devices in Berlin.'
         groupId = '11111111-1111-1111-1111-111111111111'
         groupTag = 'Sales'
         extensionAttributes = @{
@@ -829,13 +885,27 @@ separately; it is not an explicit manager that can be deleted in this list.
 
 Manager administration uses a separate delegated Azure Resource Manager
 `user_impersonation` token for the signed-in user, not elevated Function
-managed-identity permissions. If Azure consent or another sign-in is needed,
-use **Check Azure sign-in for manager administration**. Until authorization
-succeeds, the tab remains hidden. The normal import and TagPolicies tabs do
+managed-identity write permissions. Before showing either the tab or its
+sign-in button, the server checks the authenticated user's effective Azure
+Owner/Contributor assignments, including group and inherited assignments.
+An explicit policy-manager entry alone never enables either control.
+If an eligible Azure administrator needs ARM consent or another sign-in,
+use **Check Azure sign-in for manager administration**. Until delegated
+authorization succeeds, the tab remains hidden. The normal import and TagPolicies tabs do
 not require this additional consent. The regular installer/updater registers
 this delegated ARM permission on the SPA; tenant policy may require admin
 consent. No new Graph application permissions are required for the picker
 (`User.ReadBasic.All` and `GroupMember.Read.All` are already used).
+
+This visibility check uses a custom role with only
+`Microsoft.Authorization/roleAssignments/read`, assigned to the Function's
+managed identity at the Function App scope. It cannot read app settings,
+change Azure roles or administer managers. The role definition is scoped to
+the resource group. Installation/upgrades require
+`Microsoft.Authorization/roleDefinitions/write` in addition to role-assignment
+writes (for example Owner, or Contributor plus User Access Administrator);
+Role Based Access Control Administrator alone does not create custom roles.
+Verification failures are reported and leave both controls hidden.
 
 Saving manager changes updates the Function App's application settings and
 can restart it. A confirmation is shown first. Concurrent manager-list edits
@@ -883,7 +953,7 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 
 - An Azure subscription and an active Intune tenant
 - For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
-- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
+- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `User Access Administrator` (including custom role definition writes); alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
 - For a least-privilege Entra installation, the installing administrator needs the `Application Administrator`, `Privileged Role Administrator`, and `Global Reader` directory roles.
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
@@ -1035,8 +1105,8 @@ For a standard installation, one installing administrator performs the complete 
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
-| Installing administrator | Azure subscription | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Creates the resource group and resources, then assigns the scoped Storage data roles required for keyless access. |
-| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `Role Based Access Control Administrator` or `User Access Administrator` on the resource group; alternatively `Owner` on the resource group | Deploys and manages resources in the existing resource group while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
+| Installing administrator | Azure subscription | `Contributor` plus `User Access Administrator` including custom role definition writes; alternatively `Owner` | Creates the resource group and resources, the manager-access reader custom role, and scoped identity role assignments. |
+| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `User Access Administrator` including custom role definition writes on the resource group; alternatively `Owner` on the resource group | Deploys resources, custom role and assignments while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
 | Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
 | Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
 | Installing administrator | Entra ID | `Global Reader` | Reads tenant and directory configuration required during installation. |
@@ -1204,6 +1274,7 @@ errors with Application Insights logs.
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
 | `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
+| `GET` | `/api/management/policy-managers?access=true` | API authentication | Check only the caller's Azure Owner/Contributor eligibility; no ARM browser consent or manager data |
 
 ### Get Authorized Group Tags
 

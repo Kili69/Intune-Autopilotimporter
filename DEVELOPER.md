@@ -475,17 +475,61 @@ Entering the policy tab reloads current rules via the no-cache manager endpoint,
 including keyboard navigation; unsaved drafts require discard confirmation.
 Reload and save are serialized, and load failures are shown in the editor.
 
+Rules preserve an optional `description` string (up to 2048 UTF-16 code units;
+multiline text is allowed, other control characters are rejected). The shared
+normalizer, client policy edit commands and updater preserve it.
+
+Both management endpoints support `GET ?history=true&continuation=<row-key>`,
+returning `{ events, continuation }` with up to 25 newest-first events. Policy
+history uses normal policy-manager authorization; manager history always
+requires delegated Owner/Contributor authorization, never eligibility alone.
+Policy history additionally requires `ruleId=<GUID>` (missing/invalid: 400).
+Rules expose persistent `ruleId`, preserved through renames, client edits and
+upgrades. Pre-ID rules derive a deterministic initial GUID from group/name;
+new web drafts receive a new GUID. Clients must retain returned IDs on edits.
+Filtering runs server-side and returns only changed before/after snapshots of
+the selected rule; unchanged rules in a bulk write never appear in its history.
+Applied policy events now also retain snapshots so confirmation is attributable.
+Older applied events lacking snapshots are omitted from rule history.
+Storage reads stay bounded at 25 events; a filtered empty page can still have
+a continuation. Consumers must continue until the token is empty.
+Each editor row owns its popup/button (disabled until first save); no global
+policy history button remains. `Get-AutoPilotTagPolicyHistory -RuleId` exposes
+the same paged API response in PowerShell. Normal policy output now also
+preserves Description and RuleId. Rule deletion removes the UI entry, not
+manager history or shared audit records.
+Each event includes `operationId`, `stage`, `atUtc`, `actorId`, optional
+`actorName`, and requested `before`/`after` snapshots. The UI uses text nodes
+for history values, including descriptions, not HTML.
+
+`Write-ManagementAuditEvent` inserts unique rows into `management-policies` or
+`management-managers` partitions of the existing audit table. No merge/delete
+operation exists for these events, and import cleanup queries only `imports`.
+Requested events must persist before mutation; applied events confirm its
+completion. Missing confirmation is reported as an uncertain save, not success.
+Snapshots are size-limited and chunked below Table property/entity limits;
+oversized changes fail before mutation. There is no time cutoff for reads.
+`Set-ManagementPolicyBlob` replaces the former output binding with synchronous
+UTF-8 Storage writes, an expected-content check and conditional ETag/create
+headers, so completion is not recorded before a deferred binding write.
+The PowerShell manager mutation command uses the same audited API, sending both
+API and delegated ARM tokens and the expected manager policy. No direct-write
+fallback bypasses auditing. Azure administrative edits outside the application
+are not captured; storage is not WORM-locked against administrators.
+
 The separate **Policy managers** tab is gated by
 `GET /api/management/policy-managers`, independently of policy-manager access.
-`ManagePolicyManagers` requires the platform-validated API principal plus a
+Except for the read-only visibility check described below, `ManagePolicyManagers`
+requires the platform-validated API principal plus a
 delegated ARM token in `x-autopilot-arm-token` for the same user/tenant.
 Decoded token claims only identify the caller; ARM must accept the token
 before any authorization is inferred. The endpoint queries effective
 `assignedTo` role assignments (including group/ancestor assignments), follows
 ARM pagination and uses the shared strict Owner/Contributor scope check.
 The target `FUNCTION_RESOURCE_ID` comes from Bicep, never from request input.
-Every request, including object searches and writes, repeats this check.
-There is no new managed-identity ARM role assignment.
+Every manager-data request, including object searches and writes, repeats this
+delegated check. The identity's new role-assignment read permission is used
+only for the separate visibility check.
 
 GET returns `{ policy, expectedPolicy, correlationId }`, with the installer,
 additional principal IDs and existing Intune Role Administrator setting.
@@ -508,9 +552,25 @@ Graph optimizes `id eq` to entity lookup, returning 404 for a user ID on
 type-specific result; prefix-search errors and other HTTP failures propagate.
 Names are display-only; unavailable/deleted objects retain visible IDs/errors.
 The SPA registration adds ARM delegated `user_impersonation`, preserving its
-other permissions. MSAL silently probes existing ARM consent; when interaction
-is needed an explicit sign-in button starts an ARM redirect. This does not
-grant Azure roles. Redirect ARM tokens are never cached as import API tokens.
+other permissions. Before acquiring a delegated ARM token, the SPA calls
+`GET /api/management/policy-managers?access=true` with its normal API token.
+The server uses the Function identity to query ARM `assignedTo(callerOid)`
+at the fixed Function resource ID, follows pagination and checks only built-in
+Owner/Contributor at that scope or an ancestor. Caller identity comes only
+from Easy Auth, never a query parameter. This mode returns only a boolean and
+correlation ID; it cannot read manager settings, search the directory or write.
+The custom identity role grants only `Microsoft.Authorization/roleAssignments/read`,
+assigned at Function scope with an RG-scoped role definition. Bootstrap/update
+permission checks require `roleDefinitions/write` as well as assignment writes.
+Missing identity permissions/token/ARM failures return a logged 502, not a
+success-shaped negative result. No match returns a normal false result.
+
+Only after eligibility succeeds does MSAL silently probe existing ARM consent;
+when interaction is needed, the eligible user's sign-in button starts an ARM
+redirect. Non-Azure policy managers see neither button nor manager tab.
+Normal manager reads/searches/writes still require the caller's delegated ARM
+token and recheck roles, with no identity-token fallback. This does not grant
+Azure roles. Redirect ARM tokens are never cached as import API tokens.
 Normal import/policy access does not require ARM consent. Tabs reload on entry,
 including keyboard navigation, and both management tabs hide Import History.
 
@@ -1117,7 +1177,7 @@ installer to update Azure resources, required permissions, Function code, and th
 
 Each invocation creates a new log file. An update writes its activity to `Intune-Autopilotimport-update-<timestamp>-<unique-id>.log`, and the installer invoked by the update writes its own `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log` in the current user's temporary directory. If either script stops with an error, its transcript is closed before detailed error and stack information is appended to avoid file-lock conflicts.
 
-The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `Role Based Access Control Administrator` or `User Access Administrator`, because the Bicep template also maintains Storage role assignments. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
+The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `User Access Administrator`, including custom role definition writes, because the Bicep template maintains Storage role assignments and the Function-scoped manager-access reader role. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
 
 Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 

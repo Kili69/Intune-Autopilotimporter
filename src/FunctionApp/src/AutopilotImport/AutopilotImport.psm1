@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -767,6 +767,207 @@ function Remove-ExpiredImportAuditRecords {
     return $removedCount
 }
 
+function Get-TagPolicyRuleId {
+    <#
+    .SYNOPSIS
+    Returns the persistent rule ID or a deterministic ID for pre-ID rules.
+    .DESCRIPTION
+    Legacy identity uses the authorization group and rule name, not mutable
+    action values. Once returned, clients must preserve ruleId on replacements.
+    #>
+    param([Parameter(Mandatory)][object] $Rule)
+    $data = if ($Rule -is [Collections.IDictionary]) { $Rule } else {
+        $map = @{}
+        foreach ($property in $Rule.PSObject.Properties) { $map[$property.Name] = $property.Value }
+        $map
+    }
+    if ($data.Contains('ruleId')) {
+        $id = [guid]::Empty
+        if (-not [guid]::TryParse([string] $data['ruleId'], [ref] $id) -or $id -eq [guid]::Empty) {
+            throw [ArgumentException]::new('ruleId must be a non-empty GUID.')
+        }
+        return $id.ToString()
+    }
+    $group = ([guid] $data['groupId']).ToString()
+    $name = ([string] $data['name']).Trim()
+    if (-not $name) { $name = "Policy $group" }
+    $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$group|$name".ToLowerInvariant()))
+    return [guid]::new([byte[]] $hash[0..15]).ToString()
+}
+
+function Write-ManagementAuditEvent {
+    <#
+    .SYNOPSIS
+    Inserts an append-only management change event in a non-expiring partition.
+    .DESCRIPTION
+    Inserts, never merges or deletes. A requested event must persist before a
+    configuration write; a separate applied event confirms completion. Missing
+    completion is deliberately not interpreted as success. Payload chunks stay
+    below Table string/entity limits; oversized changes fail before mutation.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('policies','managers')][string] $Kind,
+        [Parameter(Mandatory)][guid] $OperationId,
+        [Parameter(Mandatory)][ValidateSet('requested','applied','failed')][string] $Stage,
+        [Parameter(Mandatory)][object] $Principal,
+        [AllowNull()][object] $Before,
+        [AllowNull()][object] $After
+    )
+    $actorId = [string] (@($Principal.claims | Where-Object {
+        $_.typ -in @('oid','http://schemas.microsoft.com/identity/claims/objectidentifier')
+    } | Select-Object -First 1).val)
+    if ([guid] $actorId -eq [guid]::Empty) { throw 'Management audit requires a caller object ID.' }
+    $actorName = [string] ($Principal.claims | Where-Object {
+        $_.typ -in @('preferred_username','upn','http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn','name')
+    } | ForEach-Object val | Select-Object -First 1)
+    $now = [datetime]::UtcNow
+    $payload = ConvertTo-Json -InputObject @{
+        operationId = $OperationId.ToString(); stage = $Stage
+        atUtc = $now.ToString('o'); actorId = $actorId; actorName = $actorName
+        before = $Before; after = $After
+    } -Depth 20 -Compress
+    if ([Text.Encoding]::UTF8.GetByteCount($payload) -gt 700000 -or $payload.Length -gt 350000) {
+        throw 'Management audit payload exceeds the supported size; split the change into smaller updates.'
+    }
+    $entity = [ordered]@{
+        PartitionKey = "management-$Kind"
+        RowKey = '{0:d19}-{1}' -f ([datetime]::MaxValue.Ticks - $now.Ticks), [guid]::NewGuid().ToString()
+        chunks = 0
+    }
+    for ($start = 0; $start -lt $payload.Length;) {
+        $length = [Math]::Min(15000, $payload.Length - $start)
+        if ($start + $length -lt $payload.Length -and [char]::IsHighSurrogate($payload[$start + $length - 1])) {
+            $length--
+        }
+        $entity["payload$($entity.chunks)"] = $payload.Substring($start, $length)
+        $entity.chunks++
+        $start += $length
+    }
+    $headers = @{
+        Accept = 'application/json;odata=nometadata'
+        'x-ms-date' = $now.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $body = ConvertTo-Json -InputObject $entity -Depth 4 -Compress
+    if ([Text.Encoding]::UTF8.GetByteCount($body) -gt 900000) { throw 'Management audit entity exceeds the supported size.' }
+    Invoke-RestMethod -Method Post -Uri (Get-ImportAuditTableUri) -Authentication Bearer `
+        -Token (Get-ImportAuditAccessToken) -Headers $headers -ContentType 'application/json' `
+        -Body $body -ErrorAction Stop | Out-Null
+}
+
+function Get-ManagementAuditHistory {
+    <#
+    .SYNOPSIS
+    Reads a bounded newest-first page of permanent management events.
+    .DESCRIPTION
+    Queries only the requested management partition. The opaque continuation
+    row key is validated and the partition is always server-selected. Import
+    audit retention never selects these partitions. No delete API is provided.
+    With RuleId, policy events contain only changed snapshots of that rule.
+    Legacy snapshots derive the same initial ID as current policy reads.
+    Filtered pages can be empty with a continuation; never treat this as EOF.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('policies','managers')][string] $Kind,
+        [string] $Continuation,
+        [guid] $RuleId
+    )
+    if ($Continuation -and $Continuation -notmatch '^\d{19}-[0-9a-f-]{36}$') {
+        throw [ArgumentException]::new('Invalid management history continuation.')
+    }
+    $partition = "management-$Kind"
+    $filter = [uri]::EscapeDataString("PartitionKey eq '$partition'")
+    $uri = "$(Get-ImportAuditTableUri)()?`$filter=$filter&`$top=25"
+    if ($Continuation) {
+        $uri += "&NextPartitionKey=$partition&NextRowKey=$([uri]::EscapeDataString($Continuation))"
+    }
+    $headers = @{
+        Accept = 'application/json;odata=nometadata'
+        'x-ms-date' = [datetime]::UtcNow.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-02-02'
+    }
+    $pageHeaders = $null
+    $response = Invoke-RestMethod -Method Get -Uri $uri -Authentication Bearer `
+        -Token (Get-ImportAuditAccessToken) -Headers $headers -ResponseHeadersVariable pageHeaders -ErrorAction Stop
+    $events = @(
+        foreach ($entity in $response.value) {
+            if ($entity.PartitionKey -cne $partition -or $entity.chunks -lt 1 -or $entity.chunks -gt 24) {
+                throw 'Invalid management audit entity.'
+            }
+            $payload = ''
+            for ($index = 0; $index -lt $entity.chunks; $index++) { $payload += $entity."payload$index" }
+            $event = $payload | ConvertFrom-Json -ErrorAction Stop
+            if ($Kind -eq 'policies' -and $RuleId -ne [guid]::Empty) {
+                $before = @($event.before | Where-Object { $null -ne $_ -and (Get-TagPolicyRuleId $_) -eq $RuleId.ToString() } |
+                    ForEach-Object { (ConvertTo-TagAuthorizationPolicy -Rules @($_))[0] })
+                $after = @($event.after | Where-Object { $null -ne $_ -and (Get-TagPolicyRuleId $_) -eq $RuleId.ToString() } |
+                    ForEach-Object { (ConvertTo-TagAuthorizationPolicy -Rules @($_))[0] })
+                if ($before.Count -eq 0 -and $after.Count -eq 0) { continue }
+                $oldJson = ConvertTo-Json -InputObject $before -Depth 20 -Compress
+                $newJson = ConvertTo-Json -InputObject $after -Depth 20 -Compress
+                if ($oldJson -ceq $newJson) { continue }
+                $event.before = if ($before.Count) { $before[0] } else { $null }
+                $event.after = if ($after.Count) { $after[0] } else { $null }
+            }
+            $event
+        }
+    )
+    $next = if ($pageHeaders -and $pageHeaders['x-ms-continuation-NextRowKey']) {
+        [string] $pageHeaders['x-ms-continuation-NextRowKey']
+    } else { '' }
+    return @{ events = $events; continuation = $next }
+}
+
+function Set-ManagementPolicyBlob {
+    <#
+    .SYNOPSIS
+    Writes validated policy JSON synchronously so audit completion is truthful.
+    .DESCRIPTION
+    Uses Storage identity authentication. If-Match protects against edits since
+    the fresh read; a missing blob is created only if it still does not exist.
+    The expected policy must match the current blob or deployment fallback.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $ExpectedJson,
+        [Parameter(Mandatory)][string] $Json
+    )
+    $uri = "https://$($env:AzureWebJobsStorage__accountName).blob.core.windows.net/configuration/tag-authorization-policy.json"
+    $token = Get-ImportAuditAccessToken
+    $headers = @{
+        'x-ms-date' = [datetime]::UtcNow.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        'x-ms-version' = '2019-12-12'
+    }
+    $exists = $true
+    try {
+        $current = Invoke-WebRequest -Method Get -Uri $uri -Authentication Bearer -Token $token -Headers $headers -ErrorAction Stop
+        $currentJson = if ($current.Content -is [byte[]]) {
+            [Text.Encoding]::UTF8.GetString($current.Content)
+        } else { [string] $current.Content }
+    } catch {
+        if (-not (Test-ImportAuditHttpStatus -ErrorRecord $_ -StatusCode 404)) { throw }
+        $exists = $false
+        $currentJson = $env:TAG_AUTHORIZATION_POLICY
+    }
+    # The worker may deserialize/reformat the blob binding, so compare policy
+    # content rather than whitespace or JSON property order. Keep the raw ETag.
+    $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentJson | ConvertFrom-Json -ErrorAction Stop)
+    $expectedPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($ExpectedJson | ConvertFrom-Json -ErrorAction Stop)
+    $currentCanonical = ConvertTo-Json -InputObject @($currentPolicy) -Depth 20 -Compress
+    $expectedCanonical = ConvertTo-Json -InputObject @($expectedPolicy) -Depth 20 -Compress
+    if ($currentCanonical -cne $expectedCanonical) { throw 'Policy changed on the server. Reload policies before saving.' }
+    $headers['x-ms-blob-type'] = 'BlockBlob'
+    if ($exists) {
+        $etag = [string] $current.Headers.ETag
+        if (-not $etag) { throw 'Policy response is missing its concurrency token.' }
+        $headers['If-Match'] = $etag
+    } else { $headers['If-None-Match'] = '*' }
+    Invoke-RestMethod -Method Put -Uri $uri -Authentication Bearer -Token $token -Headers $headers `
+        -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($Json)) -ErrorAction Stop | Out-Null
+}
+
 function ConvertTo-TagAuthorizationPolicy {
     <#
     .SYNOPSIS
@@ -870,6 +1071,13 @@ function ConvertTo-TagAuthorizationPolicy {
                 throw 'Named action rules require a Group Tag.'
             }
             if ($name) { $settings.name = $name }
+            if ($data.Contains('description')) {
+                if ($data['description'] -isnot [string] -or $data['description'].Length -gt 2048 -or
+                    $data['description'] -match '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]') {
+                    throw 'Policy description must be text of at most 2048 characters without control characters.'
+                }
+                $settings.description = $data['description']
+            }
             if ($data.Contains('extensionAttributes')) {
                 # Attribute values are explicit strings, including empty ones.
                 # Reject control characters rather than normalizing user data.
@@ -957,6 +1165,9 @@ function ConvertTo-TagAuthorizationPolicy {
         }
         $normalizedGroupId = $parsedGroupId.ToString()
         if (-not $settings.Contains('name')) { $settings.name = "Policy $normalizedGroupId" }
+        $identityRule = @{ groupId = $normalizedGroupId; name = $settings.name }
+        if ($rule -is [Collections.IDictionary] -and $rule.Contains('ruleId')) { $identityRule.ruleId = $rule['ruleId'] }
+        $settings.ruleId = Get-TagPolicyRuleId $identityRule
         # One authorization group can own several independently named action
         # rules; legacy multi-tag rules retain their group-only merge identity.
         $policyKey = if ($extended) { "$normalizedGroupId|$($settings.name)" } else { $normalizedGroupId }
@@ -1000,6 +1211,8 @@ function ConvertTo-TagAuthorizationPolicy {
         $mauByGroup[$policyKey] = $normalizedMauName
     }
 
+    $ids = @($settingsByGroup.Values | ForEach-Object { $_.ruleId })
+    if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) { throw 'Each policy rule must have a unique ruleId.' }
     # Return the policy as one array object, including when it has one entry.
     return ,@($rulesByGroup.Keys | Sort-Object | ForEach-Object {
         $policyEntry = [ordered]@{
@@ -2715,6 +2928,10 @@ Export-ModuleMember -Function @(
     'Get-ImportAuditRetentionCutoffUtc',
     'Get-ImportAuditHistory',
     'Remove-ExpiredImportAuditRecords',
+    'Write-ManagementAuditEvent',
+    'Get-TagPolicyRuleId',
+    'Get-ManagementAuditHistory',
+    'Set-ManagementPolicyBlob',
     'ConvertTo-TagAuthorizationPolicy',
     'ConvertTo-EntraDeviceExtensionAttributes',
     'Get-PolicyGraphCollection',

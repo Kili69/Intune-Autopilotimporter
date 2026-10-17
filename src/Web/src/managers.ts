@@ -1,4 +1,30 @@
 import { mountObjectPicker, type SearchGroups } from './group-picker';
+import { InteractionRequiredAuthError } from '@azure/msal-browser';
+import { ApiRequestError } from './api';
+import { mountManagementHistoryButton, type ManagementHistory } from './management-history';
+
+export interface ManagerAccessResponse {
+  canManagePolicyManagers: boolean;
+}
+
+export async function getManagerAdministrationAccess(
+  checkAccess: () => Promise<ManagerAccessResponse>,
+  request: () => Promise<unknown>,
+): Promise<'denied' | 'signInRequired' | 'allowed'> {
+  const access = await checkAccess();
+  if (typeof access.canManagePolicyManagers !== 'boolean') {
+    throw new Error('Invalid manager access response.');
+  }
+  if (!access.canManagePolicyManagers) return 'denied';
+  try {
+    await request();
+    return 'allowed';
+  } catch (error) {
+    if (error instanceof InteractionRequiredAuthError) return 'signInRequired';
+    if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) return 'denied';
+    throw error;
+  }
+}
 
 export interface ManagerPolicyResponse {
   policy: {
@@ -14,6 +40,7 @@ export function mountManagerEditor(
   request: (init?: RequestInit) => Promise<ManagerPolicyResponse>,
   search: SearchGroups,
   language: 'de' | 'en',
+  history?: (continuation?: string) => Promise<ManagementHistory>,
 ): { reload: () => Promise<void> } {
   const de = language === 'de';
   const heading = document.createElement('h2');
@@ -100,5 +127,10 @@ export function mountManagerEditor(
   }
   load.addEventListener('click', () => { void reload(); });
   container.replaceChildren(heading, load, status, content);
+  if (history) {
+    const historyHost = document.createElement('span');
+    load.after(historyHost);
+    mountManagementHistoryButton(historyHost, history, language);
+  }
   return { reload };
 }

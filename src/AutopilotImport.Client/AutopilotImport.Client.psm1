@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261016.12
+# Project-Version: 1.4.20261017.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2338,7 +2338,7 @@ function ConvertTo-ClientTagPolicyResult {
         }
         CorrelationId = $CorrelationId
     }
-    foreach ($key in @('groupTag', 'extensionAttributes', 'deviceGroupIds')) {
+    foreach ($key in @('ruleId', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
         if ($Rule.PSObject.Properties[$key]) {
             $result | Add-Member -NotePropertyName $key -NotePropertyValue $Rule.$key
         }
@@ -2378,7 +2378,7 @@ function Get-AutoPilotTagPolicy {
     .DESCRIPTION
     Retrieves the current policy and resolves each group object ID through
     Microsoft Graph. Each rule is returned as a PowerShell object with stable
-    GroupId, GroupName, Tags, AdministrativeUnitName, and
+    RuleId, Description (when present), GroupId, GroupName, Tags, AdministrativeUnitName, and
     CorrelationId properties.
 
     .PARAMETER Raw
@@ -2494,6 +2494,56 @@ function Get-AutoPilotTagPolicy {
                 [string] $response.correlationId
             })
     }
+}
+
+function Get-AutoPilotTagPolicyHistory {
+    <#
+    .SYNOPSIS
+    Returns one page of changes for a single policy rule.
+    .DESCRIPTION
+    Calls the manager-authorized REST history endpoint with the persistent rule
+    ID returned by Get-AutoPilotTagPolicy. Returns only that rule's old/new
+    values, actor, time and operation stage. Renaming preserves the ID.
+    Pages may be empty with a continuation when other rules occupy the scanned
+    storage page; continue until continuation is empty. Does not mutate rules.
+    .PARAMETER RuleId
+    Persistent non-empty rule GUID from Get-AutoPilotTagPolicy.
+    .PARAMETER Continuation
+    Opaque continuation from the previous response. Use with the same RuleId.
+    .PARAMETER ManagementUrl
+    HTTPS policy management endpoint; defaults to the client configuration.
+    .PARAMETER ApiApplicationIdUri
+    API audience; defaults to the client configuration.
+    .PARAMETER TenantId
+    Tenant for API authentication; defaults to the client configuration.
+    .PARAMETER ConfigPath
+    Optional client settings path.
+    .EXAMPLE
+    $rule = Get-AutoPilotTagPolicy | Select-Object -First 1
+    Get-AutoPilotTagPolicyHistory -RuleId $rule.ruleId
+    .OUTPUTS
+    Response containing events, continuation and correlationId.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateScript({ $_ -ne [guid]::Empty })][guid] $RuleId,
+        [ValidatePattern('^\d{19}-[0-9a-f-]{36}$')][string] $Continuation,
+        [ValidatePattern('^https://')][string] $ManagementUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
+    }
+    $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $tenant = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $uri = [UriBuilder]::new($url)
+    $uri.Query = "history=true&ruleId=$RuleId"
+    if ($Continuation) { $uri.Query = $uri.Query.TrimStart('?') + "&continuation=$([uri]::EscapeDataString($Continuation))" }
+    $token = Get-ClientAccessToken $tenant $audience
+    Invoke-RestMethod -Method Get -Uri $uri.Uri.AbsoluteUri -Authentication Bearer -Token $token -ErrorAction Stop
 }
 
 function Add-AutoPilotTagPolicy {
@@ -2662,7 +2712,7 @@ function Add-AutoPilotTagPolicy {
             tags = @($rulesByGroup[$_])
         }
         if ($sourceRules.ContainsKey($_)) {
-            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($sourceRules[$_].PSObject.Properties[$key]) { $policyEntry[$key] = $sourceRules[$_].$key }
             }
         }
@@ -2891,7 +2941,7 @@ function Remove-AutoPilotTagPolicy {
                 groupId = $ruleGroupId
                 tags = @($ruleTags)
             }
-            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
             }
             if ($_.PSObject.Properties[
@@ -3159,7 +3209,7 @@ function Set-AutoPilotTagPolicy {
                 groupId = $resolvedGroupId
                 tags = @($normalizedTags)
             }
-            foreach ($key in @('name', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
+            foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
             }
             if ($policyEntry.Contains('groupTag')) {
@@ -3369,17 +3419,17 @@ function Update-AutoPilotTagPolicyManager {
     .NOTES
     Resolves the signed-in principal from the ARM token and checks effective
     Owner/Contributor assignments against the Function resource before writing.
-    Preserves every app setting because Set-AzWebApp replaces the collection.
-    The installer cannot be removed; additional IDs are merged/deduplicated in
-    one write. Concurrent external settings changes are not ETag-protected.
+    Uses the authenticated management API so browser and client mutations share
+    permanent backend auditing. Expected-policy checks detect stale manager
+    lists; external ARM app-setting writes are not transactionally protected.
 
     .SYNOPSIS
-    Adds and removes explicit Group Tag managers atomically.
+    Adds and removes explicit Group Tag managers through the audited API.
 
     .DESCRIPTION
     Updates the MANAGER_AUTHORIZATION_POLICY application setting of an existing
-    Autopilot Import Function App. The command preserves the installing user,
-    keeps Intune Role Administrator access enabled, and verifies that the caller
+    Autopilot Import Function App. The command preserves the installing user and
+    existing Intune Role Administrator flag, and verifies that the caller
     has an effective Owner or Contributor assignment on the Function App or a
     parent scope before applying the change.
 
@@ -3440,7 +3490,7 @@ function Update-AutoPilotTagPolicyManager {
         [string] $ConfigPath
     )
 
-    Assert-ClientCommand -Name 'Get-AzWebApp', 'Get-AzRoleAssignment', 'Set-AzWebApp', 'Set-AzContext'
+    Assert-ClientCommand -Name 'Get-AzWebApp', 'Get-AzRoleAssignment', 'Set-AzContext'
     $addIds = @($AddPrincipalId | Where-Object { $null -ne $_ } |
         ForEach-Object { $_.ToString() })
     $removeIds = @($RemovePrincipalId | Where-Object { $null -ne $_ } |
@@ -3510,8 +3560,6 @@ function Update-AutoPilotTagPolicyManager {
         throw "Only an Owner or Contributor of Function App '$resolvedFunctionName' may change its Group Tag managers."
     }
 
-    # Round-trip every existing setting because Set-AzWebApp replaces the
-    # complete AppSettings collection rather than patching a single key.
     $appSettings = @{}
     foreach ($setting in @($functionApp.SiteConfig.AppSettings)) {
         $appSettings[[string] $setting.Name] = [string] $setting.Value
@@ -3535,15 +3583,20 @@ function Update-AutoPilotTagPolicyManager {
     $updatedPolicy = [ordered]@{
         installerPrincipalId = $installerId
         additionalPrincipalIds = $updatedIds
-        allowIntuneRoleAdministrators = $true
+        allowIntuneRoleAdministrators = [bool] $currentPolicy.allowIntuneRoleAdministrators
     }
     if ($PSCmdlet.ShouldProcess("$resolvedResourceGroup/$resolvedFunctionName", 'Update Group Tag managers')) {
-        $updatedPolicyJson = $updatedPolicy |
-            ConvertTo-Json -Depth 4 -Compress
-        $appSettings['MANAGER_AUTHORIZATION_POLICY'] = `
-            [string] $updatedPolicyJson
-        Set-AzWebApp -ResourceGroupName $resolvedResourceGroup -Name $resolvedFunctionName `
-            -AppSettings $appSettings | Out-Null
+        $audience = [string] $appSettings['API_AUDIENCE']
+        if ($audience -notmatch '^api://') { throw 'Function API_AUDIENCE is required for audited manager changes.' }
+        $apiToken = Get-ClientAccessToken $resolvedTenantId $audience $resolvedSubscriptionId
+        $uri = "https://$resolvedFunctionName.azurewebsites.net/api/management/policy-managers"
+        $response = Invoke-RestMethod -Method Put -Uri $uri -Authentication Bearer -Token $apiToken `
+            -Headers @{ 'x-autopilot-arm-token' = $plainToken } -ContentType 'application/json' `
+            -Body (ConvertTo-Json -InputObject @{
+                additionalPrincipalIds = $updatedIds
+                expectedPolicy = $appSettings.MANAGER_AUTHORIZATION_POLICY
+            } -Depth 8 -Compress) -ErrorAction Stop
+        $updatedPolicy = $response.policy
     }
     [pscustomobject]@{ FunctionAppName = $resolvedFunctionName; ManagerPolicy = $updatedPolicy }
 }
@@ -3713,6 +3766,7 @@ Export-ModuleMember -Function @(
     'Get-AutoPilotImportStatus',
     'Get-AutoPilotImportHistory',
     'Get-AutoPilotTagPolicy',
+    'Get-AutoPilotTagPolicyHistory',
     'Add-AutoPilotTagPolicy',
     'Remove-AutoPilotTagPolicy',
     'Set-AutoPilotTagPolicy',

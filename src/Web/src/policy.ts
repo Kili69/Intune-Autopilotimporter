@@ -1,7 +1,10 @@
 import { mountObjectPicker, SearchGroups } from './group-picker';
+import { mountManagementHistoryButton, type ManagementHistory } from './management-history';
 
 export interface TagPolicyRule {
+  ruleId?: string;
   name?: string;
+  description?: string;
   groupId: string;
   tags: string[];
   groupTag?: string;
@@ -12,6 +15,7 @@ export interface TagPolicyRule {
 
 export interface PolicyFields {
   name: string;
+  description?: string;
   groupId: string;
   groupTag: string;
   attributes: string | Record<string, string>;
@@ -44,6 +48,10 @@ export function validateExtensionAttributeValue(value: string): string {
 
 export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule): TagPolicyRule {
   const name = fields.name.trim();
+  const description = fields.description ?? '';
+  if (description.length > 2048 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(description)) {
+    throw new Error('Policy description: max. 2048 characters, no control characters.');
+  }
   const groupId = fields.groupId.trim();
   const groupTag = fields.groupTag.trim();
   if (!name || name.length > 128) throw new Error('Policy name: 1..128 characters.');
@@ -55,7 +63,7 @@ export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule):
       fields.groupTag.trim() === legacy.tags.join(', ') &&
       typeof fields.attributes === 'string' && !fields.attributes.trim() &&
       !fields.groups.trim()) {
-    return { name, groupId, tags: [...legacy.tags], administrativeUnitName: fields.administrativeUnitName.trim() };
+    return { ...(legacy?.ruleId ? { ruleId: legacy.ruleId } : {}), name, description, groupId, tags: [...legacy.tags], administrativeUnitName: fields.administrativeUnitName.trim() };
   }
   const tagError = validatePolicyTags(fields.groupTag);
   if (tagError) throw new Error(tagError);
@@ -82,7 +90,8 @@ export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule):
     throw new Error('Device target groups must be non-empty GUIDs.');
   }
   const rule: TagPolicyRule = {
-    name, groupId, groupTag, tags: [groupTag], deviceGroupIds,
+    ...(legacy?.ruleId ? { ruleId: legacy.ruleId } : {}),
+    name, description, groupId, groupTag, tags: [groupTag], deviceGroupIds,
     administrativeUnitName: fields.administrativeUnitName.trim(),
   };
   rule.extensionAttributes = extensionAttributes;
@@ -90,6 +99,7 @@ export function parsePolicyFields(fields: PolicyFields, legacy?: TagPolicyRule):
 }
 
 function ruleKey(rule: TagPolicyRule): string {
+  if (rule.ruleId) return rule.ruleId.toLowerCase();
   return `${rule.groupId.toLowerCase()}|${(rule.name ?? `Policy ${rule.groupId}`).toLowerCase()}`;
 }
 
@@ -109,7 +119,10 @@ export function updateSingleRule(
   if (original && (index < 0 || stableJson(latest[index]) !== stableJson(original))) {
     throw new Error('This rule changed on the server. Reload policies before saving.');
   }
-  if (replacement && latest.some((rule, position) => position !== index && ruleKey(rule) === ruleKey(replacement))) {
+  if (replacement && latest.some((rule, position) => position !== index &&
+      (ruleKey(rule) === ruleKey(replacement) ||
+       (rule.groupId.toLowerCase() === replacement.groupId.toLowerCase() &&
+        (rule.name ?? '').toLowerCase() === (replacement.name ?? '').toLowerCase())))) {
     throw new Error('A rule with this name and user group already exists.');
   }
   const policy = latest.filter((_rule, position) => position !== index);
@@ -125,6 +138,7 @@ export function mountPolicyEditor(
   onSaved: () => Promise<void>,
   searchGroups: SearchGroups,
   searchAdministrativeUnits: SearchGroups,
+  history?: (ruleId: string, continuation?: string) => Promise<ManagementHistory>,
 ): { reload: () => Promise<void> } {
   const de = language === 'de';
   const text = {
@@ -134,7 +148,7 @@ export function mountPolicyEditor(
     save: de ? 'Regel speichern' : 'Save rule',
     remove: de ? 'Regel entfernen' : 'Remove rule',
     confirm: de ? 'Sind Sie sicher, dass Sie diese Regel entfernen moechten?' : 'Are you sure you want to remove this rule?',
-    saved: de ? 'Regel gespeichert.' : 'Rule saved.',
+    saved: de ? 'Regel aktualisiert.' : 'Rule updated.',
   };
   const heading = document.createElement('h2');
   heading.textContent = text.title;
@@ -154,6 +168,7 @@ export function mountPolicyEditor(
   let loaded = false;
   function addRule(rule?: TagPolicyRule): HTMLDetailsElement {
     let original = rule;
+    const draftId = rule?.ruleId ?? crypto.randomUUID();
     const details = document.createElement('details');
     details.className = 'policy-details';
     details.open = !rule;
@@ -163,6 +178,7 @@ export function mountPolicyEditor(
     fieldset.className = 'policy-rule';
     const values: PolicyFields = {
       name: rule?.name ?? (rule ? `Policy ${rule.groupId}` : ''),
+      description: rule?.description ?? '',
       groupId: rule?.groupId ?? '',
       groupTag: rule?.groupTag ?? rule?.tags.join(', ') ?? '',
       attributes: rule?.extensionAttributes ?? {},
@@ -171,6 +187,7 @@ export function mountPolicyEditor(
     };
     const labels: Record<keyof PolicyFields, string> = {
       name: de ? 'Policy-Name' : 'Policy name',
+      description: de ? 'Beschreibung' : 'Description',
       groupId: de ? 'Berechtigte Benutzergruppe (Objekt-ID)' : 'Authorized user group (object ID)',
       groupTag: 'Autopilot Group Tag',
       attributes: 'Extension Attributes',
@@ -186,6 +203,16 @@ export function mountPolicyEditor(
     save.textContent = text.save;
     const rowStatus = document.createElement('p');
     rowStatus.setAttribute('role', 'status');
+    let historyButton: HTMLButtonElement | undefined;
+    if (history) {
+      const historyHost = document.createElement('span');
+      fieldset.append(historyHost);
+      historyButton = mountManagementHistoryButton(historyHost, continuation => {
+        if (!original?.ruleId) return Promise.reject(new Error(de ? 'Regel zuerst speichern.' : 'Save the rule first.'));
+        return history(original.ruleId, continuation);
+      }, language, () => original?.name ?? values.name);
+      historyButton.disabled = !original?.ruleId;
+    }
     function readFields(): PolicyFields {
       const fields = { ...values };
       for (const [key, input] of inputs) fields[key] = input.value;
@@ -271,6 +298,7 @@ export function mountPolicyEditor(
     for (const key of Object.keys(values) as Array<keyof PolicyFields>) {
       if (key === 'attributes') {
         const title = document.createElement('h3');
+        title.className = 'policy-section-title';
         title.textContent = 'Extension Attributes';
         addAttribute = document.createElement('button');
         addAttribute.type = 'button';
@@ -300,7 +328,8 @@ export function mountPolicyEditor(
       const label = document.createElement('label');
       label.className = 'field-label';
       label.append(document.createTextNode(labels[key]));
-      const input = document.createElement('input');
+      const input = key === 'description' ? document.createElement('textarea') : document.createElement('input');
+      if (key === 'description') input.maxLength = 2048;
       input.value = String(values[key]);
       input.autocomplete = 'off';
       label.append(input);
@@ -342,7 +371,7 @@ export function mountPolicyEditor(
         throw new Error(de ? 'Bitte die markierten Eingaben pruefen.' : 'Check the highlighted fields.');
       }
       try {
-        return parsePolicyFields(fields, original);
+        return { ...parsePolicyFields(fields, original), ruleId: original?.ruleId ?? draftId };
       } catch (error) {
         details.open = true;
         throw error;
@@ -362,11 +391,13 @@ export function mountPolicyEditor(
           const saved = response.policy.find(value => ruleKey(value) === ruleKey(replacement));
           if (!saved) throw new Error('Saved rule missing from server response. Reload policies.');
           original = saved;
+          if (historyButton) historyButton.disabled = !saved.ruleId;
           inputs.get('groupTag')!.value = saved.groupTag ?? saved.tags.join(', ');
           checkTags();
           baseline = stableJson(readFields());
           save.hidden = true;
           window.alert(text.saved);
+          rowStatus.textContent = text.saved;
         } else {
           rows = rows.filter(value => value !== row);
           details.remove();
