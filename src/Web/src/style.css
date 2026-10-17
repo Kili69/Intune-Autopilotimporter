@@ -279,6 +279,7 @@ footer a:hover { color: #0d5bd7; }
 .object-picker-dialog input { width: 100%; padding: 0.65rem; margin: 0.5rem 0; font: inherit; }
 .object-picker > button { margin: 0.5rem 0.5rem 0 0; }
 .object-picker select { min-height: 4rem; }
+.object-picker select[size="1"] { min-height: 0; }
 .policy-section-title {
   display: block;
   margin: 0.8rem 0;
