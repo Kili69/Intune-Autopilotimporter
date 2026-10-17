@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -41,7 +41,8 @@ Metadata supplied by the Functions worker. Not read by this implementation.
 .PARAMETER TagPolicyBlob
 Input binding for configuration/tag-authorization-policy.json through the
 AzureWebJobsStorage connection. Blank binding content falls back to
-TAG_AUTHORIZATION_POLICY. Invalid or empty policy JSON fails initialization.
+TAG_AUTHORIZATION_POLICY. Invalid policy JSON fails initialization; an empty
+policy grants no device access.
 
 .INPUTS
 None through the PowerShell pipeline. The Functions host supplies parameters.
@@ -309,10 +310,10 @@ try {
     if ([string]::IsNullOrWhiteSpace($policyJson)) {
         $policyJson = $env:TAG_AUTHORIZATION_POLICY
     }
-    $policy = @($policyJson | ConvertFrom-Json)
-    if ($policy.Count -eq 0) {
-        throw 'Tag authorization policy is empty.'
+    if ([string]::IsNullOrWhiteSpace($policyJson)) {
+        throw 'Tag authorization policy is missing.'
     }
+    $policy = ConvertTo-TagAuthorizationPolicy -Rules @($policyJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     # Graph calls use the Function's Azure identity, not the caller's token.
     # Normalize old/plain-text and newer/SecureString Az.Accounts results.
     $tokenResult = Get-AzAccessToken `

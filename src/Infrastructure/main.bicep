@@ -1,12 +1,12 @@
 /*
 Autopilot Import infrastructure deployed into the selected resource group.
 
-Creates a PowerShell Function App on a Consumption plan, private configuration
+Creates a PowerShell Function App on a Flex Consumption plan, private configuration
 storage, an audit/state table, workspace-based monitoring and Storage data roles.
 Easy Auth protects the API while the frontend remains publicly accessible.
 
 The installer separately configures the Entra API/web applications, assigns
-Microsoft Graph permissions, uploads the policy blob and publishes Function code.
+Microsoft Graph permissions and publishes Function code. Rules are managed separately.
 Those operations, custom-domain bindings and certificates are not defined here.
 Azure Storage RBAC assignments below do not grant Microsoft Graph permissions.
 
@@ -25,6 +25,13 @@ param functionAppName string
 @description('Azure region for all resources.')
 param location string = resourceGroup().location
 
+@description('New installations use Linux Flex Consumption. Consumption is retained only for existing Windows deployments; this parameter does not migrate apps.')
+@allowed([
+  'FlexConsumption'
+  'Consumption'
+])
+param hostingMode string = 'FlexConsumption'
+
 @description('Client ID of the Entra app registration that protects the Function API.')
 param entraClientId string
 
@@ -34,9 +41,9 @@ param webClientId string = ''
 @description('Application ID URI configured under Expose an API.')
 param apiAudience string = 'api://${entraClientId}'
 
-@description('JSON policy mapping Entra group object IDs to allowed Autopilot Group Tags.')
+@description('Legacy policy fallback. New installations start without rules; updates preserve the existing setting and leave the policy blob untouched.')
 @minLength(2)
-param tagAuthorizationPolicy string
+param tagAuthorizationPolicy string = '[]'
 
 @description('JSON policy containing users and groups allowed to manage Group Tags.')
 @minLength(2)
@@ -62,7 +69,7 @@ param managerAuthorizationPolicy string
 ])
 param deviceTagExtensionAttribute string = 'extensionAttribute1'
 
-@description('Object ID of the user performing the deployment and initial policy upload.')
+@description('Object ID of the installing policy manager.')
 param installerPrincipalId string
 
 // Storage names permit only lowercase letters/digits and at most 24 characters.
@@ -72,6 +79,13 @@ var storageAccountName = take(toLower(replace('${functionAppName}${uniqueString(
 var applicationInsightsName = '${functionAppName}-insights'
 var logAnalyticsWorkspaceName = '${functionAppName}-la'
 var hostingPlanName = '${functionAppName}-plan'
+var isFlex = hostingMode == 'FlexConsumption'
+var networkName = 'vnet-${take(functionAppName, 50)}'
+var storageServices = [
+  'blob'
+  'queue'
+  'table'
+]
 // Well-known Azure PowerShell public-client ID used by the command-line client.
 // This is an application identifier, not a client secret.
 var azurePowerShellClientId = '1950a258-227b-4e31-a9cf-717495945fc2'
@@ -95,11 +109,13 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
   kind: 'StorageV2'
   properties: {
-    // Public network reachability is needed by this non-VNet Consumption setup.
-    // It does not make blobs anonymous: public blob access is disabled, and the
-    // configuration container below also denies anonymous reads.
     allowBlobPublicAccess: false
-    publicNetworkAccess: 'Enabled'
+    allowSharedKeyAccess: false
+    publicNetworkAccess: isFlex ? 'Disabled' : 'Enabled'
+    networkAcls: {
+      bypass: 'None'
+      defaultAction: isFlex ? 'Deny' : 'Allow'
+    }
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
   }
@@ -111,8 +127,7 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   name: 'default'
 }
 
-// The installer uploads tag-authorization-policy.json here. The container is
-// created empty; policy content is not embedded as a blob resource.
+// The first manager save creates the policy blob; deployment never writes rules.
 resource configurationContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: 'configuration'
@@ -120,6 +135,102 @@ resource configurationContainer 'Microsoft.Storage/storageAccounts/blobServices/
     publicAccess: 'None'
   }
 }
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (isFlex) {
+  parent: blobService
+  name: 'deployment-packages'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
+  name: networkName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.80.0.0/24'
+      ]
+    }
+    subnets: [
+      {
+        name: 'functions'
+        properties: {
+          addressPrefix: '10.80.0.0/26'
+          delegations: [
+            {
+              name: 'flex-consumption'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: 'private-endpoints'
+        properties: {
+          addressPrefix: '10.80.0.64/27'
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+    ]
+  }
+}
+
+resource storagePrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = [for service in storageServices: if (isFlex) {
+  name: 'privatelink.${service}.${environment().suffixes.storage}'
+  location: 'global'
+}]
+
+resource storageDnsLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [for (service, i) in storageServices: if (isFlex) {
+  parent: storagePrivateDns[i]
+  name: networkName
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: network!.id
+    }
+  }
+}]
+
+resource storagePrivateEndpoints 'Microsoft.Network/privateEndpoints@2024-07-01' = [for service in storageServices: if (isFlex) {
+  name: 'pep-${take(functionAppName, 47)}-${service}'
+  location: location
+  properties: {
+    subnet: {
+      id: '${network!.id}/subnets/private-endpoints'
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'storage-${service}'
+        properties: {
+          privateLinkServiceId: storageAccount.id
+          groupIds: [
+            service
+          ]
+        }
+      }
+    ]
+  }
+}]
+
+resource storageDnsGroups 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-07-01' = [for (service, i) in storageServices: if (isFlex) {
+  parent: storagePrivateEndpoints[i]
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: service
+        properties: {
+          privateDnsZoneId: storagePrivateDns[i].id
+        }
+      }
+    ]
+  }
+}]
 
 resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
   parent: storageAccount
@@ -159,21 +270,22 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
-// Y1/Dynamic selects Consumption hosting; there is no fixed worker size here.
-resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+resource hostingPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   name: hostingPlanName
   location: location
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: isFlex ? 'FC1' : 'Y1'
+    tier: isFlex ? 'FlexConsumption' : 'Dynamic'
   }
-  properties: {}
+  properties: {
+    reserved: isFlex
+  }
 }
 
-resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
+resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
   name: functionAppName
   location: location
-  kind: 'functionapp'
+  kind: isFlex ? 'functionapp,linux' : 'functionapp'
   identity: {
     // Azure manages this service principal's lifecycle with the Function App.
     // profile.ps1 uses it for Azure sign-in and subsequent Graph token requests.
@@ -182,10 +294,30 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: hostingPlan.id
     httpsOnly: true
+    virtualNetworkSubnetId: isFlex ? '${network!.id}/subnets/functions' : null
+    functionAppConfig: isFlex ? {
+      runtime: {
+        name: 'powershell'
+        version: '7.4'
+      }
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}${deploymentContainer!.name}'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+    } : null
     siteConfig: {
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      appSettings: [
+      appSettings: concat([
         // Identity-based host Storage connection: no account key/connection
         // string is supplied by these settings. Data-role grants follow below.
         {
@@ -200,33 +332,9 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'IMPORT_AUDIT_TABLE_NAME'
           value: importAuditTable.name
         }
-        // Functions host major version and PowerShell worker/runtime selection.
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'powershell'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME_VERSION'
-          value: '7.4'
-        }
         {
           name: 'AzureWebJobsDisableHomepage'
           value: 'true'
-        }
-        {
-          // Enables the repository's proxies.json routing configuration.
-          name: 'AzureWebJobsFeatureFlags'
-          value: 'EnableProxies'
-        }
-        {
-          // Execute the published ZIP as a mounted package rather than relying
-          // on individual source-file changes in the deployed wwwroot.
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: '1'
         }
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -267,9 +375,34 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'TENANT_ID'
           value: tenant().tenantId
         }
-      ]
+      ], isFlex ? [] : [
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'powershell'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME_VERSION'
+          value: '7.4'
+        }
+        {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableProxies'
+        }
+        {
+          name: 'WEBSITE_RUN_FROM_PACKAGE'
+          value: '1'
+        }
+      ])
     }
   }
+  dependsOn: [
+    storageDnsGroups
+    storageDnsLinks
+  ]
 }
 
 // Deterministic assignment names avoid creating a new grant on every deploy.
@@ -307,9 +440,9 @@ resource functionStorageTableDataContributor 'Microsoft.Authorization/roleAssign
   }
 }
 
-// The installing user needs blob data access to upload policy configuration.
-// This grant does not provide table/queue access or Azure role administration.
-resource installerStorageBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+// Preserve the legacy grant on upgrades; new private installations need no
+// direct installer access to the Storage data plane.
+resource installerStorageBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!isFlex) {
   name: guid(storageAccount.id, installerPrincipalId, storageBlobDataContributorRoleId)
   scope: storageAccount
   properties: {

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -361,7 +361,10 @@ if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
 # GET is read-only and returns the normalized policy.
 if ($Request.Method -ieq 'GET') {
     try {
-        $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json)
+        if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
+            throw 'Tag authorization policy is missing.'
+        }
+        $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     }
     catch {
         Send-JsonResponse -StatusCode InternalServerError -Body @{

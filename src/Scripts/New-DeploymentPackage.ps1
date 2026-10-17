@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -309,10 +309,12 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
     @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
+    @{ Source = 'src\FunctionApp\RootRedirect'; Destination = 'RootRedirect' }
     @{ Source = 'src\Infrastructure'; Destination = 'infra' }
     @{ Source = 'src\Scripts\Ensure-EntraApiApplication.ps1'; Destination = 'scripts\Ensure-EntraApiApplication.ps1' }
     @{ Source = 'src\Scripts\Ensure-EntraWebApplication.ps1'; Destination = 'scripts\Ensure-EntraWebApplication.ps1' }
     @{ Source = 'src\Scripts\Grant-ManagedIdentityGraphPermission.ps1'; Destination = 'scripts\Grant-ManagedIdentityGraphPermission.ps1' }
+    @{ Source = 'src\Scripts\FunctionDeployment.psm1'; Destination = 'scripts\FunctionDeployment.psm1' }
     @{ Source = 'src\Scripts\Import-AutopilotDevice.ps1'; Destination = 'scripts\Import-AutopilotDevice.ps1' }
     @{ Source = 'src\Scripts\Start-IntuneAutopilotImporter.ps1'; Destination = 'scripts\Start-IntuneAutopilotImporter.ps1' }
     @{ Source = 'src\Scripts\Set-TagAuthorizationPolicy.ps1'; Destination = 'scripts\Set-TagAuthorizationPolicy.ps1' }

@@ -162,9 +162,10 @@ dependencies, test results, and TypeScript build metadata are also excluded by
 ### 4.1. Azure Function App
 
 The Azure Function App is located in `src/FunctionApp`. This directory is the
-Azure Functions deployment root. `host.json`, `profile.ps1`,
-`proxies.json`, and `requirements.psd1` must remain at this level because Azure
-Functions loads them relative to the Function App root.
+Azure Functions deployment root. `host.json`, `profile.ps1`, and
+`requirements.psd1` remain at this level. The legacy runtime ZIP includes
+`proxies.json`; the Flex ZIP instead includes `RootRedirect` and bundled
+PowerShell modules under `Modules`.
 
 | Path | Purpose |
 | --- | --- |
@@ -996,16 +997,54 @@ The installer prompts for:
 - Azure region
 - Globally unique Function App name, with a generated name proposed by default
 - Destination directory for the operational PowerShell scripts
-- Entra device extension attribute for the authorized Group Tag; the default is `extensionAttribute1`
-- Optional display name of an Entra administrative unit (MAU or RMAU)
-- Entra group object IDs
-- Allowed Device Tags for each group
 
 Function App names must contain 2-60 letters, digits, or hyphens and must start and end with a letter or digit. The installer rejects an invalid `-FunctionAppName`; in interactive mode it asks again until the name is valid.
 
 The Client ID is taken automatically from the existing or newly created app registration.
 
-Group-to-tag rules are requested repeatedly in interactive mode. One group can receive multiple tags, and the same tag can be assigned to multiple groups.
+Rules are not part of installation or updates. Fresh installations use `[]`
+as the legacy `TAG_AUTHORIZATION_POLICY` fallback and leave the policy blob
+absent until a manager saves the first rule through the UI or client. An empty
+policy grants no import or device-tag permissions. The management API returns
+`policy: []` during initial setup; replacement policies still require at least
+one valid rule. First saves use conditional blob creation and retain auditing
+and concurrency protection.
+
+Updates never read or write the policy blob or call the Function management API.
+The installer forwards an existing legacy policy setting verbatim through ARM,
+preserving rules and unknown properties without normalization. Existing blob
+rules remain authoritative. The removed installer parameters
+`-TagAuthorizationRule`, `-AdministrativeUnitName`, and `-Mau` belong to the
+separate policy-management workflow. `-DeviceTagExtensionAttribute` remains a
+legacy default, set to `extensionAttribute1` without prompting.
+
+New apps use Linux Flex Consumption (`FC1`). The installer reads the actual
+hosting plan for existing apps: Windows `Y1` remains legacy Consumption, Linux
+`FC1` remains Flex, and unsupported combinations fail explicitly. No ordinary
+update changes an app's operating system, hosting plan, data or custom domains.
+Replacing a Windows app requires a separately approved new-app migration.
+
+The Flex template creates `vnet-<app>` with address space `10.80.0.0/24`, a
+`functions` subnet (`10.80.0.0/26`) delegated to `Microsoft.App/environments`,
+and a `private-endpoints` subnet (`10.80.0.64/27`). These ranges are isolated
+defaults; review address overlap before adding any peering. Blob, Queue and
+Table each have a private endpoint, a corresponding
+`privatelink.<service>.core.windows.net` DNS zone, a VNet link and a DNS zone
+group. The app depends on these DNS resources before creation.
+
+Storage has `publicNetworkAccess: Disabled`, `allowSharedKeyAccess: false`,
+anonymous blobs disabled and TLS 1.2. Both host and deployment storage use the
+system-assigned identity; the `deployment-packages` container requires no
+Azure Files share or connection string. Existing Storage data roles also cover
+deployment access. No installer data-plane upload is needed.
+
+Flex uses PowerShell 7.4, 2,048 MB instances, a maximum of 40 instances and no
+always-ready instances. The installer verifies regional Flex availability and
+registers `Microsoft.Network` and `Microsoft.App` when needed. The deploying
+account needs network write/join permissions and Storage private-endpoint
+connection approval in addition to existing
+resource, publishing and role-assignment permissions. Provider registration
+requires subscription permissions, or providers must be registered beforehand.
 
 For a non-interactive installation, pass all values as parameters:
 
@@ -1018,10 +1057,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
     -DeviceTagExtensionAttribute 'extensionAttribute1' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
-        '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
-    -AdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -1040,8 +1075,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard' `
     -WhatIf
 ```
 
@@ -1064,7 +1097,6 @@ Create a variable group named `autopilot-import-deployment` with these values:
 | `entraClientId` | `22222222-2222-2222-2222-222222222222` | Client ID of the preconfigured API app registration |
 | `webClientId` | `55555555-5555-5555-5555-555555555555` | Client ID of the preconfigured SPA app registration |
 | `installerPrincipalId` | `33333333-3333-3333-3333-333333333333` | Object ID of the user or group that remains a permanent Group Tag manager |
-| `tagAuthorizationRulesJson` | `["44444444-4444-4444-4444-444444444444=Standard,Kiosk"]` | JSON array containing the complete group-to-tag policy |
 | `tagManagerPrincipalIdsJson` | `[]` | JSON array of additional manager user or group object IDs |
 
 Authorize the pipeline to use this variable group. None of these values is a credential; authentication is provided by workload identity federation.
@@ -1170,16 +1202,22 @@ When the client module and configuration are not installed on the update compute
     -InstallMissingModules
 ```
 
-In this mode, and when using `-FunctionUrl`, the API audience is read from the deployed Function App and the management endpoint is derived from its hostname. Use `-ApiAudience` or `-ManagementUrl` only when the deployed values require an explicit override.
+In this mode, and when using `-FunctionUrl`, the API audience is read from the
+deployed Function App. Use `-ApiAudience` only when an explicit override is
+required. The updater no longer accepts `-ManagementUrl`, because it does not
+call the policy management endpoint.
 
-The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
+The script preserves the existing Function App name, region, API application,
+configured Group Tag managers, client tools path, and Device Tag extension
+attribute. Rules, including their per-rule administrative units, remain untouched.
+It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and the versioned client package.
 
 Each invocation creates a new log file. An update writes its activity to `Intune-Autopilotimport-update-<timestamp>-<unique-id>.log`, and the installer invoked by the update writes its own `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log` in the current user's temporary directory. If either script stops with an error, its transcript is closed before detailed error and stack information is appended to avoid file-lock conflicts.
 
 The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `User Access Administrator`, including custom role definition writes, because the Bicep template maintains Storage role assignments and the Function-scoped manager-access reader role. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
 
-Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
+Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. No Function management API permission is required for updating. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
 #### 9.2.3. Deployment Package
 
@@ -1285,34 +1323,43 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 
 ### 9.4. Publish the Function Code
 
-The ZIP archive must contain `host.json` at its root:
+The ZIP archive must contain `host.json` at its root. Use the shared
+`FunctionDeployment.psm1` helpers rather than a hand-written archive allowlist:
 
 Rebuild the web frontend first only when files under `src/Web` changed. For
 documentation, PowerShell module, installer, or backend Function changes, use
 the existing bundle under `src/FunctionApp/WebFrontend/wwwroot`.
 
 ```powershell
-Push-Location .\src\Web
-npm ci
-npm run build
-Pop-Location
-
+Import-Module .\src\Scripts\FunctionDeployment.psm1 -Force
+$app = Get-AzWebApp -ResourceGroupName $resourceGroupName -Name $functionAppName
+$hostingMode = Get-AutopilotDeploymentHostingMode -ExistingFunctionApp $app
 $package = Join-Path $PWD 'autopilot-import.zip'
-Push-Location .\src\FunctionApp
-Compress-Archive `
-    -Path .\host.json, .\proxies.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
-    -DestinationPath $package `
-    -Force
-Pop-Location
-
-Publish-AzWebApp `
-    -ResourceGroupName $resourceGroupName `
-    -Name $functionAppName `
-    -ArchivePath $package `
-    -Force
+New-AutopilotFunctionPackage -FunctionAppRoot .\src\FunctionApp `
+    -DestinationPath $package -HostingMode $hostingMode
+if ($hostingMode -eq 'FlexConsumption') {
+    Publish-AutopilotFlexPackage -ResourceGroupName $resourceGroupName `
+        -FunctionAppName $functionAppName -ArchivePath $package
+} else {
+    Publish-AzWebApp -ResourceGroupName $resourceGroupName `
+        -Name $functionAppName -ArchivePath $package -Force
+}
 ```
 
-Managed Dependencies can take several minutes to make `Az.Accounts` available after the first start.
+Flex does not support PowerShell Managed Dependencies. Its ZIP contains the
+compatible module version declared by `requirements.psd1` under `Modules`;
+the builder copies a compatible installed module or saves it from PSGallery.
+Only the staged Flex `host.json` disables managed dependencies. The source
+configuration and legacy Windows ZIP retain the existing startup behavior.
+
+Flex publication uses the app's actual SCM hostname and
+`POST /api/publish?RemoteBuild=false&Deployer=AutopilotImport-<unique-id>`, authenticated
+with an Azure management bearer token. It polls the deployment status until
+confirmed success; HTTP acceptance, failure, cancellation and timeout are not
+reported as successful publication. The operator does not need a direct
+network path to private Storage. Public application ingress is intentional;
+only the Storage data plane is private. A fresh Azure deployment and DNS/runtime
+connectivity test still require a separate deployment approval.
 
 ## 10. Local Build
 

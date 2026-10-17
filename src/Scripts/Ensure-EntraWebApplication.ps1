@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -200,7 +200,7 @@ function Merge-WebRedirectUri {
         }
     )
 
-    return @($redirectUris + $silentRedirectUris) | Select-Object -Unique
+    return (@($redirectUris) + @($silentRedirectUris)) | Select-Object -Unique
 }
 
 function ConvertTo-ValidPermissionIds {

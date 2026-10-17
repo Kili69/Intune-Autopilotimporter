@@ -6,10 +6,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261017.6] - 2026-10-17
+## [1.4.20261017.7] - 2026-10-17
 
 ### Changed
 
+- Remove Rule configuration from installation, updates and pipeline inputs. Preserve existing policy data verbatim, retain local Client Tools and start new installations with no authorized tags; the first manager save creates the policy with audit and concurrency protection.
+- Default new apps to Linux Flex Consumption with private Blob/Queue/Table endpoints, DNS and VNet integration, managed-identity deployment/Storage access and no shared keys, public Storage or Azure Files. Keep public UI and Entra API protection; preserve existing Windows hosting on update and require a separately planned new-app migration. Document networking charges and validate hosting, region and private-network permissions.
+- Prefer CurrentUser PSResource module installation with an explicit legacy fallback. Bundle Flex runtime dependencies and an HTTP root redirect, publish using bearer-authenticated OneDeploy with unique request correlation and confirmed completion, and preserve legacy publication. Ship the shared deployment module in installation packages.
 - Show Information or Error in management history summaries, retaining request/completion phase in details. Record policy and manager save/confirmation failures when audit storage is available; errors do not imply rollback.
 - Rename management history buttons and popup headings to "Policy changes" ("Policy-Aenderungen" in German).
 - Use a required single-line authorized user group with "Change group", no removal or object-ID label suffix. Require successful group resolution before saving; keep device-group multi-selection. Validate search lengths and reject control/invisible formatting characters while supporting Unicode names and punctuation.
@@ -29,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Register interactive and silent-auth SPA redirects as separate entries even for a single frontend, preventing `AADSTS50011` on fresh installations. Preserve unrelated redirects and add dedicated regression tests; repair the affected Entra registration with approval without redeploying Function code.
 - Compare normalized policy content rather than raw JSON when saving rules, avoiding false concurrent-change errors caused by blob-binding formatting. Preserve ETag-conditional writes and reject actual rule or description changes.
 - Hide manager administration and its Azure sign-in button for ordinary policy managers. Only server-confirmed Azure Owner/Contributor assignments enable the controls; delegated ARM authorization remains mandatory for manager reads, searches and changes.
 

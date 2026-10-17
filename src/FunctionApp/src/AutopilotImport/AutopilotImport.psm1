@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -953,8 +953,11 @@ function Set-ManagementPolicyBlob {
     }
     # The worker may deserialize/reformat the blob binding, so compare policy
     # content rather than whitespace or JSON property order. Keep the raw ETag.
-    $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentJson | ConvertFrom-Json -ErrorAction Stop)
-    $expectedPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($ExpectedJson | ConvertFrom-Json -ErrorAction Stop)
+    if ([string]::IsNullOrWhiteSpace($currentJson)) {
+        throw 'The current tag authorization policy is missing.'
+    }
+    $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
+    $expectedPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($ExpectedJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     $currentCanonical = ConvertTo-Json -InputObject @($currentPolicy) -Depth 20 -Compress
     $expectedCanonical = ConvertTo-Json -InputObject @($expectedPolicy) -Depth 20 -Compress
     if ($currentCanonical -cne $expectedCanonical) { throw 'Policy changed on the server. Reload policies before saving.' }
@@ -999,6 +1002,10 @@ function ConvertTo-TagAuthorizationPolicy {
     PSCustomObject array returned as one collection, preserving legacy
     multi-tag authorization rules and normalized action properties.
 
+    .PARAMETER AllowEmpty
+    Allows an empty existing policy during initial setup. Submitted replacement
+    policies must omit this switch so at least one valid rule remains required.
+
     .EXAMPLE
     $policy = ConvertTo-TagAuthorizationPolicy -Rules @(
         '11111111-1111-1111-1111-111111111111=BG-Default,BG-VIP'
@@ -1015,9 +1022,12 @@ function ConvertTo-TagAuthorizationPolicy {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]] $Rules,
 
-        [string] $AdministrativeUnitName
+        [string] $AdministrativeUnitName,
+
+        [switch] $AllowEmpty
     )
 
     if (-not [string]::IsNullOrWhiteSpace(
@@ -1026,6 +1036,9 @@ function ConvertTo-TagAuthorizationPolicy {
         throw 'Administrative unit name must not exceed 256 characters.'
     }
 
+    if ($AllowEmpty -and $Rules.Count -eq 0) {
+        return ,@()
+    }
     $enteredRules = @($Rules | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($enteredRules.Count -eq 0) {
         throw 'At least one group and tag rule is required.'
@@ -2513,6 +2526,7 @@ function Get-CurrentPolicyPrincipal {
         [object] $Principal,
 
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]] $Policy,
 
         [Parameter(Mandatory)]
@@ -2625,6 +2639,7 @@ function Resolve-AuthorizedGroupTag {
         [object] $Principal,
 
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]] $Policy,
 
         [Parameter(Mandatory)]
@@ -2696,6 +2711,7 @@ function Get-AuthorizedGroupTags {
         [object] $Principal,
 
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]] $Policy
     )
 

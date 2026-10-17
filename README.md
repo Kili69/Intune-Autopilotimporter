@@ -674,8 +674,8 @@ Remove-AutoPilotTagPolicy `
 
 If multiple Entra groups have the same display name, use the object ID. The
 last tag cannot be removed from a group rule. Omit `-GroupTag` to remove that
-complete rule instead. The last policy rule cannot be removed because the
-Function requires at least one group-to-tag rule. Run the command without
+complete rule instead. Policy edits must retain at least one rule; only a
+fresh installation starts without rules. Run the command without
 `-WhatIf` to apply the removal.
 
 After a successful complete-rule removal, the command prints a concise message
@@ -969,6 +969,12 @@ The installing user cannot be removed. Authorization for current Intune Role Adm
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 
+Installer and updater install missing PowerShell modules for the current user;
+local administrator rights are not required for these dependencies. They prefer
+`Install-PSResource` when available and otherwise use `Install-Module`. A failed
+dependency installation stops setup immediately, preserving the original error
+instead of continuing into a misleading module-import failure.
+
 ### Quick Installation Guide
 
 1. Obtain the Azure, Entra ID, and delegated Microsoft Graph permissions listed under [Required Roles and Permissions](#required-roles-and-permissions). The installing administrator needs all applicable permissions for the complete setup.
@@ -1005,8 +1011,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westus2' `
     -FunctionAppName 'func-autopilot-contoso' `
-    -TagAuthorizationRule `
-        '22222222-2222-2222-2222-222222222222=Standard,Kiosk' `
     -InstallMissingModules `
     -Confirm:$false
 ```
@@ -1016,6 +1020,38 @@ examples. Entra application internals, manual alternatives, Graph permission
 assignment, Azure deployment, Function publishing, pipeline, update, package,
 and Bicep details are documented in the
 [Developer Guide](DEVELOPER.md#deployment-and-installation-internals).
+
+Installation and updates deploy the Function and its Azure/Entra dependencies
+and install the local Client Tools. They do not ask for rules, groups, tags, or
+administrative units. New installations start with no rules and grant no import
+access until a manager creates the first valid rule in **TagPolicies** or with
+the client policy commands. Updates leave the policy blob untouched and preserve
+the legacy `TAG_AUTHORIZATION_POLICY` application setting without reformatting
+its rules. The installer no longer accepts `-TagAuthorizationRule`,
+`-AdministrativeUnitName`, or `-Mau`; use the policy-management commands instead.
+The updater also no longer accepts `-ManagementUrl`, since it does not access
+the policy management endpoint.
+
+New installations use **Linux Flex Consumption (FC1)** with private Storage.
+The installer creates an isolated VNet, separate Function/private-endpoint
+subnets, and three private endpoints with linked DNS zones for **Blob, Queue
+and Table**. Storage public network access, anonymous blobs and shared-key
+authentication are disabled. The UI remains publicly reachable; protected API
+routes still require Entra authentication.
+
+Flex requires a new Function App when replacing a Windows Consumption
+installation. A regular update detects and preserves the existing hosting
+model; it never converts or deletes the old app, migrates its data, or switches
+custom-domain bindings automatically. Use a new app name for the new
+installation and plan any data/domain migration separately.
+
+Flex runtime ZIPs include the compatible `Az.Accounts` version from
+`requirements.psd1` under `Modules`; automatic PowerShell Managed Dependencies
+are disabled for that ZIP only. If the compatible module is not installed
+locally, packaging downloads it from PSGallery. Publishing uses **OneDeploy**
+with Azure bearer authentication, not legacy ZIP Deploy or direct Storage
+uploads. Private endpoints and DNS have additional Azure charges; no
+always-ready Flex instances are configured.
 
 ##### Distribute the Import Client to Additional PCs
 
@@ -1144,12 +1180,19 @@ are shown for each eligible device.
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
-`Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
+The Function managed identity receives Storage-scoped `Storage Blob Data Owner`,
+`Storage Queue Data Contributor` and `Storage Table Data Contributor` roles.
+New private installations do not grant the installing user direct Storage data
+access. The legacy Windows update path retains the existing installer blob
+role. The installer therefore needs both resource deployment permissions and
 `Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `src/Infrastructure/main.bicep`.
 
-The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
-If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
+The legacy Windows Consumption update path still requires public Storage network
+reachability. If policy disables it, the installer stops rather than bypassing
+policy or silently changing hosting. Use a separately planned new Flex
+installation with private Storage instead. The Flex path also requires network
+resource creation and subnet-join permissions, and registered `Microsoft.Network`
+and `Microsoft.App` providers.
 
 Importing users require no Azure subscription role, Entra directory role, Microsoft Graph permission, or direct Intune administrative role. Authorization is provided by the configured group-to-tag rule. The Function's managed
 identity holds the Intune-related Graph permissions independently of the user.
@@ -1170,9 +1213,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
     -DeviceTagExtensionAttribute 'extensionAttribute1' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk' `
-    -AdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '22222222-2222-2222-2222-222222222222' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -1184,11 +1224,9 @@ The most commonly used options are:
 
 - `-SubscriptionId`, `-TenantId`, `-ResourceGroupName`, `-Location`, and
   `-FunctionAppName` select the Azure deployment target.
-- `-TagAuthorizationRule` defines one or more Entra group-to-Group Tag rules.
-- `-AdministrativeUnitName` assigns the default administrative unit used by
-  the configured Group Tag policy.
 - `-DeviceTagExtensionAttribute` selects the Entra device extension attribute
-  that stores the authorized Group Tag.
+  that stores the authorized Group Tag for legacy rules; it defaults to
+  `extensionAttribute1` without an installation prompt.
 - `-TagManagerPrincipalId` adds an initial user or group that can manage the
   Group Tag policy.
 - `-EntraClientId` selects an existing API application instead of searching by
@@ -1701,6 +1739,9 @@ application**, add this exact redirect URI:
 https://autopilot.contoso.com/api/ui/index.html
 https://autopilot.contoso.com/api/ui/auth.html
 ```
+
+Enter each URL as a separate SPA redirect entry. Concatenating `index.html`
+and `auth.html` into one entry causes sign-in error `AADSTS50011`.
 
 Redirect URIs are case-sensitive and must match the complete URL returned by
 `https://autopilot.contoso.com/api/ui/config`. Keep the existing

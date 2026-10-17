@@ -103,19 +103,11 @@ stages:
                 - task: AzurePowerShell@5
                   displayName: Deploy infrastructure and Function code
                   env:
-                    TAG_AUTHORIZATION_RULES_JSON: $(tagAuthorizationRulesJson)
                     TAG_MANAGER_PRINCIPAL_IDS_JSON: $(tagManagerPrincipalIdsJson)
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     ScriptType: InlineScript
                     Inline: |
-                      $tagAuthorizationRules = @(
-                        $env:TAG_AUTHORIZATION_RULES_JSON | ConvertFrom-Json
-                      )
-                      if ($tagAuthorizationRules.Count -eq 0) {
-                        throw 'tagAuthorizationRulesJson must contain at least one rule.'
-                      }
-
                       $tagManagerPrincipalIds = @()
                       if (-not [string]::IsNullOrWhiteSpace($env:TAG_MANAGER_PRINCIPAL_IDS_JSON)) {
                         $tagManagerPrincipalIds = @(
@@ -132,7 +124,6 @@ stages:
                         -EntraClientId '$(entraClientId)' `
                         -WebClientId '$(webClientId)' `
                         -InstallerPrincipalId '$(installerPrincipalId)' `
-                        -TagAuthorizationRule $tagAuthorizationRules `
                         -TagManagerPrincipalId $tagManagerPrincipalIds `
                         -SkipEntraAppConfiguration `
                         -SkipGraphPermission `

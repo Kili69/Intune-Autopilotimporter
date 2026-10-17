@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -187,6 +187,28 @@ Describe 'Synchronous audited policy persistence' {
             }
             Set-ManagementPolicyBlob -ExpectedJson $env:TAG_AUTHORIZATION_POLICY -Json new
             Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter { $Headers['If-None-Match'] -eq '*' }
+        }
+        It 'creates the first rule conditionally from an empty deployment fallback' {
+            $env:TAG_AUTHORIZATION_POLICY = '[]'
+            Mock Invoke-WebRequest {
+                $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::NotFound)
+                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Not found', $response)
+            }
+            $firstRule = '[{"name":"First","groupId":"11111111-1111-1111-1111-111111111111","groupTag":"Sales"}]'
+            Set-ManagementPolicyBlob -ExpectedJson '[]' -Json $firstRule
+            Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+                $Headers['If-None-Match'] -eq '*' -and
+                [Text.Encoding]::UTF8.GetString($Body) -eq $firstRule
+            }
+        }
+        It 'updates an explicitly empty blob using its ETag instead of stale legacy rules' {
+            Mock Invoke-WebRequest { @{ Content = '[]'; Headers = @{ ETag = '"empty"' } } }
+            Set-ManagementPolicyBlob -ExpectedJson '[]' -Json new
+            Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter { $Headers['If-Match'] -eq '"empty"' }
+        }
+        It 'rejects a concurrent first rule without overwriting it' {
+            { Set-ManagementPolicyBlob -ExpectedJson '[]' -Json new } | Should -Throw '*changed*'
+            Should -Invoke Invoke-RestMethod -Times 0
         }
         It 'propagates storage authorization failures without writing' {
             Mock Invoke-WebRequest { throw 'Storage unavailable' }

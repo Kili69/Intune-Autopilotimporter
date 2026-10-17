@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -7,12 +7,13 @@
 Updates an existing Autopilot Import deployment from the current source tree.
 
 .DESCRIPTION
-Discovers the installed client configuration, reads the current Group Tag
-policy through the Function management API, preserves configured policy
-managers and optional RMAU, and reads the deployed extension attribute and
+Discovers the installed client configuration, preserves configured policy
+managers, and reads the deployed extension attribute and
 region from Azure. It then invokes Install-AutopilotImport.ps1 with the
 existing resource names and synchronizes the updated client module to the
-system-wide Windows PowerShell module directory. When this changes Application Insights from a
+system-wide Windows PowerShell module directory. Rules and their administrative
+units remain untouched; no management API access is required.
+When this changes Application Insights from a
 previously linked Log Analytics workspace to the integrated workspace in the
 Function resource group, the script identifies the old workspace that can be
 deleted after its remaining use and historical telemetry have been reviewed.
@@ -48,10 +49,6 @@ take precedence over an automatically selected client configuration.
 .PARAMETER ApiAudience
 Optional API audience override. When omitted, it is read from the installed
 configuration or the Function App's API_AUDIENCE setting.
-
-.PARAMETER ManagementUrl
-Optional Group Tag management endpoint override. When omitted, it is read
-from the installed configuration or derived from the Function App hostname.
 
 .PARAMETER ClientToolsPath
 Client package destination. By default, it is derived from ConfigPath. When no
@@ -132,9 +129,8 @@ System.Management.Automation.PSCustomObject. The deployment result returned by
 Install-AutopilotImport.ps1.
 
 .NOTES
-The updating account needs permission to read the Function App configuration,
-update its Azure resources, and read the current Group Tag policy through the
-Function management API. Run the script from an elevated PowerShell 7 session
+The updating account needs permission to read the Function App configuration
+and update its Azure resources. Run the script from an elevated PowerShell 7 session
 so it can update the system-wide client module under Program Files.
 #>
 
@@ -155,9 +151,6 @@ param(
 
     [ValidatePattern('^api://')]
     [string] $ApiAudience,
-
-    [ValidatePattern('^https://')]
-    [string] $ManagementUrl,
 
     [string] $ClientToolsPath,
 
@@ -672,60 +665,6 @@ function Install-SystemWideAutopilotClientModule {
     return Join-Path $destinationVersionDirectory 'client.settings.json'
 }
 
-function ConvertTo-UpdateTagAuthorizationRules {
-    <#
-    .SYNOPSIS
-    Converts the deployed Group Tag policy into installer rule objects.
-
-    .DESCRIPTION
-    Validates every policy entry and preserves its optional restricted
-    management administrative unit. Invalid or empty policies terminate the
-    update before deployment changes are made.
-
-    .PARAMETER Policy
-    Group Tag policy objects returned by Get-AutoPilotTagPolicy.
-
-    .OUTPUTS
-    System.Object[]. Installer-compatible Group Tag authorization rules.
-    #>
-    param([Parameter(Mandatory)][object[]] $Policy)
-
-    # Preserve objects, not only group=tag strings: named actions and per-rule
-    # AU bindings must survive a round-trip through the installer normalizer.
-    $rules = @($Policy | ForEach-Object {
-        $tags = @($_.tags | Where-Object {
-            -not [string]::IsNullOrWhiteSpace([string] $_)
-        })
-        if ([string]::IsNullOrWhiteSpace([string] $_.groupId) -or
-            $tags.Count -eq 0) {
-            throw 'The current Group Tag policy contains an invalid rule.'
-        }
-        $rule = [ordered]@{
-            groupId = ([guid] $_.groupId).ToString()
-            tags = $tags
-        }
-        foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'scopeTag', 'extensionAttributes', 'deviceGroupIds')) {
-            # Include legacy scopeTag input for the shared migration logic;
-            # the updater does not independently reinterpret action semantics.
-            if ($_.PSObject.Properties[$key]) {
-                $rule[$key] = $_.$key
-            }
-        }
-        if ($_.PSObject.Properties[
-                'administrativeUnitName'] -and
-            -not [string]::IsNullOrWhiteSpace(
-                [string] $_.administrativeUnitName)) {
-            $rule.administrativeUnitName =
-                ([string] $_.administrativeUnitName).Trim()
-        }
-        [pscustomobject] $rule
-    })
-    if ($rules.Count -eq 0) {
-        throw 'The current Group Tag policy is empty.'
-    }
-    return $rules
-}
-
 function Assert-AutoPilotAppSettingsResponse {
     [CmdletBinding()]
     param(
@@ -1058,7 +997,6 @@ function Assert-AzureUpdatePermissions {
 #region Resolve installed deployment
 
 # Support both the checkout's src layout and the flattened release ZIP.
-# Use this release's client code to read live policy, not an older loaded module.
 $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $projectRoot = if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'VERSION')) {
     $repositoryRoot
@@ -1072,8 +1010,6 @@ $installerPath = if ($projectRoot -eq $PSScriptRoot) {
 else {
     Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1'
 }
-$clientModulePath = Join-Path $projectRoot `
-    'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer not found: $installerPath"
 }
@@ -1085,11 +1021,19 @@ if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
     if (-not $InstallMissingModules) {
         throw 'Az.Accounts is required. Run again with -InstallMissingModules.'
     }
-    Install-Module `
-        -Name 'Az.Accounts' `
-        -Scope CurrentUser `
-        -Force `
-        -AllowClobber
+    if (Get-Command Install-PSResource -ErrorAction SilentlyContinue) {
+        Install-PSResource -Name 'Az.Accounts' -Scope CurrentUser `
+            -Repository PSGallery -TrustRepository -ErrorAction Stop
+    }
+    else {
+        Install-Module `
+            -Name 'Az.Accounts' `
+            -Scope CurrentUser `
+            -Repository PSGallery `
+            -Force `
+            -AllowClobber `
+            -ErrorAction Stop
+    }
 }
 if (-not $SkipEntraAppConfiguration -and
     -not $InstallMissingModules -and
@@ -1311,13 +1255,6 @@ if ($resolvedApiAudience -notmatch '^api://' -or
     throw "API audience '$resolvedApiAudience' does not contain a valid Entra Client ID."
 }
 
-$configuredManagementUrl = Get-AutoPilotUpdateConfigurationValue `
-    -Configuration $settings `
-    -Name 'managementUrl'
-$defaultHostName = [string] $site.properties.defaultHostName
-if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
-    $defaultHostName = "$FunctionAppName.azurewebsites.net"
-}
 # Preserve custom-domain login redirects from both metadata and ARM bindings.
 $siteHostNames = @(Get-UpdateWebAppHostName -WebApp $site)
 $siteHostNames += @(
@@ -1326,41 +1263,7 @@ $siteHostNames += @(
 $additionalWebRedirectUris = @(
     Get-UpdateWebRedirectUri -HostName $siteHostNames
 )
-# As with the audience, URL targeting bypasses an unrelated config's endpoint
-# unless the caller explicitly supplies ManagementUrl.
-$resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
-    $ManagementUrl
-}
-elseif (-not $hasFunctionUrl -and
-    -not [string]::IsNullOrWhiteSpace($configuredManagementUrl)) {
-    $configuredManagementUrl
-}
-else {
-    "https://$defaultHostName/api/management/tag-policy"
-}
-
-Import-Module $clientModulePath -Force
-# Read the authoritative policy through the authenticated management API.
-# Do not overwrite live policy using stale rules from local installation files.
-$policyResponse = Get-AutoPilotTagPolicy `
-    -ManagementUrl $resolvedManagementUrl `
-    -ApiApplicationIdUri $resolvedApiAudience `
-    -TenantId $TenantId `
-    -Raw
-if ($null -eq $policyResponse -or
-    $null -eq $policyResponse.PSObject.Properties['policy']) {
-    throw "The management endpoint '$resolvedManagementUrl' did not return a Group Tag policy. Verify the Function App, API audience, and management URL."
-}
-$tagAuthorizationRules = @(
-    ConvertTo-UpdateTagAuthorizationRules `
-        -Policy @($policyResponse.policy)
-)
-# Per-rule AU targets are already retained in the converted rule objects.
-# An empty global default avoids imposing one rule's AU on all other rules.
-$administrativeUnitName = ''
-
-# Preserve deployed legacy defaults and manager IDs. The installer will
-# normalize/reconcile them together with the current policy action settings.
+# Preserve deployed legacy defaults and manager IDs without reading rules.
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
 if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
@@ -1404,8 +1307,7 @@ Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host '  Administrative unit: preserved per policy rule'
-Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
+Write-Host '  Rules        : unchanged; no policy read or write'
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 Write-Host "  Custom web redirects: $($additionalWebRedirectUris.Count)"
 
@@ -1423,9 +1325,6 @@ $installerParameters = @{
     AdditionalWebRedirectUri    = $additionalWebRedirectUris
     InstallerPrincipalId        = $installerPrincipalId
     ApiAudience                 = $resolvedApiAudience
-    TagAuthorizationRule        = $tagAuthorizationRules
-    AdministrativeUnitName = `
-        [string] $administrativeUnitName
     DeviceTagExtensionAttribute = $extensionAttribute
     TagManagerPrincipalId       = @($managerPrincipalIds)
     ClientToolsPath             = $resolvedClientToolsPath

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -78,7 +78,7 @@ HTTP 401: { "error": "invalidPrincipal", "correlationId": "..." }
           caller object ID, or an invalid policy group ID.
 HTTP 500: { "error": "serviceNotConfigured", "correlationId": "..." }
           Returned for other exceptions inside the lookup block, such as
-          policy parsing, empty policy, token acquisition or Graph failures.
+          policy parsing, token acquisition or Graph failures.
 
 .EXAMPLE
 $headers = @{ Authorization = "Bearer $accessToken" }
@@ -191,12 +191,11 @@ try {
     if ([string]::IsNullOrWhiteSpace($policyJson)) {
         $policyJson = $env:TAG_AUTHORIZATION_POLICY
     }
-    # Preserve array semantics for a single rule. An empty configuration is a
-    # service error, unlike a valid policy that grants this caller no tags.
-    $policy = @($policyJson | ConvertFrom-Json)
-    if ($policy.Count -eq 0) {
-        throw 'Tag authorization policy is empty.'
+    # An explicit empty array is valid before the first rule is configured.
+    if ([string]::IsNullOrWhiteSpace($policyJson)) {
+        throw 'Tag authorization policy is missing.'
     }
+    $policy = ConvertTo-TagAuthorizationPolicy -Rules @($policyJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     # Use the Function's Azure identity for Graph, not the user's API token.
     $tokenResult = Get-AzAccessToken `
         -ResourceUrl 'https://graph.microsoft.com/' `

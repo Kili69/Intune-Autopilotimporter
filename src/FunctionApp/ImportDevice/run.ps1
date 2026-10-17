@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -91,19 +91,16 @@ if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
 
 try {
     # Retain array semantics even when JSON contains only one policy rule.
-    $tagAuthorizationPolicy = @($tagAuthorizationPolicyJson | ConvertFrom-Json)
-    if ($tagAuthorizationPolicy.Count -eq 0) {
-        throw 'Tag authorization policy is empty.'
-    }
+    $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($tagAuthorizationPolicyJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
 }
 catch {
-    # This handler also retries the legacy setting after invalid/empty policy
-    # JSON, not just when binding content is absent. Neither source may be empty.
+    # Preserve the legacy invalid-JSON fallback, but a valid empty blob must
+    # not reactivate old rules from the application setting.
     try {
-        $tagAuthorizationPolicy = @($env:TAG_AUTHORIZATION_POLICY | ConvertFrom-Json)
-        if ($tagAuthorizationPolicy.Count -eq 0) {
-            throw 'Tag authorization policy is empty.'
+        if ([string]::IsNullOrWhiteSpace($env:TAG_AUTHORIZATION_POLICY)) {
+            throw 'Tag authorization policy is missing.'
         }
+        $tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($env:TAG_AUTHORIZATION_POLICY | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     }
     catch {
         Write-Error "[$correlationId] Tag authorization policy is invalid: $($_.Exception.Message)"

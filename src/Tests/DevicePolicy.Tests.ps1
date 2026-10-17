@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261017.6
+# Project-Version: 1.4.20261017.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -11,6 +11,22 @@ Describe 'Named device policy normalization' {
             groupId = '11111111-1111-1111-1111-111111111111'
             groupTag = 'Sales'
         }
+    }
+    It 'allows an empty existing policy only when explicitly requested' {
+        $policy = ConvertTo-TagAuthorizationPolicy -Rules @() -AllowEmpty
+        ($null -eq $policy) | Should -BeFalse
+        $policy.Count | Should -Be 0
+        ConvertTo-Json -InputObject $policy -Compress | Should -BeExactly '[]'
+        { ConvertTo-TagAuthorizationPolicy -Rules @() } | Should -Throw '*At least one*'
+    }
+    It 'does not treat null or blank rules as a valid empty policy' -ForEach @(
+        @{ Json = 'null' }
+        @{ Json = '[null]' }
+        @{ Json = '[""]' }
+        @{ Json = '[" "]' }
+    ) {
+        { ConvertTo-TagAuthorizationPolicy -Rules @($Json | ConvertFrom-Json) -AllowEmpty } |
+            Should -Throw
     }
     It 'keeps Group Tag actions without scope tag output' {
         $policy = ConvertTo-TagAuthorizationPolicy -Rules @($rule)
@@ -597,11 +613,14 @@ BeforeAll {
                 Import-Module Az.Accounts
                 $managerHandler = Join-Path $PSScriptRoot '..\FunctionApp\ManageTagPolicy\run.ps1'
                 $previousManagerPolicy = $env:MANAGER_AUTHORIZATION_POLICY
+                $previousTagPolicy = $env:TAG_AUTHORIZATION_POLICY
                 $env:MANAGER_AUTHORIZATION_POLICY = '{"allowIntuneRoleAdministrators":false}'
+                $env:TAG_AUTHORIZATION_POLICY = '[]'
                 function Push-OutputBinding { param($Name, $Value) }
             }
             AfterAll {
                 $env:MANAGER_AUTHORIZATION_POLICY = $previousManagerPolicy
+                $env:TAG_AUTHORIZATION_POLICY = $previousTagPolicy
             }
             BeforeEach {
                 $request = @{ Method = 'GET'; Headers = @{ 'x-ms-client-principal' = 'mock' }; Query = @{ groupSearch = 'Sales' } }
@@ -624,6 +643,52 @@ BeforeAll {
                     $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).groups[0].displayName -eq 'Sales'
                 }
                 Should -Invoke Find-EntraPolicyGroups -Times 1 -Exactly -ParameterFilter { $SearchText -eq 'Sales' }
+            }
+            It 'returns an actual empty policy array before the first rule is configured' {
+                $request.Query = @{}
+                & $managerHandler -Request $request -TagPolicyBlob ''
+                Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                    $body = $Value.Body | ConvertFrom-Json
+                    $Value.StatusCode -eq 200 -and $body.policy -is [array] -and $body.policy.Count -eq 0
+                }
+            }
+            It 'saves the first valid rule using the empty deployment fallback' {
+                $request.Method = 'PUT'
+                $request.Query = @{}
+                $request.Body = @{ policy = @(@{
+                    name = 'First'
+                    groupId = '11111111-1111-1111-1111-111111111111'
+                    groupTag = 'Sales'
+                }) }
+                & $managerHandler -Request $request -TagPolicyBlob ''
+                Should -Invoke Set-ManagementPolicyBlob -Times 1 -ParameterFilter {
+                    $ExpectedJson -eq '[]' -and ($Json | ConvertFrom-Json)[0].name -eq 'First'
+                }
+                Should -Invoke Write-ManagementAuditEvent -Times 1 -ParameterFilter { $Stage -eq 'applied' }
+                Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                    $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).policy.Count -eq 1
+                }
+            }
+            It 'still rejects replacing a policy with no rules' {
+                $request.Method = 'PUT'
+                $request.Query = @{}
+                $request.Body = @{ policy = @() }
+                & $managerHandler -Request $request -TagPolicyBlob '[]'
+                Should -Invoke Set-ManagementPolicyBlob -Times 0
+                Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                    $Value.StatusCode -eq 400 -and ($Value.Body | ConvertFrom-Json).error -eq 'invalidTagPolicy'
+                }
+            }
+            It 'rejects malformed or null existing policy instead of reporting no rules' -ForEach @(
+                @{ Json = 'bad' }
+                @{ Json = 'null' }
+                @{ Json = '[null]' }
+            ) {
+                $request.Query = @{}
+                & $managerHandler -Request $request -TagPolicyBlob $Json
+                Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                    $Value.StatusCode -eq 500 -and ($Value.Body | ConvertFrom-Json).error -eq 'tagPolicyInvalid'
+                }
             }
                 It 'authorizes policy history before reading its permanent records' {
                     $request.Query = @{ history = 'true'; ruleId = '11111111-1111-1111-1111-111111111111' }
@@ -820,6 +885,74 @@ BeforeAll {
             }
         }
     }
+Describe 'Empty policy authorization' {
+    BeforeAll {
+        Import-Module Az.Accounts
+        function Push-OutputBinding { param($Name, $Value) }
+        $savedTagPolicy = $env:TAG_AUTHORIZATION_POLICY
+    }
+    AfterAll {
+        $env:TAG_AUTHORIZATION_POLICY = $savedTagPolicy
+    }
+    BeforeEach {
+        $env:TAG_AUTHORIZATION_POLICY = '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["Sales"]}]'
+        $request = @{
+            Method = 'GET'
+            Headers = @{ 'x-ms-client-principal' = 'mock' }
+            Query = @{}
+            Body = @{ groupTag = 'Sales' }
+        }
+        Mock Import-Module {}
+        Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
+        Mock ConvertFrom-ClientPrincipalHeader {
+            [pscustomobject]@{ claims = @(
+                [pscustomobject]@{ typ = 'oid'; val = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }
+                [pscustomobject]@{ typ = 'groups'; val = '11111111-1111-1111-1111-111111111111' }
+            ) }
+        }
+        Mock Invoke-RestMethod { [pscustomobject]@{ value = @() } }
+        Mock Invoke-RestMethod { throw 'Unexpected Graph request' } -ModuleName AutopilotImport
+        Mock Push-OutputBinding {}
+        Mock Write-Error {}
+    }
+    It 'returns no authorized tags for an empty blob rather than stale fallback rules' {
+        & (Join-Path $PSScriptRoot '..\FunctionApp\GetAuthorizedTags\run.ps1') -Request $request -TagPolicyBlob '[]'
+        Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+            $body = $Value.Body | ConvertFrom-Json
+            $Value.StatusCode -eq 200 -and $body.tags -is [array] -and $body.tags.Count -eq 0 -and
+            $body.policies -is [array] -and $body.policies.Count -eq 0
+        }
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport -Times 0
+    }
+    It 'returns no devices before any rules exist' {
+        & (Join-Path $PSScriptRoot '..\FunctionApp\ManageDeviceTags\run.ps1') -Request $request -TagPolicyBlob '[]'
+        Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+            $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).devices.Count -eq 0
+        }
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport -Times 0
+    }
+    It 'denies imports with an empty blob even when legacy rules and token groups would allow them' {
+        $request.Method = 'POST'
+        & (Join-Path $PSScriptRoot '..\FunctionApp\ImportDevice\run.ps1') -Request $request -TagPolicyBlob '[]'
+        Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+            $Value.StatusCode -eq 403 -and ($Value.Body | ConvertFrom-Json).error -eq 'groupTagNotAllowed'
+        }
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport -Times 0
+    }
+    It 'does not disguise missing or malformed configuration <Json> as an empty policy' -ForEach @(
+        @{ Json = ''; Status = 500; ExpectedError = 'serviceNotConfigured' }
+        @{ Json = ' '; Status = 500; ExpectedError = 'serviceNotConfigured' }
+        @{ Json = 'null'; Status = 500; ExpectedError = 'serviceNotConfigured' }
+        @{ Json = 'invalid'; Status = 401; ExpectedError = 'invalidPrincipal' }
+    ) {
+        $env:TAG_AUTHORIZATION_POLICY = $Json
+        & (Join-Path $PSScriptRoot '..\FunctionApp\GetAuthorizedTags\run.ps1') -Request $request -TagPolicyBlob ''
+        Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+            $Value.StatusCode -eq $Status -and ($Value.Body | ConvertFrom-Json).error -eq $ExpectedError
+        }
+    }
+}
+
 Describe 'Named policy import status' {
     BeforeAll {
         Import-Module Az.Accounts
