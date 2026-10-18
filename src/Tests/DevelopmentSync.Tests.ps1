@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261018.1
+# Project-Version: 1.3.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -74,6 +74,11 @@ Describe 'Dev synchronization pull requests' {
         & $syncScript -Repository owner/repo
         $createdPrs.Count | Should -Be 0
         Should -Invoke Invoke-RestMethod -Times 2 -ParameterFilter { $Uri -like '*state=all*' }
+    }
+    It 'normalizes non-enumerated empty HTTP arrays instead of treating them as existing PRs' {
+        Mock Invoke-RestMethod { Write-Output -NoEnumerate @() } -ParameterFilter { $Uri -like '*/pulls?*' }
+        @(& $syncScript -Repository owner/repo).Count | Should -Be 2
+        $createdPrs.Count | Should -Be 2
     }
     It 'follows branch pagination instead of silently omitting later branches' {
         Mock Invoke-RestMethod {

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261018.1
+# Project-Version: 1.3.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -46,7 +46,8 @@ function Get-SyncPages {
     param([string] $Path)
     for ($page = 1; ; $page++) {
         $separator = if ($Path.Contains('?')) { '&' } else { '?' }
-        $items = @(Invoke-SyncApi "$Path${separator}per_page=100&page=$page")
+        $response = Invoke-SyncApi "$Path${separator}per_page=100&page=$page"
+        $items = @($response | ForEach-Object { $_ })
         $items
         if ($items.Count -lt 100) { break }
     }
