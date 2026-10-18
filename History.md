@@ -2,7 +2,7 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261018.4` - 2026-10-18
+## `1.4.20261018.6` - 2026-10-18
 
 - Replace the protected nextversion release-line model with arbitrary pushable development/fix branches promoted through tested PRs to dev and then main. Retain dev/main PR-only, merge-commit, no-force-push/no-deletion protections; require current dev ancestry and nondecreasing versions while allowing any development branch to prepare a new minor/major.
 - Run complete PowerShell tests, frontend tests/type-check/build and installation packaging on branch pushes and dev/main PR merge previews. Publish every successfully validated main push as a version-tagged GitHub Release with a downloadable installation ZIP; reject version tags belonging to another commit and retain other branch packages as Actions artifacts only.
@@ -15,6 +15,7 @@ This file describes the development of the project by released or recorded proje
 - Add versioned JSON backup and restore for all rules and policy managers through `GET`/`PUT /api/management/policy-managers?backup=true`, `Export-AutoPilotConfiguration`, and `Restore-AutoPilotConfiguration`. Require API and caller-delegated ARM authentication with effective Azure Owner/Contributor rights. Support another installation in the same tenant while preserving its protected installer; replace rules/additional managers and restore the Intune-role-administrator flag, including empty policies.
 - Validate schemas, rules, directory references and target concurrency before changes; conditionally save rules before replacing manager settings, preserve unrelated settings and audit both mutations. Report partial or unconfirmed restores explicitly without automatic rollback; manager writes can restart the Function. Export standalone UTF-8 JSON without tokens or unrelated settings, protect existing files unless `-Force` is supplied, and support confirmed restore and network-free `-WhatIf`. Document the REST/PowerShell contracts and expand regression coverage.
 - Consolidate the configuration-backup development into nextversion. Preserve the pre-staged 1.3 commits through a history-only merge without reactivating their obsolete alternative retagging endpoint, status storage or version metadata; retain the current implementation and rebuild versioned artifacts.
+- Fix updater URL discovery under strict mode with zero or one accessible subscription. Accept bound custom HTTPS domains through exact Azure Function hostname metadata/binding lookup, retain native Azure URL discovery, page subscription inventories, reject ambiguous targets and report inaccessible subscriptions/bindings. Add regression tests and updated invocation guidance; rebuild the versioned frontend and local test package.
 
 ## `1.4.20261017.7` - 2026-10-17
 

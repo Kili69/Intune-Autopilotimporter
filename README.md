@@ -1808,8 +1808,9 @@ sufficient:
 
 Keep the native `https://<function-app-name>.azurewebsites.net` hostname active
 during and after the migration. It remains useful for diagnostics and is
-required when `Update-AutopilotImport.ps1 -FunctionUrl` discovers the Azure
-deployment.
+also supported when `Update-AutopilotImport.ps1 -FunctionUrl` discovers the Azure
+deployment. The updater accepts a custom domain once it is bound to the
+Function App in Azure; a DNS alias alone is not enough.
 
 ### 1. Create the Company DNS Records
 
@@ -1893,14 +1894,21 @@ The OOBE helper can then open the company URL directly:
 
 The endpoint values in `client.settings.json` may continue to use the native
 `azurewebsites.net` hostname. Change them to the company hostname only when the
-PowerShell client must also call the APIs through that hostname. For deployment
-discovery and updates, continue to use the native hostname:
+PowerShell client must also call the APIs through that hostname. For deployment discovery and updates, use either the native hostname or the
+bound company hostname:
 
 ```powershell
 .\Update-AutopilotImport.ps1 `
-    -FunctionUrl 'https://<function-app-name>.azurewebsites.net' `
+    -FunctionUrl 'https://autopilot.contoso.com' `
     -WhatIf
 ```
+
+Remove `-WhatIf` to perform the update. The signed-in Azure account must be
+able to read the Function App and its hostname metadata/bindings. Discovery
+searches accessible subscriptions and requires exactly one match; use
+`-SubscriptionId '<subscription-id>'` to narrow the search. The updater
+reports inaccessible subscriptions or bindings instead of silently skipping
+them. It does not use DNS to guess an Azure resource.
 
 For current platform details, see the Microsoft guidance for
 [mapping an existing custom domain](https://learn.microsoft.com/azure/app-service/app-service-web-tutorial-custom-domain),

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261018.4
+# Project-Version: 1.4.20261018.6
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -41,10 +41,12 @@ Name of the existing Azure Function App.
 
 .PARAMETER FunctionUrl
 HTTPS URL of the existing Azure Function App, including an optional API path.
-The script derives the Function App name from an azurewebsites.net hostname and
-searches the subscriptions available to the signed-in Azure account to resolve
-the subscription, tenant, and resource group. Values discovered from this URL
-take precedence over an automatically selected client configuration.
+The script accepts an azurewebsites.net hostname or a custom domain bound to
+the Function App. It searches the subscriptions available to the signed-in
+Azure account to resolve the subscription, tenant, and resource group. Custom
+domains are verified against Azure hostname metadata or bindings, not DNS.
+Values discovered from this URL take precedence over an automatically
+selected client configuration.
 
 .PARAMETER ApiAudience
 Optional API audience override. When omitted, it is read from the installed
@@ -104,6 +106,13 @@ Updates the deployment without prompting for execution confirmation.
 
 Discovers the deployment from its Function URL and updates it. The signed-in
 Azure account must be able to read the Function App and its subscription.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 `
+    -FunctionUrl 'https://autopilot.example.com' `
+    -InstallMissingModules
+
+Discovers the Function App by its bound custom domain and updates it.
 
 .EXAMPLE
 .\Update-AutopilotImport.ps1 `
@@ -366,10 +375,10 @@ function Resolve-AutoPilotFunctionAppFromUrl {
     Resolves an Azure Function App resource from its public URL.
 
     .DESCRIPTION
-    Derives the Function App name from an azurewebsites.net hostname and
-    searches either one requested subscription or every subscription available
-    to the signed-in Azure account. Exactly one matching Function App is
-    required.
+    Resolves a standard Azure hostname by app name, or a custom domain by
+    Function App hostname metadata and bindings. Searches either one requested
+    subscription or every subscription available to the signed-in Azure
+    account. Exactly one matching Function App is required.
     #>
     param(
         [Parameter(Mandatory)]
@@ -378,8 +387,6 @@ function Resolve-AutoPilotFunctionAppFromUrl {
         [string] $SubscriptionId
     )
 
-    # Only the default Azure hostname encodes the site name. Custom domains
-    # cannot reliably identify a resource without additional lookup logic.
     $parsedUrl = $null
     if (-not [uri]::TryCreate(
             $Url.Trim(),
@@ -388,27 +395,29 @@ function Resolve-AutoPilotFunctionAppFromUrl {
         ) -or $parsedUrl.Scheme -ne 'https') {
         throw "FunctionUrl must be an absolute HTTPS URL. Received '$Url'."
     }
-    if ($parsedUrl.Host -notmatch `
+    $functionAppName = $null
+    if ($parsedUrl.Host -match `
         '^(?<name>[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?)\.azurewebsites\.net$') {
-        throw "FunctionUrl must use the Function App's azurewebsites.net hostname. Received '$($parsedUrl.Host)'."
+        $functionAppName = $Matches.name
     }
-    $functionAppName = $Matches.name
 
     # An explicit subscription narrows discovery; otherwise search all visible
     # subscriptions, selecting each tenant/context before querying ARM.
-    $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
-        @(Get-AzSubscription -ErrorAction Stop)
-    }
-    else {
-        @(Get-AzSubscription `
-            -SubscriptionId $SubscriptionId `
-            -ErrorAction Stop)
-    }
+    $subscriptions = @(
+        if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+            Get-AzSubscription -ErrorAction Stop
+        }
+        else {
+            Get-AzSubscription `
+                -SubscriptionId $SubscriptionId `
+                -ErrorAction Stop
+        }
+    )
     if ($subscriptions.Count -eq 0) {
         throw 'No accessible Azure subscriptions were found for Function URL discovery.'
     }
 
-    $matches = [Collections.Generic.List[object]]::new()
+    $deployments = [Collections.Generic.List[object]]::new()
     foreach ($subscription in $subscriptions) {
         try {
             Set-AzContext `
@@ -416,22 +425,44 @@ function Resolve-AutoPilotFunctionAppFromUrl {
                 -Tenant $subscription.TenantId `
                 -WhatIf:$false `
                 -ErrorAction Stop | Out-Null
-            # Query the resource inventory rather than guessing the group.
-            # Verify type/name again before extracting identifiers from the ID.
+        }
+        catch {
+            Write-Warning "Function URL discovery could not select subscription '$($subscription.Id)': $($_.Exception.Message)"
+            continue
+        }
+        if ($functionAppName) {
             $filter = [uri]::EscapeDataString(
                 "resourceType eq 'Microsoft.Web/sites' and name eq '$functionAppName'"
             )
-            $response = Invoke-AzRestMethod `
-                -Method GET `
-                -Path "/subscriptions/$($subscription.Id)/resources?api-version=2021-04-01&`$filter=$filter" `
-                -ErrorAction Stop
-            if ($response.StatusCode -ge 400) {
-                Write-Verbose "Function URL discovery returned HTTP $($response.StatusCode) for subscription '$($subscription.Id)'."
-                continue
+            $nextPath = "/subscriptions/$($subscription.Id)/resources?api-version=2021-04-01&`$filter=$filter"
+        }
+        else {
+            $nextPath = "/subscriptions/$($subscription.Id)/providers/Microsoft.Web/sites?api-version=2023-12-01"
+        }
+        $visitedPaths = [Collections.Generic.HashSet[string]]::new()
+        while ($nextPath) {
+            if (-not $visitedPaths.Add($nextPath)) {
+                throw "Function URL discovery received a repeated page for subscription '$($subscription.Id)'."
             }
-            foreach ($resource in @(($response.Content | ConvertFrom-Json).value)) {
+            try {
+                $response = Invoke-AzRestMethod `
+                    -Method GET `
+                    -Path $nextPath `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Function URL discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
+                break
+            }
+            if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) {
+                Write-Warning "Function URL discovery returned HTTP $($response.StatusCode) for subscription '$($subscription.Id)'."
+                break
+            }
+            $page = $response.Content | ConvertFrom-Json -ErrorAction Stop
+            foreach ($resource in @($page.value)) {
                 if ([string] $resource.type -ine 'Microsoft.Web/sites' -or
-                    [string] $resource.name -ine $functionAppName) {
+                    ($functionAppName -and
+                        [string] $resource.name -ine $functionAppName)) {
                     continue
                 }
                 $resourceIdMatch = [regex]::Match(
@@ -439,42 +470,73 @@ function Resolve-AutoPilotFunctionAppFromUrl {
                     '^/subscriptions/(?<subscription>[^/]+)/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Web/sites/(?<name>[^/]+)$',
                     [Text.RegularExpressions.RegexOptions]::IgnoreCase
                 )
-                if ($resourceIdMatch.Success) {
-                    $matches.Add([pscustomobject]@{
+                if (-not $resourceIdMatch.Success -or
+                    $resourceIdMatch.Groups['subscription'].Value -ine
+                        [string] $subscription.Id) {
+                    continue
+                }
+                if (-not $functionAppName) {
+                    $kind = $resource.PSObject.Properties['kind']
+                    if ($null -eq $kind -or
+                        'functionapp' -notin @(([string] $kind.Value) -split ',')) {
+                        continue
+                    }
+                    $hostNames = @(Get-UpdateWebAppHostName -WebApp $resource)
+                    if ($parsedUrl.Host -notin $hostNames) {
+                        try {
+                            $hostNames = @(Get-UpdateWebAppHostNameBinding `
+                                    -ResourceId ([string] $resource.id))
+                        }
+                        catch {
+                            Write-Warning "Function URL discovery could not read hostname bindings for '$($resource.id)': $($_.Exception.Message)"
+                            continue
+                        }
+                        if ($parsedUrl.Host -notin $hostNames) {
+                            continue
+                        }
+                    }
+                }
+                $deployments.Add([pscustomobject]@{
                             SubscriptionId   = $resourceIdMatch.Groups['subscription'].Value
                             TenantId         = [string] $subscription.TenantId
                             ResourceGroupName = $resourceIdMatch.Groups['resourceGroup'].Value
                             FunctionAppName  = $resourceIdMatch.Groups['name'].Value
                             FunctionUrl      = "https://$($parsedUrl.Host)"
                         })
+            }
+            $nextLink = $page.PSObject.Properties['nextLink']
+            $nextPath = $null
+            if ($null -ne $nextLink -and
+                -not [string]::IsNullOrWhiteSpace([string] $nextLink.Value)) {
+                $nextUri = [uri]::new([string] $nextLink.Value, [UriKind]::Absolute)
+                $nextPath = $nextUri.PathAndQuery
+                if (-not $nextPath.StartsWith(
+                        "/subscriptions/$($subscription.Id)/",
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Function URL discovery received a page outside the selected subscription.'
                 }
             }
-        }
-        catch {
-            # One inaccessible subscription should not prevent discovery in
-            # another; verbose diagnostics retain the reason for each skip.
-            Write-Verbose "Function URL discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
         }
     }
 
     # Never guess a target from an empty or ambiguous search. Later call sites
     # also reject conflicting explicit tenant/group/site parameters.
-    if ($matches.Count -eq 0) {
+    if ($deployments.Count -eq 0) {
         $scopeDescription = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
             'the accessible Azure subscriptions'
         }
         else {
             "subscription '$SubscriptionId'"
         }
-        throw "Function App '$functionAppName' was not found in $scopeDescription. Verify the URL and Azure access."
+        throw "Function App for hostname '$($parsedUrl.Host)' was not found in $scopeDescription. Verify the URL, hostname binding and Azure access."
     }
-    if ($matches.Count -gt 1) {
-        $locations = $matches | ForEach-Object {
+    if ($deployments.Count -gt 1) {
+        $locations = $deployments | ForEach-Object {
             "$($_.SubscriptionId)/$($_.ResourceGroupName)"
         }
         throw "Function URL '$Url' matched more than one accessible Function App: $($locations -join ', '). Use -SubscriptionId to select one deployment."
     }
-    return $matches[0]
+    return $deployments[0]
 }
 
 function Get-AutoPilotClientToolsPath {

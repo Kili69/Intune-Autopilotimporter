@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261018.4
+# Project-Version: 1.4.20261018.6
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -3861,8 +3861,11 @@ Describe 'Update script deployment discovery' {
             }
         }
 
-        $deployment = Resolve-AutoPilotFunctionAppFromUrl `
-            -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
+        $deployment = & {
+            Set-StrictMode -Version Latest
+            Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
+        }
 
         $deployment.SubscriptionId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
@@ -3874,11 +3877,203 @@ Describe 'Update script deployment discovery' {
         Should -Invoke Set-AzContext -Times 1
     }
 
-    It 'rejects a Function URL outside azurewebsites.net' {
+    It 'rejects a non-HTTPS Function URL' {
         {
             Resolve-AutoPilotFunctionAppFromUrl `
-                -Url 'https://example.test/api/devices/import'
-        } | Should -Throw '*azurewebsites.net*'
+                -Url 'http://example.test/api/devices/import'
+        } | Should -Throw '*absolute HTTPS URL*'
+    }
+
+    Context 'Custom domain discovery' {
+        BeforeEach {
+            $discoverySite = [pscustomobject]@{
+                id = '/subscriptions/sub-one/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
+                name = 'func-autopilot'
+                type = 'Microsoft.Web/sites'
+                kind = 'functionapp,linux'
+                properties = @{ hostNames = @('autopilot.example.test') }
+            }
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+            }
+            Mock Set-AzContext { }
+            Mock Get-UpdateWebAppHostNameBinding { @() }
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{ value = @($discoverySite) } |
+                        ConvertTo-Json -Depth 8
+                }
+            }
+        }
+
+        It 'resolves an exact custom hostname under strict mode with one subscription' {
+            $deployment = & {
+                Set-StrictMode -Version Latest
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://AUTOPILOT.example.test/api/ui/index.html'
+            }
+
+            $deployment.SubscriptionId | Should -Be 'sub-one'
+            $deployment.TenantId | Should -Be 'tenant-one'
+            $deployment.ResourceGroupName | Should -Be 'rg-autopilot'
+            $deployment.FunctionAppName | Should -Be 'func-autopilot'
+            $deployment.FunctionUrl | Should -Be 'https://autopilot.example.test'
+            Should -Invoke Invoke-AzRestMethod -Times 1 -Exactly -ParameterFilter {
+                $Path -eq '/subscriptions/sub-one/providers/Microsoft.Web/sites?api-version=2023-12-01'
+            }
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 0
+        }
+
+        It 'uses hostname bindings when site metadata omits the custom domain' {
+            $discoverySite.properties.hostNames = @('func-autopilot.azurewebsites.net')
+            Mock Get-UpdateWebAppHostNameBinding { 'autopilot.example.test' }
+
+            $deployment = Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test'
+
+            $deployment.FunctionAppName | Should -Be 'func-autopilot'
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 1 -Exactly -ParameterFilter {
+                $ResourceId -eq '/subscriptions/sub-one/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
+            }
+        }
+
+        It 'limits lookup to an explicitly selected subscription' {
+            Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test' `
+                -SubscriptionId 'sub-one' | Out-Null
+
+            Should -Invoke Get-AzSubscription -Times 1 -Exactly -ParameterFilter {
+                $SubscriptionId -eq 'sub-one'
+            }
+        }
+
+        It 'reports zero accessible subscriptions instead of a Count error' {
+            Mock Get-AzSubscription { }
+
+            {
+                Set-StrictMode -Version Latest
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*No accessible Azure subscriptions*'
+            Should -Invoke Invoke-AzRestMethod -Times 0
+        }
+
+        It 'does not match hostname suffixes or DNS aliases without a binding' {
+            $discoverySite.properties.hostNames = @('autopilot.example.test.other.test')
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*hostname*was not found*'
+        }
+
+        It 'does not select an ordinary web app with the same hostname' {
+            $discoverySite.kind = 'app,linux'
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*hostname*was not found*'
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 0
+        }
+
+        It 'finds a Function App on a later ARM inventory page' {
+            Mock Invoke-AzRestMethod {
+                $page = if ($Path -like '*skiptoken=next*') {
+                    @{ value = @($discoverySite) }
+                }
+                else {
+                    @{
+                        value = @()
+                        nextLink = 'https://management.azure.com/subscriptions/sub-one/providers/Microsoft.Web/sites?api-version=2023-12-01&skiptoken=next'
+                    }
+                }
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = $page | ConvertTo-Json -Depth 8
+                }
+            }
+
+            (Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test').FunctionAppName |
+                Should -Be 'func-autopilot'
+            Should -Invoke Invoke-AzRestMethod -Times 2 -Exactly
+        }
+
+        It 'rejects inventory pagination outside the selected subscription' {
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{
+                        value = @()
+                        nextLink = 'https://management.azure.com/subscriptions/sub-other/providers/Microsoft.Web/sites?api-version=2023-12-01'
+                    } | ConvertTo-Json -Depth 5
+                }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*outside the selected subscription*'
+        }
+
+        It 'rejects ambiguous custom domain matches across subscriptions' {
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+                [pscustomobject]@{ Id = 'sub-two'; TenantId = 'tenant-two' }
+            }
+            Mock Invoke-AzRestMethod {
+                $subscriptionId = ($Path -split '/')[2]
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{
+                        value = @(@{
+                            id = "/subscriptions/$subscriptionId/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot"
+                            name = 'func-autopilot'
+                            type = 'Microsoft.Web/sites'
+                            kind = 'functionapp'
+                            properties = @{ hostNames = @('autopilot.example.test') }
+                        })
+                    } | ConvertTo-Json -Depth 8
+                }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*Use -SubscriptionId*'
+        }
+
+        It 'reports inaccessible subscriptions while continuing discovery' {
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-denied'; TenantId = 'tenant-one' }
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+            }
+            Mock Set-AzContext {
+                if ($Subscription -eq 'sub-denied') { throw 'Access denied' }
+            }
+
+            $deployment = Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test' `
+                -WarningVariable discoveryWarnings -WarningAction SilentlyContinue
+
+            $deployment.SubscriptionId | Should -Be 'sub-one'
+            $discoveryWarnings | Should -Match 'sub-denied.*Access denied'
+        }
+
+        It 'reports failed inventory requests instead of silently claiming no match' {
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{ StatusCode = 403; Content = '{}' }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test' `
+                    -WarningVariable script:discoveryWarnings -WarningAction SilentlyContinue
+            } | Should -Throw '*was not found*'
+            $script:discoveryWarnings | Should -Match 'HTTP 403'
+        }
     }
 
     It 'passes FunctionUrl to the discovery helper as Url' {

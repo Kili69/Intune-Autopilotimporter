@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261018.4] - 2026-10-18
+## [1.4.20261018.6] - 2026-10-18
 
 ### Changed
 
@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - JSON backup and restore for rules and policy managers via the Owner/Contributor-protected REST API and `Export-AutoPilotConfiguration` / `Restore-AutoPilotConfiguration`. Support same-tenant target installations while retaining the target installer; restore replaces rules/additional managers and the Intune-administrator access flag, with validation, concurrency checks and permanent audit events.
 - Explicit partial/uncertain restore states for non-atomic Storage and manager-setting writes, without automatic rollback. Protect existing backup files unless `-Force` is used; require restore confirmation and support network-free `-WhatIf`. Include REST/PowerShell examples and regression coverage.
+
+### Fixed
+
+- Fix updater Function URL discovery failing on `.Count` under strict mode with zero or one subscription. Support custom HTTPS domains through exact Azure Function hostname metadata/bindings, including paginated discovery and explicit lookup warnings; retain native Azure URLs and require an unambiguous target. Update examples and rebuild the local test package.
 
 ## [1.4.20261017.7] - 2026-10-17
 
