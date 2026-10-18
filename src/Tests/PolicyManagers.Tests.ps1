@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261018.1
+# Project-Version: 1.4.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -427,5 +427,218 @@ Describe 'Policy manager administration API' {
         $request.Body = @{ additionalPrincipalIds = @(); expectedPolicy = $policyJson }
         & $handler -Request $request -ErrorAction SilentlyContinue
         [int] $responses[0].StatusCode | Should -Be 502
+    }
+
+    Context 'Configuration backup and restore' {
+        BeforeEach {
+            $request.Query = @{ backup = 'true' }
+            $ruleId = '77777777-7777-7777-7777-777777777777'
+            $sourceInstaller = '88888888-8888-8888-8888-888888888888'
+            $backup = @{
+                format = 'autopilot-importer-configuration'; schemaVersion = 1
+                tenantId = $env:TENANT_ID
+                sourceResourceId = $env:FUNCTION_RESOURCE_ID + '-source'
+                createdAtUtc = [datetime]::UtcNow.ToString('o')
+                rules = @(@{
+                    ruleId = $ruleId; name = 'Backup rule'; groupId = $newId; groupTag = 'Restore'
+                    description = "Line one`nLine two"; extensionAttributes = @{ extensionAttribute2 = 'Test' }
+                    deviceGroupIds = @($additional); administrativeUnitName = 'Devices'
+                })
+                managerPolicy = @{
+                    installerPrincipalId = $sourceInstaller; additionalPrincipalIds = @($newId, $installer)
+                    allowIntuneRoleAdministrators = $false
+                }
+            }
+            $blobWrites = [Collections.Generic.List[object]]::new()
+            Mock Set-ManagementPolicyBlob {
+                param($Json)
+                $blobWrites.Add(($Json | ConvertFrom-Json -NoEnumerate))
+            }
+            Mock Assert-DevicePolicyGroups {}
+            Mock Resolve-EntraAdministrativeUnit { @{ id = 'unit' } }
+            $request.Body = @{ backup = $backup; expectedRules = @(); expectedPolicy = $policyJson }
+        }
+        It 'exports tenant metadata, complete rules and manager policy without unrelated app settings' {
+            $json = ConvertTo-Json -InputObject $backup.rules -Depth 10
+            & $handler -Request $request -TagPolicyBlob $json
+            [int] $responses[0].StatusCode | Should -Be 200
+            $result = $responses[0].Body | ConvertFrom-Json
+            $result.backup.format | Should -Be 'autopilot-importer-configuration'
+            $result.backup.schemaVersion | Should -Be 1
+            $result.backup.tenantId | Should -Be $env:TENANT_ID
+            $result.backup.rules[0].ruleId | Should -Be $ruleId
+            $result.backup.rules[0].description | Should -Be "Line one`nLine two"
+            $result.backup.rules[0].extensionAttributes.extensionAttribute2 | Should -Be 'Test'
+            $result.backup.managerPolicy.installerPrincipalId | Should -Be $installer
+            $result.expectedPolicy | Should -BeExactly $policyJson
+            $responses[0].Headers['Cache-Control'] | Should -Be 'no-store'
+            $responses[0].Body | Should -Not -Match 'preserve-me'
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+        }
+        It 'exports a valid empty policy and requires the delegated ARM token' {
+            & $handler -Request $request -TagPolicyBlob '[]'
+            ($responses[0].Body | ConvertFrom-Json).backup.rules.Count | Should -Be 0
+            $responses.Clear()
+            $request.Headers.Remove('x-autopilot-arm-token')
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 401
+        }
+        It 'does not expose backups to an ordinary policy manager' {
+            $role.properties.roleDefinitionId = '/roles/reader'
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 403
+            Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Uri -like '*appsettings*' }
+        }
+        It 'rejects backup mixed with access, search or history' -ForEach @('access', 'search', 'history') {
+            $request.Query[$_] = 'true'
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 400
+        }
+        It 'restores another source in the same tenant, retaining the target installer and stable rules' {
+            $request.Method = 'PUT'
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 200
+            $blobWrites.Count | Should -Be 1
+            $blobWrites[0][0].ruleId | Should -Be $ruleId
+            $blobWrites[0][0].description | Should -Be "Line one`nLine two"
+            $saved = $writes[0].properties.MANAGER_AUTHORIZATION_POLICY | ConvertFrom-Json
+            $saved.installerPrincipalId | Should -Be $installer
+            $saved.additionalPrincipalIds | Should -Be @($newId)
+            $saved.additionalPrincipalIds | Should -Not -Contain $sourceInstaller
+            $saved.allowIntuneRoleAdministrators | Should -BeFalse
+            $writes[0].properties.UNRELATED | Should -Be 'preserve-me'
+            Should -Invoke Assert-DevicePolicyGroups -Times 1 -ParameterFilter { $GroupIds -contains $additional }
+            Should -Invoke Resolve-EntraAdministrativeUnit -Times 1 -ParameterFilter { $AdministrativeUnitName -eq 'Devices' }
+            Should -Invoke Write-ManagementAuditEvent -Times 2 -ParameterFilter { $Stage -eq 'requested' }
+            Should -Invoke Write-ManagementAuditEvent -Times 2 -ParameterFilter { $Stage -eq 'applied' }
+        }
+        It 'can restore an empty rule set and no additional managers' {
+            $request.Method = 'PUT'
+            $backup.rules = @()
+            $backup.managerPolicy.additionalPrincipalIds = @()
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 200
+            $blobWrites[0].Count | Should -Be 0
+            (($writes[0].properties.MANAGER_AUTHORIZATION_POLICY | ConvertFrom-Json).additionalPrincipalIds).Count | Should -Be 0
+        }
+        It 'rejects invalid backup field <Field> before any writes' -ForEach @(
+            @{ Field = 'tenantId'; Value = '99999999-9999-9999-9999-999999999999' }
+            @{ Field = 'format'; Value = 'other' }
+            @{ Field = 'schemaVersion'; Value = 2 }
+            @{ Field = 'schemaVersion'; Value = '1' }
+            @{ Field = 'rules'; Value = $null }
+        ) {
+            $request.Method = 'PUT'
+            $backup[$Field] = $Value
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 400
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+            Should -Invoke Write-ManagementAuditEvent -Times 0
+        }
+        It 'rejects malformed rules or manager flags without writes' {
+            $request.Method = 'PUT'
+            $backup.managerPolicy.allowIntuneRoleAdministrators = 'false'
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 400
+            $blobWrites.Count | Should -Be 0
+        }
+        It 'rejects stale <Part> before either mutation' -ForEach @('rules', 'managers') {
+            $request.Method = 'PUT'
+            if ($_ -eq 'rules') { $request.Body.expectedRules = $backup.rules }
+            else { $request.Body.expectedPolicy = '{}' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 409
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+        }
+        It 'requires all referenced directory objects to exist before writing rules' {
+            $request.Method = 'PUT'
+            Mock Find-EntraPolicyGroups { @{ groups = @() } }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 400
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+        }
+        It 'does not mutate either store if the second requested audit fails' {
+            $request.Method = 'PUT'
+            Mock Write-ManagementAuditEvent { throw 'Audit unavailable' } -ParameterFilter { $Kind -eq 'managers' -and $Stage -eq 'requested' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 502
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+        }
+        It 'rejects a competing manager change found during the pre-write recheck' {
+            $request.Method = 'PUT'
+            $reads = [Collections.Generic.List[bool]]::new()
+            Mock Invoke-RestMethod {
+                $reads.Add($true)
+                if ($reads.Count -gt 1) {
+                    return [pscustomobject]@{ properties = [pscustomobject]@{ MANAGER_AUTHORIZATION_POLICY = '{}' } }
+                }
+                return $settings
+            } -ParameterFilter { $Uri -like '*appsettings/list*' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 409
+            $blobWrites.Count | Should -Be 0
+            $writes.Count | Should -Be 0
+        }
+        It 'reports a manager conflict occurring after rules applied without overwriting managers' {
+            $request.Method = 'PUT'
+            $reads = [Collections.Generic.List[bool]]::new()
+            Mock Invoke-RestMethod {
+                $reads.Add($true)
+                if ($reads.Count -gt 2) {
+                    return [pscustomobject]@{ properties = [pscustomobject]@{ MANAGER_AUTHORIZATION_POLICY = '{}' } }
+                }
+                return $settings
+            } -ParameterFilter { $Uri -like '*appsettings/list*' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 502
+            $result = $responses[0].Body | ConvertFrom-Json
+            $result.rulesState | Should -Be 'applied'
+            $result.managersState | Should -Be 'notStarted'
+            $blobWrites.Count | Should -Be 1
+            $writes.Count | Should -Be 0
+        }
+        It 'never reports full success when the <Kind> audit confirmation fails' -ForEach @(
+            @{ Kind = 'policies'; ExpectedManagerState = 'notStarted' }
+            @{ Kind = 'managers'; ExpectedManagerState = 'applied' }
+        ) {
+            $request.Method = 'PUT'
+            $failedKind = $Kind
+            Mock Write-ManagementAuditEvent { throw 'Audit confirmation failed' } -ParameterFilter {
+                $Kind -eq $failedKind -and $Stage -eq 'applied'
+            }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 502
+            $result = $responses[0].Body | ConvertFrom-Json
+            $result.rulesState | Should -Be 'applied'
+            $result.managersState | Should -Be $ExpectedManagerState
+            Should -Invoke Write-ManagementAuditEvent -Times 1 -ParameterFilter { $Stage -eq 'failed' }
+        }
+        It 'does not write managers when the conditional rule write fails' {
+            $request.Method = 'PUT'
+            Mock Set-ManagementPolicyBlob { throw 'Policy changed' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 502
+            $result = $responses[0].Body | ConvertFrom-Json
+            $result.rulesState | Should -Be 'unconfirmed'
+            $result.managersState | Should -Be 'notStarted'
+            $writes.Count | Should -Be 0
+        }
+        It 'reports partial restore instead of success or rollback after an ARM write failure' {
+            $request.Method = 'PUT'
+            Mock Invoke-RestMethod { throw 'ARM write failed' } -ParameterFilter { $Method -eq 'PUT' }
+            & $handler -Request $request -TagPolicyBlob '[]'
+            [int] $responses[0].StatusCode | Should -Be 502
+            $result = $responses[0].Body | ConvertFrom-Json
+            $result.rulesState | Should -Be 'applied'
+            $result.managersState | Should -Be 'unconfirmed'
+            $blobWrites.Count | Should -Be 1
+            Should -Invoke Write-ManagementAuditEvent -Times 1 -ParameterFilter { $Kind -eq 'managers' -and $Stage -eq 'failed' }
+            Should -Invoke Write-ManagementAuditEvent -Times 0 -ParameterFilter { $Kind -eq 'policies' -and $Stage -eq 'failed' }
+        }
     }
 }

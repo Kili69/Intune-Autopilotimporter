@@ -6,13 +6,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261018.1] - 2026-10-18
+## [1.4.20261018.2] - 2026-10-18
 
 ### Changed
 
 - Allocate the default Flex VNet and subnets within `172.16.0.0/12`, using `172.16.0.0/24` for the VNet. Existing occupied Flex subnets require a planned migration; check overlaps before connecting networks.
 - Start the numbered developer guide with Azure Overview, including Entra identities, permissions and a Function dependency diagram. Keep Contents unnumbered and synchronize chapter links.
 - Rebuild the versioned frontend and local nextversion installation package; add private-address-range regression coverage.
+
+### Added
+
+- JSON backup and restore for rules and policy managers via the Owner/Contributor-protected REST API and `Export-AutoPilotConfiguration` / `Restore-AutoPilotConfiguration`. Support same-tenant target installations while retaining the target installer; restore replaces rules/additional managers and the Intune-administrator access flag, with validation, concurrency checks and permanent audit events.
+- Explicit partial/uncertain restore states for non-atomic Storage and manager-setting writes, without automatic rollback. Protect existing backup files unless `-Force` is used; require restore confirmation and support network-free `-WhatIf`. Include REST/PowerShell examples and regression coverage.
 
 ## [1.4.20261017.7] - 2026-10-17
 

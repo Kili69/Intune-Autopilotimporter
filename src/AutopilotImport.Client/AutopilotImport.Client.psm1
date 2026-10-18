@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261018.1
+# Project-Version: 1.4.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -3757,6 +3757,186 @@ function Remove-AutoPilotTagPolicyManager {
     Update-AutoPilotTagPolicyManager @parameters
 }
 
+function Get-ClientConfigurationBackupContext {
+    <#
+    .SYNOPSIS
+    Resolves the backup endpoint and both caller authentication tokens.
+    .DESCRIPTION
+    Loads client settings and overrides, validates the target HTTPS URL and
+    acquires API and delegated ARM tokens. Custom hostnames are retained.
+    .PARAMETER ManagementUrl
+    Explicit site, UI or management URL overriding client settings.
+    .PARAMETER ApiApplicationIdUri
+    Explicit Function API audience overriding client settings.
+    .PARAMETER TenantId
+    Explicit Entra tenant overriding client settings.
+    .PARAMETER ConfigPath
+    Optional client.settings.json path.
+    .OUTPUTS
+    Hashtable of Invoke-RestMethod endpoint, authentication and error parameters.
+    #>
+    param(
+        [string] $ManagementUrl,
+        [string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+    $configuration = Resolve-ClientConfiguration $ConfigPath @{
+        managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
+    }
+    $url = if ($ManagementUrl) { $ManagementUrl } else {
+        Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    }
+    $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    $uri = [uri] $url
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or
+        $uri.AbsolutePath -notmatch '^/(?:api/(?:ui(?:/.*)?|management(?:/(?:tag-policy|policy-managers))?))?/?$') {
+        throw 'ManagementUrl must be an HTTPS site, UI, or supported management endpoint without query parameters.'
+    }
+    $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
+    $armToken = Get-ClientAccessToken $resolvedTenantId 'https://management.azure.com/'
+    $plainArmToken = if ($armToken -is [Security.SecureString]) {
+        ConvertFrom-SecureString $armToken -AsPlainText
+    } else { [string] $armToken }
+    @{
+        Uri = "$($uri.GetLeftPart([UriPartial]::Authority))/api/management/policy-managers?backup=true"
+        Authentication = 'Bearer'
+        Token = $apiToken
+        Headers = @{ 'x-autopilot-arm-token' = $plainArmToken }
+        ErrorAction = 'Stop'
+    }
+}
+
+function Export-AutoPilotConfiguration {
+    <#
+    .SYNOPSIS
+    Exports all rules and the policy-manager configuration to a JSON file.
+    .DESCRIPTION
+    Uses the delegated Owner/Contributor-protected backup API. The versioned
+    JSON contains tenant/source metadata, normalized rules with stable IDs and
+    the manager policy, not credentials, app settings, devices or audit history.
+    Existing files are never overwritten unless Force is supplied.
+    .PARAMETER Path
+    Destination JSON file in an existing filesystem directory.
+    .PARAMETER Force
+    Allows overwriting an existing backup file.
+    .PARAMETER ManagementUrl
+    HTTPS Function site, UI or management URL; defaults to client settings.
+    .PARAMETER ApiApplicationIdUri
+    Function API audience; defaults to client settings.
+    .PARAMETER TenantId
+    Entra tenant for API and delegated ARM sign-in.
+    .PARAMETER ConfigPath
+    Optional client.settings.json path.
+    .EXAMPLE
+    Export-AutoPilotConfiguration -Path '.\autopilot-backup.json'
+    .OUTPUTS
+    System.IO.FileInfo for the exported JSON file, unless WhatIf is specified.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [switch] $Force,
+        [ValidatePattern('^https://')][string] $ManagementUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+    $destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    if (-not $Force -and [IO.File]::Exists($destination)) { throw "Backup file already exists: $destination. Use -Force to replace it." }
+    if ($PSCmdlet.ShouldProcess($destination, 'Export rules and policy managers as JSON')) {
+        $context = Get-ClientConfigurationBackupContext -ManagementUrl $ManagementUrl `
+            -ApiApplicationIdUri $ApiApplicationIdUri -TenantId $TenantId -ConfigPath $ConfigPath
+        $response = Invoke-RestMethod @context -Method Get |
+            ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if ($response -isnot [Collections.IDictionary] -or $response['backup'] -isnot [Collections.IDictionary] -or
+            $response['backup']['format'] -cne 'autopilot-importer-configuration' -or
+            $response['backup']['schemaVersion'] -ne 1 -or $response['backup']['rules'] -isnot [array] -or
+            $response['backup']['managerPolicy'] -isnot [Collections.IDictionary]) {
+            throw 'The server did not return a supported configuration backup.'
+        }
+        $json = ConvertTo-Json -InputObject $response['backup'] -Depth 30
+        $mode = if ($Force) { [IO.FileMode]::Create } else { [IO.FileMode]::CreateNew }
+        $stream = [IO.File]::Open($destination, $mode, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+        } finally { $stream.Dispose() }
+        Get-Item -LiteralPath $destination
+    }
+}
+
+function Restore-AutoPilotConfiguration {
+    <#
+    .SYNOPSIS
+    Replaces rules and additional policy managers from a JSON backup.
+    .DESCRIPTION
+    Supports other installations in the same tenant, retaining the destination
+    installer. Reads fresh destination concurrency values before PUT. Requires
+    delegated Azure Owner/Contributor access, not only policy-manager rights.
+    Storage and app-setting writes are not atomic. An error may mean a partial
+    restore or missing audit confirmation; inspect configuration/history before
+    retrying. Updating managers can restart the Function App. WhatIf performs
+    no network requests or writes and does not validate directory objects.
+    .PARAMETER Path
+    JSON file created by Export-AutoPilotConfiguration.
+    .PARAMETER ManagementUrl
+    Target HTTPS site, UI or management URL; defaults to client settings.
+    .PARAMETER ApiApplicationIdUri
+    Target API audience; defaults to client settings.
+    .PARAMETER TenantId
+    Entra tenant for API and delegated ARM sign-in.
+    .PARAMETER ConfigPath
+    Optional target client.settings.json path.
+    .EXAMPLE
+    Restore-AutoPilotConfiguration -Path '.\autopilot-backup.json' -WhatIf
+    .EXAMPLE
+    Restore-AutoPilotConfiguration -Path '.\autopilot-backup.json'
+    .OUTPUTS
+    Hashtable containing confirmed restore states and the server correlation ID.
+    No success object is returned for WhatIf or unconfirmed/partial restores.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [ValidatePattern('^https://')][string] $ManagementUrl,
+        [ValidatePattern('^api://')][string] $ApiApplicationIdUri,
+        [string] $TenantId,
+        [string] $ConfigPath
+    )
+    $backup = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    if ($backup -isnot [Collections.IDictionary] -or
+        $backup['format'] -cne 'autopilot-importer-configuration' -or $backup['schemaVersion'] -ne 1 -or
+        $backup['rules'] -isnot [array] -or $backup['managerPolicy'] -isnot [Collections.IDictionary]) {
+        throw 'The file is not a supported configuration backup.'
+    }
+    $target = if ($ManagementUrl) { $ManagementUrl } else { 'configured Function App' }
+    if ($PSCmdlet.ShouldProcess($target, 'Replace all rules and additional policy managers from backup')) {
+        $context = Get-ClientConfigurationBackupContext -ManagementUrl $ManagementUrl `
+            -ApiApplicationIdUri $ApiApplicationIdUri -TenantId $TenantId -ConfigPath $ConfigPath
+        $current = Invoke-RestMethod @context -Method Get |
+            ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if ($current -isnot [Collections.IDictionary] -or $current['expectedRules'] -isnot [array] -or
+            $current['expectedPolicy'] -isnot [string]) {
+            throw 'The target did not return configuration concurrency values.'
+        }
+        $body = ConvertTo-Json -InputObject @{
+            backup = $backup
+            expectedRules = @($current['expectedRules'])
+            expectedPolicy = $current['expectedPolicy']
+        } -Depth 30 -Compress
+        $result = Invoke-RestMethod @context -Method Put -ContentType 'application/json; charset=utf-8' `
+            -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+            ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if ($result -isnot [Collections.IDictionary] -or $result['restored'] -ne $true -or
+            $result['rulesState'] -ne 'applied' -or $result['managersState'] -ne 'applied') {
+            throw 'The target did not confirm a complete restore. Reload configuration and management history before retrying.'
+        }
+        $result
+    }
+}
+
 Export-ModuleMember -Function @(
     'New-AutoPilotImporterClientConfiguration',
     'Get-AutoPilotImporterClientConfiguration',
@@ -3773,5 +3953,7 @@ Export-ModuleMember -Function @(
     'Get-AutoPilotTagPolicyManager',
     'Update-AutoPilotTagPolicyManager',
     'Add-AutoPilotTagPolicyManager',
-    'Remove-AutoPilotTagPolicyManager'
+    'Remove-AutoPilotTagPolicyManager',
+    'Export-AutoPilotConfiguration',
+    'Restore-AutoPilotConfiguration'
 )

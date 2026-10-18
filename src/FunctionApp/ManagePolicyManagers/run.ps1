@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261018.1
+# Project-Version: 1.4.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -17,9 +17,13 @@ preserved. Updating app settings can restart the Function App.
 PUT supplies additionalPrincipalIds and the expectedPolicy returned by GET.
 Concurrent manager edits are rejected; unrelated settings are read afresh before
 writing, with the same ARM collection-replacement limitation as the PS client.
+GET ?backup=true exports a versioned JSON snapshot of rules and managers.
+PUT ?backup=true restores that snapshot within the same tenant, preserving the
+target installer. Both expectedRules and expectedPolicy are required. Storage
+and ARM writes are not atomic; failures report each resource's confirmed state.
 #>
 using namespace System.Net
-param($Request, $TriggerMetadata)
+param($Request, $TriggerMetadata, $TagPolicyBlob)
 
 Import-Module (Join-Path $PSScriptRoot '..\src\AutopilotImport\AutopilotImport.psm1') -Force
 $correlationId = [guid]::NewGuid().ToString()
@@ -69,6 +73,12 @@ if ([string]::IsNullOrWhiteSpace([string] $Request.Headers['x-ms-client-principa
     return
 }
 $accessCheck = $Request.Query -and $null -ne $Request.Query['access']
+$backupRequest = $Request.Query -and $null -ne $Request.Query['backup']
+if ($backupRequest -and ($Request.Query['backup'] -ine 'true' -or $accessCheck -or
+    $null -ne $Request.Query['search'] -or $null -ne $Request.Query['history'])) {
+    Send-ManagerResponse BadRequest @{ error = 'invalidBackupRequest' }
+    return
+}
 if ($accessCheck -and ($Request.Method -ine 'GET' -or $Request.Query['access'] -ine 'true' -or
     $null -ne $Request.Query['search'] -or $null -ne $Request.Query['history'])) {
     Send-ManagerResponse BadRequest @{ error = 'invalidAccessCheck' }
@@ -190,6 +200,156 @@ try {
     $settings = Invoke-ManagerArm "${settingsUri}/list?api-version=2022-03-01" POST
     $policyJson = [string] $settings.properties.MANAGER_AUTHORIZATION_POLICY
     $policy = Read-ManagerPolicy $policyJson
+    if ($backupRequest) {
+        $currentRulesJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
+        if ([string]::IsNullOrWhiteSpace($currentRulesJson)) { $currentRulesJson = $env:TAG_AUTHORIZATION_POLICY }
+        if ([string]::IsNullOrWhiteSpace($currentRulesJson)) { throw 'Tag authorization policy is missing.' }
+        $currentRules = ConvertTo-TagAuthorizationPolicy `
+            -Rules @($currentRulesJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
+        if ($Request.Method -ieq 'GET') {
+            Send-ManagerResponse OK @{
+                backup = @{
+                    format = 'autopilot-importer-configuration'
+                    schemaVersion = 1
+                    createdAtUtc = [datetime]::UtcNow.ToString('o')
+                    tenantId = $env:TENANT_ID
+                    sourceResourceId = $resourceId
+                    rules = @($currentRules)
+                    managerPolicy = $policy
+                }
+                expectedRules = @($currentRules)
+                expectedPolicy = $policyJson
+            }
+            return
+        }
+        if ($Request.Method -ine 'PUT') {
+            Send-ManagerResponse MethodNotAllowed @{ error = 'methodNotAllowed' }
+            return
+        }
+        try {
+            $body = if ($Request.Body -is [string]) {
+                $Request.Body | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            } else { $Request.Body | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+            if ($body -isnot [Collections.IDictionary] -or
+                -not $body.Contains('backup') -or -not $body.Contains('expectedPolicy') -or
+                $body.expectedPolicy -isnot [string] -or $body.expectedRules -isnot [array]) {
+                throw 'backup, expectedPolicy and an expectedRules array are required.'
+            }
+            $backup = $body.backup
+            if ($backup -isnot [Collections.IDictionary] -or
+                $backup.format -cne 'autopilot-importer-configuration' -or
+                ($backup.schemaVersion -isnot [long] -and $backup.schemaVersion -isnot [int]) -or
+                $backup.schemaVersion -ne 1 -or $backup.rules -isnot [array] -or
+                $backup.tenantId -isnot [string] -or
+                [guid] $backup.tenantId -ne [guid] $env:TENANT_ID -or
+                $backup.managerPolicy -isnot [Collections.IDictionary] -or
+                $backup.managerPolicy.additionalPrincipalIds -isnot [array] -or
+                $backup.managerPolicy.allowIntuneRoleAdministrators -isnot [bool]) {
+                throw 'Invalid configuration backup, unsupported schema version, or different tenant.'
+            }
+            $sourceManagerPolicy = Read-ManagerPolicy (ConvertTo-Json -InputObject $backup.managerPolicy -Depth 10 -Compress)
+            foreach ($id in $backup.managerPolicy.additionalPrincipalIds) {
+                if ($id -isnot [string]) { throw 'Manager object IDs must be strings.' }
+            }
+            $restoredRules = ConvertTo-TagAuthorizationPolicy -Rules $backup.rules -AllowEmpty
+            $expectedRules = ConvertTo-TagAuthorizationPolicy -Rules $body.expectedRules -AllowEmpty
+            $restoredPolicy = Read-ManagerPolicy $policyJson
+            $restoredPolicy.additionalPrincipalIds = @($sourceManagerPolicy.additionalPrincipalIds |
+                Where-Object { $_ -ne $policy.installerPrincipalId })
+            $restoredPolicy.allowIntuneRoleAdministrators = $sourceManagerPolicy.allowIntuneRoleAdministrators
+        } catch {
+            Send-ManagerResponse BadRequest @{ error = 'invalidConfigurationBackup'; message = $_.Exception.Message }
+            return
+        }
+        $canonicalCurrent = ConvertTo-Json -InputObject @($currentRules) -Depth 20 -Compress
+        $canonicalExpected = ConvertTo-Json -InputObject @($expectedRules) -Depth 20 -Compress
+        if ($body.expectedPolicy -cne $policyJson -or $canonicalCurrent -cne $canonicalExpected) {
+            Send-ManagerResponse Conflict @{ error = 'configurationChanged'; message = 'Reload the target configuration before restoring.' }
+            return
+        }
+        $rulesState = 'notStarted'
+        $managersState = 'notStarted'
+        $requestedKinds = [Collections.Generic.List[string]]::new()
+        try {
+            foreach ($tag in @($restoredRules | ForEach-Object { $_.tags } | Sort-Object -Unique)) {
+                $null = Get-DevicePolicyActions -Policy $restoredRules -GroupTag $tag
+            }
+            $token = (Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com/' -ErrorAction Stop).Token
+            if ($token -isnot [Security.SecureString]) { $token = ConvertTo-SecureString $token -AsPlainText -Force }
+            $groupIds = @($restoredRules | ForEach-Object { $_.groupId } | Sort-Object -Unique)
+            foreach ($id in $groupIds) {
+                $found = Find-EntraPolicyGroups -SearchText $id -ObjectType groups -AccessToken $token
+                if (-not @($found.groups | Where-Object { $_.id -eq $id }).Count) {
+                    throw [ArgumentException]::new("Rule authorization group not found: $id")
+                }
+            }
+            $deviceGroupIds = @($restoredRules | ForEach-Object {
+                if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+            } | Sort-Object -Unique)
+            Assert-DevicePolicyGroups -GroupIds $deviceGroupIds -AccessToken $token
+            $auNames = @($restoredRules | ForEach-Object {
+                if ($_.PSObject.Properties['administrativeUnitName'] -and $_.administrativeUnitName) { $_.administrativeUnitName }
+            } | Sort-Object -Unique)
+            foreach ($name in $auNames) {
+                $null = Resolve-EntraAdministrativeUnit -AdministrativeUnitName $name -AccessToken $token
+            }
+            foreach ($id in $restoredPolicy.additionalPrincipalIds) {
+                $users = Find-EntraPolicyGroups -SearchText $id -ObjectType users -AccessToken $token
+                $groups = Find-EntraPolicyGroups -SearchText $id -ObjectType groups -AccessToken $token
+                if (-not @(@($users.groups) + @($groups.groups) | Where-Object { $_.id -eq $id }).Count) {
+                    throw [ArgumentException]::new("Manager user or group not found: $id")
+                }
+            }
+            $settings = Invoke-ManagerArm "${settingsUri}/list?api-version=2022-03-01" POST
+            if ([string] $settings.properties.MANAGER_AUTHORIZATION_POLICY -cne $policyJson) {
+                Send-ManagerResponse Conflict @{ error = 'configurationChanged'; message = 'Reload the target configuration before restoring.' }
+                return
+            }
+            Write-ManagementAuditEvent -Kind policies -OperationId $correlationId -Stage requested `
+                -Principal $principal -Before @($currentRules) -After @($restoredRules)
+            $requestedKinds.Add('policies')
+            Write-ManagementAuditEvent -Kind managers -OperationId $correlationId -Stage requested `
+                -Principal $principal -Before $policy -After $restoredPolicy
+            $requestedKinds.Add('managers')
+            $rulesState = 'unconfirmed'
+            Set-ManagementPolicyBlob -ExpectedJson $currentRulesJson `
+                -Json (ConvertTo-Json -InputObject @($restoredRules) -Depth 20 -Compress)
+            $rulesState = 'applied'
+            Write-ManagementAuditEvent -Kind policies -OperationId $correlationId -Stage applied `
+                -Principal $principal -Before @($currentRules) -After @($restoredRules)
+            $null = $requestedKinds.Remove('policies')
+            # Read unrelated settings again after the Storage write, before the ARM replacement.
+            $settings = Invoke-ManagerArm "${settingsUri}/list?api-version=2022-03-01" POST
+            if ([string] $settings.properties.MANAGER_AUTHORIZATION_POLICY -cne $policyJson) {
+                throw 'Manager policy changed after restoring rules. Reload the target configuration.'
+            }
+            $settings.properties.MANAGER_AUTHORIZATION_POLICY = ConvertTo-Json -InputObject $restoredPolicy -Depth 10 -Compress
+            $managersState = 'unconfirmed'
+            $null = Invoke-ManagerArm "${settingsUri}?api-version=2022-03-01" PUT @{ properties = $settings.properties }
+            $managersState = 'applied'
+            Write-ManagementAuditEvent -Kind managers -OperationId $correlationId -Stage applied `
+                -Principal $principal -Before $policy -After $restoredPolicy
+            $null = $requestedKinds.Remove('managers')
+            Send-ManagerResponse OK @{ restored = $true; rulesState = $rulesState; managersState = $managersState }
+        } catch {
+            Write-Error "[$correlationId] Configuration restore failed: $($_.Exception.Message)" -ErrorAction Continue
+            foreach ($kind in $requestedKinds) {
+                try {
+                    Write-ManagementAuditEvent -Kind $kind -OperationId $correlationId -Stage failed -Principal $principal
+                } catch {
+                    Write-Error "[$correlationId] Restore failure audit could not be recorded: $($_.Exception.Message)" -ErrorAction Continue
+                }
+            }
+            $status = if ($_.Exception -is [ArgumentException] -and $requestedKinds.Count -eq 0) { 'BadRequest' } else { 'BadGateway' }
+            Send-ManagerResponse $status @{
+                error = 'configurationRestoreFailed'
+                message = 'Restore was not fully confirmed. Reload configuration and management history before retrying; no automatic rollback was attempted.'
+                rulesState = $rulesState
+                managersState = $managersState
+            }
+        }
+        return
+    }
     if ($Request.Method -ieq 'GET') {
         Send-ManagerResponse OK @{ policy = $policy; expectedPolicy = $policyJson }
         return

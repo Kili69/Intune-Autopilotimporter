@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261018.1
+# Project-Version: 1.4.20261018.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -43,7 +43,7 @@ Describe 'Client module documentation' {
         $parseErrors.Count | Should -Be 0
     }
     It 'documents the purpose, behavior, outputs and every parameter of all client functions' {
-        $clientFunctions.Count | Should -Be 32
+        $clientFunctions.Count | Should -Be 35
         foreach ($function in $clientFunctions) {
             $help = $function.GetHelpContent()
             $help.Synopsis | Should -Not -BeNullOrEmpty -Because $function.Name
@@ -702,6 +702,7 @@ Describe 'Client configuration display' {
         $expectedCommands = @(
             'Add-AutoPilotTagPolicy'
             'Add-AutoPilotTagPolicyManager'
+            'Export-AutoPilotConfiguration'
             'Get-AutoPilotDeviceTagAssignment'
             'Get-AutoPilotImporterClientConfiguration'
             'Get-AutoPilotImportHistory'
@@ -713,6 +714,7 @@ Describe 'Client configuration display' {
             'New-AutoPilotImporterClientConfiguration'
             'Remove-AutoPilotTagPolicy'
             'Remove-AutoPilotTagPolicyManager'
+            'Restore-AutoPilotConfiguration'
             'Set-AutoPilotDeviceGroupTag'
             'Set-AutoPilotTagPolicy'
             'Update-AutoPilotTagPolicyManager'
@@ -3739,7 +3741,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 16
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 18
         Remove-Module AutopilotImport.Client
     }
 }

@@ -956,6 +956,56 @@ Remove-AutoPilotTagPolicyManager `
 
 The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
 
+### Back Up and Restore Rules and Policy Managers
+
+Use the client module to create a standalone UTF-8 JSON backup:
+
+```powershell
+Export-AutoPilotConfiguration -Path '.\autopilot-configuration.json'
+```
+
+An existing file is protected; specify `-Force` to overwrite it. The backup
+contains all normalized rules (including rule IDs, descriptions and device
+actions), the manager policy, its schema version, timestamp, tenant ID and source
+Function resource ID. It does not contain credentials, other app settings,
+device data, or audit history. Protect the file because it contains tenant
+object IDs and authorization configuration.
+
+Export and restore both require the same effective Azure **Owner** or
+**Contributor** rights as Policy Manager administration, plus API and delegated
+ARM authentication for the same user. Ordinary policy-manager rights are not
+enough. Both commands use the existing client configuration and accept
+`-ManagementUrl`, `-ApiApplicationIdUri`, `-TenantId` and `-ConfigPath` overrides.
+
+```powershell
+# Preview without contacting Azure or changing configuration.
+Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json' -WhatIf
+
+# Replace the target configuration after an explicit confirmation.
+Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json'
+
+# Use another installation's client settings in the same Entra tenant.
+Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json' `
+    -ConfigPath '.\target-client.settings.json'
+```
+
+Restore **replaces**, rather than merges, all rules and additional managers.
+It also restores `allowIntuneRoleAdministrators`, but always retains the
+**target installation's protected installer**. The source installer is not
+automatically added as a manager. Empty rule/manager arrays are supported;
+empty rules disable all policy-authorized imports. Cross-tenant restores are
+rejected. Rules, referenced directory objects and current target values are
+checked before any configuration writes.
+
+Rules and managers live in different Azure services, so restore is **not
+atomic**. Rules are written conditionally first, followed by the manager app
+setting, which may restart the Function App. Both changes use permanent
+requested/applied audit events. Errors can mean partial changes or missing
+confirmation; inspect the configuration and both management histories before
+retrying. There is no automatic rollback, and unrelated app settings are
+preserved with the existing ARM collection-replacement concurrency limitation.
+`-WhatIf` does not perform server-side or directory validation.
+
 ## Installation
 
 ### Prerequisites
@@ -1322,6 +1372,7 @@ errors with Application Insights logs.
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
 | `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
 | `GET` | `/api/management/policy-managers?access=true` | API authentication | Check only the caller's Azure Owner/Contributor eligibility; no ARM browser consent or manager data |
+| `GET`, `PUT` | `/api/management/policy-managers?backup=true` | Azure Owner/Contributor, API and delegated ARM authentication | Export or restore all rules and the manager policy |
 
 ### Get Authorized Group Tags
 
@@ -1529,6 +1580,72 @@ unit is applied to every supplied rule:
 
 Both formats return HTTP `200` with the normalized `policy` array and a
 `correlationId`.
+
+### Configuration Backup and Restore
+
+Both requests use `Authorization: Bearer <Function-API-token>` and
+`x-autopilot-arm-token: <delegated-ARM-token>`. The tokens must belong to the
+same user and tenant; ARM verifies effective Owner/Contributor access.
+
+`GET /api/management/policy-managers?backup=true` returns:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Web/sites/<app>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<current-manager-policy-JSON-string>",
+  "correlationId": "<operation-GUID>"
+}
+```
+
+Save the `backup` object as the portable JSON file. To restore, first GET the
+**target** installation to obtain fresh concurrency values, then call
+`PUT /api/management/policy-managers?backup=true`:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "<source-Function-resource-ID>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<unchanged JSON string returned by the target GET>"
+}
+```
+
+Supply the complete saved `backup` **object**, including its actual rules.
+`expectedRules` must be the target GET's complete rule array, not
+necessarily empty. A confirmed restore returns `restored: true`,
+`rulesState: "applied"`, `managersState: "applied"` and `correlationId`.
+Invalid schemas or tenants return `400`; stale initial configuration returns
+`409`. Persistence, directory-service or audit failures return `502`, with
+`rulesState` and `managersState` each set to `notStarted`, `unconfirmed`, or
+`applied`. These states describe confirmed configuration writes, not an atomic
+transaction or guaranteed audit confirmation. Invalid directory object
+references can return `400` before writes. A network error or Function restart
+can also prevent a response after a write has applied. Never infer rollback
+from an error response.
 
 ### Public UI Endpoints
 

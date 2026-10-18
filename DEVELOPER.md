@@ -422,7 +422,7 @@ Graph error details are never returned to the client.
 | `api/devices/tags/assignments` | `GET`, `POST` | `ManageDeviceTags` | Lists eligible devices and queues authorized Group Tag changes. |
 | `api/management/imports` | `GET`, `POST` | `GetImportHistory` | Returns filtered import audit history. |
 | `api/management/tag-policy` | `GET`, `PUT` | `ManageTagPolicy` | Reads and replaces the Group Tag authorization policy. |
-| `api/management/policy-managers` | `GET`, `PUT` | `ManagePolicyManagers` | Reads/updates explicit managers using caller-delegated Azure RBAC; `search` looks up Entra users/groups. |
+| `api/management/policy-managers` | `GET`, `PUT` | `ManagePolicyManagers` | Reads/updates explicit managers using caller-delegated Azure RBAC; `search` looks up Entra users/groups; `backup=true` exports/restores rules and managers. |
 | `api/ui/{*path}` | `GET` | `WebFrontend` | Serves the compiled frontend and its runtime configuration. |
 
 ### 6.2. Device Import Interface
@@ -508,6 +508,24 @@ records keep absent details as null and are never backfilled from current rules.
 PowerShell history output retains the same additive fields.
 
 ### 6.6. Group Tag Policy Management Interface
+
+Configuration backups use the separate Owner/Contributor-protected
+`ManagePolicyManagers` endpoint with `backup=true`, not the ordinary
+policy-manager authorization of `ManageTagPolicy`. GET returns a version-1
+`autopilot-importer-configuration` backup envelope plus destination concurrency
+values; PUT requires the backup object, `expectedRules` and `expectedPolicy`.
+See [the REST contract](README.md#configuration-backup-and-restore).
+The handler's blob input binding reads the same policy as `ManageTagPolicy`,
+including the deployment fallback before the first blob exists. Empty backup
+rules are permitted explicitly, without relaxing ordinary rule-save validation.
+Restore validates rules, action conflicts, directory references and the tenant
+before writes, retaining the destination installer and rule IDs. Storage's
+conditional write and fresh manager-setting comparisons reject detected
+concurrent edits. Requested/applied audit events use a shared operation ID.
+Rules are saved first; there is no cross-service transaction or automatic
+rollback. Partial/uncertain outcomes include separate write states and require
+configuration/history inspection. Azure's app-setting collection replacement
+still cannot protect against arbitrary external ARM writes after the last read.
 
 `ManageTagPolicy` serves `/api/management/tag-policy`. It requires a principal
 that is authorized by `MANAGER_AUTHORIZATION_POLICY` or, when that policy
@@ -797,6 +815,7 @@ the following commands:
 | Retagging | `Get-AutoPilotDeviceTagAssignment`, `Set-AutoPilotDeviceGroupTag` |
 | Tag policy | `Get-AutoPilotTagPolicy`, `Add-AutoPilotTagPolicy`, `Remove-AutoPilotTagPolicy`, `Set-AutoPilotTagPolicy` |
 | Policy managers | `Get-AutoPilotTagPolicyManager`, `Update-AutoPilotTagPolicyManager`, `Add-AutoPilotTagPolicyManager`, `Remove-AutoPilotTagPolicyManager` |
+| Configuration backups | `Export-AutoPilotConfiguration`, `Restore-AutoPilotConfiguration` |
 
 ```powershell
 Get-AutoPilotDeviceTagAssignment
@@ -813,6 +832,14 @@ GUIDs, supports `-WhatIf`, and can poll with `-Wait`,
 `tenantId` from `client.settings.json` unless explicit parameters override
 them. The client acquires an Entra token for the configured API audience and
 does not bypass server-side authorization.
+
+The backup commands use both an API token and a caller-delegated ARM token
+against the configured hostname, including custom domains. Export writes only
+the standalone backup object as UTF-8 JSON and refuses existing files without
+`-Force`. Restore obtains fresh target concurrency values before PUT, requires
+confirmation by default and supports `-WhatIf` without network requests.
+Neither command exposes tokens in the backup. The API and updated client
+module must both be deployed before using this feature.
 
 ### 6.10. Shared Function Runtime Module Interface
 
