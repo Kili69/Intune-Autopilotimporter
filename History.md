@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261018.1` - 2026-10-18
+
+- Move the default Flex VNet to `172.16.0.0/24`, with Function integration on `172.16.0.0/26` and private endpoints on `172.16.0.64/27`, all within the private `172.16.0.0/12` range. Retain subnet sizes and hosting-specific behavior; document overlap checks and the need to plan migration of existing occupied Flex subnets.
+- Add an Azure Overview as developer-guide chapter 1, explaining Entra applications, service principals, delegated versus application permissions, managed identity and Azure RBAC, with a Mermaid diagram of Function dependencies. Leave Contents unnumbered and update subsequent chapter numbers and internal links.
+- Add network-prefix regression coverage and rebuild the versioned frontend and local nextversion installation package for testing.
+
 ## `1.4.20261017.7` - 2026-10-17
 
 - Separate Rule management from installation and updates: remove Rule/group/tag/AU prompts and pipeline inputs, preserve existing policy blobs and the legacy setting verbatim, and start new installations with an explicitly empty policy that grants no import access. Keep local Client Tools, audited first-Rule creation and concurrency protection; reject malformed policies and empty replacement submissions.

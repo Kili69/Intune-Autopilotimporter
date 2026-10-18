@@ -9,8 +9,11 @@ integration, publishing, versioning, branch promotion, testing,
 troubleshooting, and operational security requirements for the Autopilot
 Importer project.
 
-## 1. Contents
+## Contents
 
+- [1. Azure Overview](#1-azure-overview)
+  - [1.1. Entra components and authorization](#11-entra-components-and-authorization)
+  - [1.2. Function dependencies](#12-function-dependencies)
 - [2. Development Prerequisites](#2-development-prerequisites)
 - [3. Versioning](#3-versioning)
 - [4. Repository Layout](#4-repository-layout)
@@ -51,6 +54,122 @@ Importer project.
 - [16. Publish the OOBE Helper to PowerShell Gallery](#16-publish-the-oobe-helper-to-powershell-gallery)
 - [17. Branch Promotion Policy](#17-branch-promotion-policy)
 - [18. Operations and Security](#18-operations-and-security)
+
+## 1. Azure Overview
+
+New installations run the PowerShell API, background workers, and web frontend
+in one Azure Function App on a Linux Flex Consumption plan. The installer
+configures Microsoft Entra ID separately from the Azure resources deployed by
+`src/Infrastructure/main.bicep`.
+
+### 1.1. Entra components and authorization
+
+| Component | Purpose |
+|---|---|
+| API app registration (`Autopilot Import API`) | Defines the single-tenant API identity, its `api://<client-ID>` audience, and the delegated `DeviceHash.Import` scope. Security-group claims provide input to endpoint-level policy checks. |
+| API enterprise application (service principal) | Represents the API application in the tenant. Assignment is not required; an authenticated tenant user must still pass the Function's authorization checks. |
+| Web app registration (`Autopilot Import Web`) | Defines the separate single-tenant SPA client and its exact frontend redirect URI. The browser uses MSAL and Authorization Code Flow with PKCE, without a client secret. The SPA is preauthorized for `DeviceHash.Import`. |
+| Microsoft Azure PowerShell client | Existing public client, preauthorized for the same delegated API scope. The PowerShell tools use it to obtain a user token for the Function API, not direct Intune permissions. |
+| Function system-assigned managed identity | Separate service principal whose lifecycle belongs to the Function App. Background work uses this identity for Microsoft Graph, Storage, and the limited Azure authorization read operation; no user token or client secret is needed for these calls. |
+| Microsoft Graph service principal | Exposes the application permissions assigned to the Function identity. These grants are separate from both the delegated API scope and Azure RBAC. |
+| Tenant users and security groups | Identify callers and policy targets. Group Tag policies authorize import and device actions; the separate manager policy controls rule management. Azure Owner/Contributor checks also participate in manager-access evaluation. |
+
+The Function identity receives these Microsoft Graph **application**
+permissions:
+
+| Permission | Runtime purpose |
+|---|---|
+| `DeviceManagementServiceConfig.ReadWrite.All` | Import and retag Windows Autopilot devices. |
+| `Device.ReadWrite.All` | Update Entra device extension attributes. |
+| `AdministrativeUnit.ReadWrite.All` | Resolve administrative units and manage device membership for configured policy actions. |
+| `DeviceManagementRBAC.Read.All` | Evaluate Intune role assignments for authorization. |
+| `GroupMember.ReadWrite.All` | Synchronize configured static security-group memberships. |
+| `GroupMember.Read.All` | Read group membership for authorization. |
+| `User.ReadBasic.All` | Resolve user identities for authorization. |
+
+The administrator's delegated Graph permissions used during installation are
+not runtime permissions and are not granted to API users. Likewise, possession
+of `DeviceHash.Import` only permits calling the API; it does not bypass policy
+checks or grant direct Microsoft Graph access. Fresh installations have no
+Group Tag rules, so import and device-tag actions remain denied until a manager
+creates a rule.
+
+### 1.2. Function dependencies
+
+The following diagram shows the default Flex deployment. Solid arrows show
+runtime access or data flow; dotted arrows show hosting, identity,
+authorization, or DNS relationships.
+
+```mermaid
+flowchart TB
+    User["Tenant user"]
+    Browser["Browser / MSAL SPA"]
+    CLI["PowerShell client / Azure PowerShell"]
+    Entra["Microsoft Entra ID<br/>API app + enterprise application<br/>Web SPA app + preauthorized clients"]
+    Graph["Microsoft Graph<br/>Intune / Windows Autopilot<br/>Entra devices, users, groups, administrative units"]
+    ARM["Azure Resource Manager<br/>Caller role-assignment checks"]
+
+    subgraph Azure["Azure resource group"]
+        Plan["Linux Flex Consumption plan (FC1)"]
+        Auth["Easy Auth<br/>Tenant, audience and allowed-client validation"]
+        Function["Function App<br/>Public frontend + protected HTTP APIs<br/>Queue workers + scheduled maintenance"]
+        Identity["System-assigned managed identity"]
+        RBAC["Azure RBAC<br/>Storage data roles<br/>Custom manager-access reader role"]
+        Insights["Application Insights"]
+        Logs["Log Analytics workspace"]
+
+        subgraph VNet["VNet 172.16.0.0/24"]
+            Integration["functions subnet 172.16.0.0/26<br/>Delegated to Microsoft.App/environments"]
+            Endpoints["private-endpoints subnet 172.16.0.64/27<br/>Blob, Queue and Table private endpoints"]
+        end
+
+        DNS["Private DNS zones + VNet links + zone groups<br/>privatelink.blob / queue / table.core.windows.net"]
+        subgraph Storage["Storage account: no public access or shared keys"]
+            Blob["Blob<br/>Host state, configuration policy<br/>Deployment packages"]
+            Queue["Queue<br/>Asynchronous import and device processing"]
+            Table["Table<br/>Audit history and processing state"]
+        end
+    end
+
+    User --> Browser
+    User --> CLI
+    Browser -->|"Sign-in / API token"| Entra
+    CLI -->|"Sign-in / API token"| Entra
+    Browser -->|"Public UI and configuration"| Function
+    Browser -->|"Bearer token / API calls"| Auth
+    CLI -->|"Bearer token / API calls"| Auth
+    Entra -.->|"Token validation configuration"| Auth
+    Auth --> Function
+    Plan -.->|"Hosts"| Function
+    Function -.->|"Uses"| Identity
+    Identity -.->|"Application permission grants"| Graph
+    RBAC -.->|"Role assignments"| Identity
+    Function -->|"App-only calls"| Graph
+    Function -->|"Managed identity"| ARM
+    Function --> Integration
+    Integration --> Endpoints
+    DNS -.-> Integration
+    DNS -.-> Endpoints
+    Endpoints --> Blob
+    Endpoints --> Queue
+    Endpoints --> Table
+    Function -->|"Telemetry"| Insights
+    Insights --> Logs
+```
+
+The frontend and authenticated API remain reachable over public HTTPS. VNet
+integration protects outbound Storage access; it does **not** make the
+Function's HTTP endpoint private. Blob, Queue, and Table each use a private
+endpoint and private DNS. The Function identity has Storage Blob Data Owner,
+Storage Queue Data Contributor, and Storage Table Data Contributor on this
+account. Its custom manager-access reader role is scoped to the Function and
+only permits reading role assignments.
+
+The VNet occupies a `/24` inside the RFC 1918 range `172.16.0.0/12`
+(`172.16.0.0` through `172.31.255.255`), rather than reserving the entire `/12`.
+Check for overlaps before peering or connecting it to another network.
+Existing Windows Consumption deployments retain their legacy hosting and
+Storage networking branch; ordinary updates do not migrate them to Flex.
 
 ## 2. Development Prerequisites
 
@@ -1024,13 +1143,20 @@ hosting plan for existing apps: Windows `Y1` remains legacy Consumption, Linux
 update changes an app's operating system, hosting plan, data or custom domains.
 Replacing a Windows app requires a separately approved new-app migration.
 
-The Flex template creates `vnet-<app>` with address space `10.80.0.0/24`, a
-`functions` subnet (`10.80.0.0/26`) delegated to `Microsoft.App/environments`,
-and a `private-endpoints` subnet (`10.80.0.64/27`). These ranges are isolated
+The Flex template creates `vnet-<app>` with address space `172.16.0.0/24`, a
+`functions` subnet (`172.16.0.0/26`) delegated to `Microsoft.App/environments`,
+and a `private-endpoints` subnet (`172.16.0.64/27`). All three prefixes are
+within the private `172.16.0.0/12` range. These ranges are isolated
 defaults; review address overlap before adding any peering. Blob, Queue and
 Table each have a private endpoint, a corresponding
 `privatelink.<service>.core.windows.net` DNS zone, a VNet link and a DNS zone
 group. The app depends on these DNS resources before creation.
+
+For an existing Flex deployment using the former `10.80.0.0/24` address space,
+review the network changes before redeploying. Changing the template is not an
+in-place network migration: Azure can reject subnet address changes while
+Function integration or private endpoints still occupy those subnets. Plan
+any required migration and downtime explicitly.
 
 Storage has `publicNetworkAccess: Disabled`, `allowSharedKeyAccess: false`,
 anonymous blobs disabled and TLS 1.2. Both host and deployment storage use the

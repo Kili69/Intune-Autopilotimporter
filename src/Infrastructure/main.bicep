@@ -150,14 +150,14 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
   properties: {
     addressSpace: {
       addressPrefixes: [
-        '10.80.0.0/24'
+        '172.16.0.0/24'
       ]
     }
     subnets: [
       {
         name: 'functions'
         properties: {
-          addressPrefix: '10.80.0.0/26'
+          addressPrefix: '172.16.0.0/26'
           delegations: [
             {
               name: 'flex-consumption'
@@ -171,7 +171,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
       {
         name: 'private-endpoints'
         properties: {
-          addressPrefix: '10.80.0.64/27'
+          addressPrefix: '172.16.0.64/27'
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }
