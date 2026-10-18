@@ -6,13 +6,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261018.2] - 2026-10-18
+## [1.4.20261018.3] - 2026-10-18
 
 ### Changed
 
 - Allocate the default Flex VNet and subnets within `172.16.0.0/12`, using `172.16.0.0/24` for the VNet. Existing occupied Flex subnets require a planned migration; check overlaps before connecting networks.
 - Start the numbered developer guide with Azure Overview, including Entra identities, permissions and a Function dependency diagram. Keep Contents unnumbered and synchronize chapter links.
 - Rebuild the versioned frontend and local nextversion installation package; add private-address-range regression coverage.
+- Consolidate backup development into nextversion and retain the old pre-staged 1.3 commits in its ancestry without reactivating their obsolete alternative retagging implementation.
 
 ### Added
 

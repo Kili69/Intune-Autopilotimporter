@@ -2,13 +2,14 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261018.2` - 2026-10-18
+## `1.4.20261018.3` - 2026-10-18
 
 - Move the default Flex VNet to `172.16.0.0/24`, with Function integration on `172.16.0.0/26` and private endpoints on `172.16.0.64/27`, all within the private `172.16.0.0/12` range. Retain subnet sizes and hosting-specific behavior; document overlap checks and the need to plan migration of existing occupied Flex subnets.
 - Add an Azure Overview as developer-guide chapter 1, explaining Entra applications, service principals, delegated versus application permissions, managed identity and Azure RBAC, with a Mermaid diagram of Function dependencies. Leave Contents unnumbered and update subsequent chapter numbers and internal links.
 - Add network-prefix regression coverage and rebuild the versioned frontend and local nextversion installation package for testing.
 - Add versioned JSON backup and restore for all rules and policy managers through `GET`/`PUT /api/management/policy-managers?backup=true`, `Export-AutoPilotConfiguration`, and `Restore-AutoPilotConfiguration`. Require API and caller-delegated ARM authentication with effective Azure Owner/Contributor rights. Support another installation in the same tenant while preserving its protected installer; replace rules/additional managers and restore the Intune-role-administrator flag, including empty policies.
 - Validate schemas, rules, directory references and target concurrency before changes; conditionally save rules before replacing manager settings, preserve unrelated settings and audit both mutations. Report partial or unconfirmed restores explicitly without automatic rollback; manager writes can restart the Function. Export standalone UTF-8 JSON without tokens or unrelated settings, protect existing files unless `-Force` is supplied, and support confirmed restore and network-free `-WhatIf`. Document the REST/PowerShell contracts and expand regression coverage.
+- Consolidate the configuration-backup development into nextversion. Preserve the pre-staged 1.3 commits through a history-only merge without reactivating their obsolete alternative retagging endpoint, status storage or version metadata; retain the current implementation and rebuild versioned artifacts.
 
 ## `1.4.20261017.7` - 2026-10-17
 
