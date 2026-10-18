@@ -36,10 +36,6 @@ jobs:
             echo "::error::Pull requests to main must originate from the dev branch in $TARGET_REPOSITORY."
             exit 1
           fi
-          if [[ "$SOURCE_BRANCH" == "nextversion" && ( "$TARGET_BRANCH" != "dev" || "$SOURCE_REPOSITORY" != "$TARGET_REPOSITORY" ) ]]; then
-            echo "::error::nextversion may only be promoted to dev in this repository."
-            exit 1
-          fi
 
   branch-version-policy:
     name: Branch and version policy

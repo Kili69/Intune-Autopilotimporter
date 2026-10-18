@@ -6,9 +6,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261018.3] - 2026-10-18
+## [1.4.20261018.4] - 2026-10-18
 
 ### Changed
+
+- Allow arbitrary freely pushable development/fix branches, including nextversion without special status. Promote through tested PRs to dev and then main, retain current-dev ancestry/version checks, and allow any development branch to prepare a new minor/major.
+- Validate PowerShell, frontend and installation ZIPs on pushes and dev/main PRs. Automatically publish a downloadable ZIP in a version-tagged GitHub Release after each successful main update; never publish from other branches or overwrite a tag for a different commit.
+- Open isolated dev-fix synchronization PRs for all ordinary branches without auto-merging, changing target branches or overwriting conflict resolutions. Handle real HTTP empty arrays and pagination correctly. Add regression tests, updated release/version artifacts and rollout/download documentation.
 
 - Allocate the default Flex VNet and subnets within `172.16.0.0/12`, using `172.16.0.0/24` for the VNet. Existing occupied Flex subnets require a planned migration; check overlaps before connecting networks.
 - Start the numbered developer guide with Azure Overview, including Entra identities, permissions and a Function dependency diagram. Keep Contents unnumbered and synchronize chapter links.

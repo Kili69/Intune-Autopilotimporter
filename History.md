@@ -2,7 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261018.3` - 2026-10-18
+## `1.4.20261018.4` - 2026-10-18
+
+- Replace the protected nextversion release-line model with arbitrary pushable development/fix branches promoted through tested PRs to dev and then main. Retain dev/main PR-only, merge-commit, no-force-push/no-deletion protections; require current dev ancestry and nondecreasing versions while allowing any development branch to prepare a new minor/major.
+- Run complete PowerShell tests, frontend tests/type-check/build and installation packaging on branch pushes and dev/main PR merge previews. Publish every successfully validated main push as a version-tagged GitHub Release with a downloadable installation ZIP; reject version tags belonging to another commit and retain other branch packages as Actions artifacts only.
+- Replace nextversion-only sync with GitHub repository automation that opens isolated dev-fix PRs for all ordinary branches. Never execute target-branch code, write their refs, auto-merge or overwrite manual conflict resolutions. Reuse PRs on rerun, normalize real HTTP empty-array responses, exclude protected/generated branches, support pagination and report API failures; resolve version/content conflicts deliberately on sync branches.
+- Rebuild versioned frontend and installation artifacts, expand branch/sync/release regression tests, and document release downloads and staged protection rollout.
 
 - Move the default Flex VNet to `172.16.0.0/24`, with Function integration on `172.16.0.0/26` and private endpoints on `172.16.0.64/27`, all within the private `172.16.0.0/12` range. Retain subnet sizes and hosting-specific behavior; document overlap checks and the need to plan migration of existing occupied Flex subnets.
 - Add an Azure Overview as developer-guide chapter 1, explaining Entra applications, service principals, delegated versus application permissions, managed identity and Azure RBAC, with a Mermaid diagram of Function dependencies. Leave Contents unnumbered and update subsequent chapter numbers and internal links.

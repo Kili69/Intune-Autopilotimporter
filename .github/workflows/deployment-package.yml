@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - '**'
+  pull_request:
+    branches:
+      - dev
+      - main
   workflow_dispatch:
 
 permissions:
@@ -11,19 +15,24 @@ permissions:
 
 jobs:
   package:
+    name: Validation and tests
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      name: ${{ steps.package.outputs.name }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require change history and version update
         shell: pwsh
         env:
-          BASE_COMMIT: ${{ github.event.before }}
-          HEAD_COMMIT: ${{ github.sha }}
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $baseCommit = $env:BASE_COMMIT
           if ([string]::IsNullOrWhiteSpace($baseCommit)) {
@@ -52,44 +61,33 @@ jobs:
           Import-Module Pester -RequiredVersion 5.7.1 -Force
           Invoke-Pester ./src/Tests -CI
 
-      - name: Detect web frontend changes
-        id: web_changes
-        shell: pwsh
-        env:
-          BASE_COMMIT: ${{ github.event.before }}
-          HEAD_COMMIT: ${{ github.sha }}
-        run: |
-          $baseCommit = $env:BASE_COMMIT
-          if ([string]::IsNullOrWhiteSpace($baseCommit) -or
-              $baseCommit -match '^0+$') {
-            $baseCommit = "$env:HEAD_COMMIT^"
-          }
-          $changedFiles = @(git diff --name-only `
-            $baseCommit `
-            $env:HEAD_COMMIT `
-            -- `
-            src/Web)
-          $changed = ($changedFiles.Count -gt 0).ToString().ToLowerInvariant()
-          "changed=$changed" >> $env:GITHUB_OUTPUT
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/Web/package-lock.json
 
-      - name: Build web frontend
-        if: steps.web_changes.outputs.changed == 'true'
+      - name: Test and build versioned web frontend
         working-directory: src/Web
         shell: pwsh
         run: |
           npm ci
-          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend validation failed.' }
 
       - name: Build deployment package
         id: package
         shell: pwsh
         env:
-          PACKAGE_BRANCH: ${{ github.ref_name }}
+          PACKAGE_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           $package = ./src/Scripts/New-DeploymentPackage.ps1 `
             -BranchName $env:PACKAGE_BRANCH
           "path=$($package.FullName)" >> $env:GITHUB_OUTPUT
           "name=$($package.BaseName)" >> $env:GITHUB_OUTPUT
+          "version=$((Get-Content VERSION -Raw).Trim())" >> $env:GITHUB_OUTPUT
 
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
@@ -98,3 +96,47 @@ jobs:
           path: ${{ steps.package.outputs.path }}
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish main installation ZIP
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.name }}
+          path: release
+      - name: Verify release version and tag ownership
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d{8}\.\d+$') { throw 'Invalid release version.' }
+          $tag = "refs/tags/v$env:RELEASE_VERSION"
+          git show-ref --verify --quiet $tag
+          if ($LASTEXITCODE -eq 0) {
+            $tagCommit = git rev-parse "$tag^{}"
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:RELEASE_COMMIT) {
+              throw 'The release tag already belongs to a different commit. Never overwrite a published version.'
+            }
+          }
+          elseif ($LASTEXITCODE -ne 1) { throw 'Cannot inspect the release tag.' }
+          if (@(Get-ChildItem release -Filter '*.zip' -File).Count -ne 1) { throw 'Expected exactly one installation ZIP.' }
+      - name: Publish downloadable GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.package.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Autopilot Importer ${{ needs.package.outputs.version }}
+          files: release/*.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: 'true'

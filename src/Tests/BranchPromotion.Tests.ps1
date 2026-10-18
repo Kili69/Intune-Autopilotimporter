@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261018.3
+# Project-Version: 1.4.20261018.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -42,9 +42,9 @@ Describe 'Branch promotion policy' {
     It 'allows a dev revision without changing the release line' {
         { & $policy @arguments } | Should -Not -Throw
     }
-    It 'rejects a premature release-line change in dev' {
+    It 'allows any development branch to introduce a new release line' {
         $arguments.ResultCommit = $future
-        { & $policy @arguments } | Should -Throw '*Only nextversion*'
+        { & $policy @arguments } | Should -Not -Throw
     }
     It 'allows minor and major promotions from nextversion' -ForEach @(
         @{ Kind = 'future' }, @{ Kind = 'major' }
@@ -54,25 +54,23 @@ Describe 'Branch promotion policy' {
         $arguments.HeadCommit = $arguments.ResultCommit
         { & $policy @arguments } | Should -Not -Throw
     }
-    It 'rejects nextversion promotions without a new release line' {
+    It 'treats nextversion like any other development branch' {
         $arguments.SourceBranch = 'nextversion'
-        { & $policy @arguments } | Should -Throw '*at least a new minor*'
+        { & $policy @arguments } | Should -Not -Throw
     }
-    It 'rejects nextversion promotions that omit newer dev commits' {
+    It 'rejects any development branch that omits newer dev fixes' {
         git checkout -q --detach $base
         $divergent = New-VersionCommit '1.3.20261017.1'
-        $arguments.SourceBranch = 'nextversion'
+        $arguments.SourceBranch = 'feature/next-release'
         $arguments.ResultCommit = $future
         $arguments.HeadCommit = $future
         $arguments.DevCommit = $divergent
         { & $policy @arguments } | Should -Throw '*latest dev changes*'
     }
-    It 'rejects nextversion targeting main or an unrelated branch' -ForEach @(
-        @{ Target = 'main' }, @{ Target = 'feature' }
-    ) {
+    It 'rejects nextversion targeting main directly' {
         $arguments.SourceBranch = 'nextversion'
-        $arguments.TargetBranch = $Target
-        { & $policy @arguments } | Should -Throw '*only be promoted to dev*'
+        $arguments.TargetBranch = 'main'
+        { & $policy @arguments } | Should -Throw '*only be updated from dev*'
     }
     It 'rejects feature branches and forks targeting main' -ForEach @(
         @{ Source = 'feature'; Repository = 'owner/repo' }
@@ -91,7 +89,7 @@ Describe 'Branch promotion policy' {
         $arguments.ResultCommit = $revision
         { & $policy @arguments } | Should -Not -Throw
     }
-    It 'preserves the nextversion release line during a dev sync' {
+    It 'does not impose release-line restrictions on unprotected development branches' {
         $arguments.TargetBranch = 'nextversion'
         $arguments.SourceBranch = 'sync/dev-to-nextversion'
         $arguments.BaseCommit = $future
@@ -99,19 +97,19 @@ Describe 'Branch promotion policy' {
         $arguments.HeadCommit = $future
         { & $policy @arguments } | Should -Not -Throw
         $arguments.ResultCommit = $major
-        { & $policy @arguments } | Should -Throw '*preserve*'
+        { & $policy @arguments } | Should -Not -Throw
     }
-    It 'rejects a downgrade during sync' {
-        $arguments.TargetBranch = 'nextversion'
+    It 'rejects a downgrade when promoting to dev' {
+        $arguments.TargetBranch = 'dev'
         $arguments.BaseCommit = $future
         { & $policy @arguments } | Should -Throw '*decrease*'
     }
-    It 'requires nextversion to stay ahead of dev for a new cycle' {
+    It 'does not require nextversion to stay ahead of dev' {
         $arguments.TargetBranch = 'nextversion'
         $arguments.BaseCommit = $future
         $arguments.ResultCommit = $future
         $arguments.DevCommit = $future
-        { & $policy @arguments } | Should -Throw '*ahead of dev*'
+        { & $policy @arguments } | Should -Not -Throw
     }
 }
 

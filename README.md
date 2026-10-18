@@ -1028,7 +1028,7 @@ instead of continuing into a misleading module-import failure.
 ### Quick Installation Guide
 
 1. Obtain the Azure, Entra ID, and delegated Microsoft Graph permissions listed under [Required Roles and Permissions](#required-roles-and-permissions). The installing administrator needs all applicable permissions for the complete setup.
-2. Download `Intune-autopilotImporter-<branch><version>.zip` and extract it. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
+2. Download `Intune-autopilotImporter-main<version>.zip` from the [latest GitHub Release](https://github.com/Kili69/Intune-Autopilotimporter/releases/latest) and extract it. Choose the installation ZIP asset, not GitHub's automatically generated source archive. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
 3. Start the interactive installation. Missing PowerShell modules and the Bicep CLI are installed when required:
 
 ```powershell
