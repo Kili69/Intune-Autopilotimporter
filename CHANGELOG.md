@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.3.20261018.1] - 2026-10-18
+
+### Changed
+
+- Allow arbitrary freely pushable development/fix branches, including nextversion without special status. Promote through tested PRs to dev and then main, retain current-dev ancestry/version checks, and allow any development branch to prepare a new minor/major.
+- Validate PowerShell, frontend and installation ZIPs on pushes and dev/main PRs. Automatically publish a downloadable ZIP in a version-tagged GitHub Release after each successful main update; never publish from other branches or overwrite a tag for a different commit.
+- Open isolated dev-fix synchronization PRs for all ordinary branches without auto-merging, changing target branches or overwriting conflict resolutions. Add regression tests, updated release/version artifacts and rollout/download documentation.
+
 ## [1.3.20261016.3] - 2026-10-16
 
 ### Changed

@@ -2,6 +2,13 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.3.20261018.1` - 2026-10-18
+
+- Replace the protected nextversion release-line model with arbitrary pushable development/fix branches promoted through tested PRs to dev and then main. Retain dev/main PR-only, merge-commit, no-force-push/no-deletion protections; require current dev ancestry and nondecreasing versions while allowing any development branch to prepare a new minor/major.
+- Run complete PowerShell tests, frontend tests/type-check/build and installation packaging on branch pushes and dev/main PR merge previews. Publish every successfully validated main push as a version-tagged GitHub Release with a downloadable installation ZIP; reject version tags belonging to another commit and retain other branch packages as Actions artifacts only.
+- Replace nextversion-only sync with GitHub repository automation that opens isolated dev-fix PRs for all ordinary branches. Never execute target-branch code, write their refs, auto-merge or overwrite manual conflict resolutions. Reuse PRs on rerun, exclude protected/generated branches, support pagination and report API failures; resolve version/content conflicts deliberately on sync branches.
+- Rebuild versioned frontend and installation artifacts, expand branch/sync/release regression tests, and document release downloads and staged protection rollout.
+
 ## `1.3.20261016.3` - 2026-10-16
 
 - Added protected nextversion-to-dev-to-main promotion, release-line validation, and automated dev sync PRs that preserve the future major/minor; made version updates preserve the current release line and support explicit minor/major advances.
