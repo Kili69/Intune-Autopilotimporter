@@ -103,8 +103,8 @@ commits marked with `[skip ci]` are exempt.
 The updater preserves the current major/minor by default. Explicitly start a
 future release with `-Minor 4` (for 1.4) or `-Major 2 -Minor 0` (for 2.0).
 Release-line downgrades and backwards dates within a release line are rejected.
-On `dev`, only date/counter changes are allowed until a PR from `nextversion`
-promotes the future release line.
+Any development branch can prepare a new minor or major version. Promotion to
+`dev` must include the latest `dev` ancestry and must not decrease `VERSION`.
 
 After a change is committed, verify that the changelog, version, and history
 are consistent:
@@ -1271,38 +1271,64 @@ The `Enforce dev promotion` workflow validates PR routes and the prospective
 merged `VERSION`, using trusted protected-dev code without executing PR source.
 Both PR event types are supported so initial setup works before the new
 workflow reaches the default branch. Their checks execute the same policy.
-`main` requires `Require dev as source branch` and `Dev release version`: the
+`main` requires `Require dev as source branch`, `Branch and version policy`,
+`Validation and tests`, and `Dev release version`: the
 latter runs on every `dev` push and requires a full version higher than `main`.
 Prepare that version in `dev` before promotion; never push a version bump
 directly to `main`.
 
-`dev` requires a PR and `Branch and version policy`. Feature/fix PRs must keep
-its major/minor. Only a same-repository PR from `nextversion` may increase that
-release line, and it must include the latest `dev` commit. Use merge commits
-for these long-lived branches so subsequent syncs retain their ancestry.
+`dev` requires a PR, `Branch and version policy`, and `Validation and tests`.
+Every incoming branch must include the latest `dev` commit and retain or
+increase its full version. Any branch can introduce a new major/minor; there is
+no special `nextversion` route. Use merge commits for protected branches so
+their ancestry is retained.
 
-`nextversion` starts from `dev` at least one minor (or a major) ahead. It may
-only be promoted to `dev`, never directly to `main`. Its required PR check
-rejects a dev sync that changes its major/minor. After promoting to `dev`,
-explicitly advance `nextversion` for the next cycle through a PR before further
-syncs; the automation never silently chooses a new release line.
+Create development and bugfix branches from current `dev`. Only `main` and
+`dev` are protected; names such as `feature/*`, `fix/*`, `release/*`, and
+`nextversion` permit direct commits and pushes. Local installation ZIP creation
+works on any branch and does not publish a release. The promotion path is
+always `<development branch> -> dev -> main`, including urgent bug fixes.
 
-The `Sync dev to nextversion` workflow creates/updates the separate
-`sync/dev-to-nextversion` branch and opens a PR to `nextversion`. This branch
-contains dev ancestry, adopts nextversion's release line and advances only
-date/counter. It rebuilds the versioned frontend. It never modifies `dev` or
-force-pushes over conflict resolutions. Subsequent conflicting dev merges fail
-explicitly: resolve them on the sync branch and rerun the workflow. Conflicts
-between the sync branch and nextversion must also be resolved on the sync
-branch, preserving nextversion's major/minor and consolidating same-day history.
+The package workflow runs on branch pushes and PRs targeting `dev` or `main`.
+Its `Validation and tests` job runs the full Pester suite, frontend tests and
+TypeScript/Vite build, validates history/version metadata and creates an
+installation ZIP. PRs test the prospective merged tree. Packages are retained
+as Actions artifacts for 30 days. A successful **push to main** additionally
+publishes a GitHub Release tagged `v<VERSION>`, with the main installation ZIP
+as a downloadable asset and generated release notes. PRs, feature pushes and
+manual builds never publish releases. Existing version tags must point to the
+exact main commit; a different commit cannot overwrite a published version.
+Failed builds publish no release; fix the failure and rerun the main workflow.
+
+Every `dev` update runs `Sync dev to development branches`. It opens a sync PR
+for each other branch that does not yet contain current `dev`. Protected
+branches and generated `sync/dev/*`/legacy `sync/dev-to-*` refs are excluded.
+The source is an isolated `sync/dev/<target-hash>/<dev-SHA>` ref pointing to
+trusted `dev`, not code checked out from a development branch.
+
+Sync never writes the target, auto-merges, changes a version or force-pushes.
+Resolve PR conflicts on the generated sync branch, preserving a target's
+newer release line and consolidating history/version metadata. Reruns reuse
+the same PR, including deliberate closures. A newer `dev` commit creates a
+new isolated sync PR; it never overwrites manual conflict resolutions. When
+several sync PRs exist, merge the newest applicable one and close superseded
+ones after checking for unmerged manual work. Delete retired development
+branches when they should no longer receive fix PRs.
 
 Enable **Allow GitHub Actions to create and approve pull requests** in the
 repository's Actions settings. PRs created using `GITHUB_TOKEN` do not trigger
 other workflows: a maintainer must close/reopen the generated PR (or push a
 conflict resolution) to start its required checks. Never bypass the checks.
-Generated sync commits use `[skip ci]`; regular human commits retain the
-normal version/changelog/history requirements. Main is never merged or released
-automatically.
+The automation creates refs/PRs, not new commits. Manual conflict-resolution
+commits retain normal version/changelog/history requirements. Main is never
+auto-merged; release publication is automatic only after a successful main push.
+
+To introduce changed required checks, first push the workflow/policy change on
+a same-release-line branch from protected `dev` and open its PR. Require the
+new test check only once that PR actually produces it. Keep all existing
+main/dev protections during rollout. The protected-dev policy becomes active
+after that PR is merged into `dev`; release publication becomes active after
+the ordinary `dev -> main` PR carries the new workflow to `main`.
 
 ## 18. Operations and Security
 
