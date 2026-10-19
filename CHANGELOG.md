@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261019.1] - 2026-10-19
+
+### Changed
+
+- Add a PowerShell-only README backup/restore runbook with custom-domain examples, protected JSON files, pre-restore snapshots and verification; move direct REST integration details to the Developer Guide.
+- Record the successful same-installation live round trip and focused client/API tests from 2026-10-18; rebuild versioned frontend and local installation artifacts.
+
 ## [1.4.20261018.6] - 2026-10-18
 
 ### Changed

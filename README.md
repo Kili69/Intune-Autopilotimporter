@@ -12,7 +12,7 @@
 
 ## In this article
 
-<p align="center"><a href="#overview">Overview</a> &bull; <a href="#the-solution">How it works</a> &bull; <a href="#how-to-use-the-autopilot-importer">Usage</a> &bull; <a href="#re-tag-existing-autopilot-devices">Re-Tagging</a> &bull; <a href="#installation">Installation</a> &bull; <a href="#rest-api-reference">REST API</a> &bull; <a href="#troubleshooting">Troubleshooting</a></p>
+<p align="center"><a href="#overview">Overview</a> &bull; <a href="#the-solution">How it works</a> &bull; <a href="#how-to-use-the-autopilot-importer">Usage</a> &bull; <a href="#re-tag-existing-autopilot-devices">Re-Tagging</a> &bull; <a href="#back-up-and-restore-rules-and-policy-managers">Backup &amp; Restore</a> &bull; <a href="#installation">Installation</a> &bull; <a href="#rest-api-reference">REST API</a> &bull; <a href="#troubleshooting">Troubleshooting</a></p>
 
 ## Overview
 
@@ -956,55 +956,144 @@ Remove-AutoPilotTagPolicyManager `
 
 The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
 
-### Back Up and Restore Rules and Policy Managers
+## Back Up and Restore Rules and Policy Managers
 
-Use the client module to create a standalone UTF-8 JSON backup:
+### 1. Load the PowerShell Commands
 
-```powershell
-Export-AutoPilotConfiguration -Path '.\autopilot-configuration.json'
-```
+Use **PowerShell 7.2 or newer** and the `AutopilotImport.Client` module installed
+by the current installer/updater. Update the Function App as well as the local
+client before using this feature.
 
-An existing file is protected; specify `-Force` to overwrite it. The backup
-contains all normalized rules (including rule IDs, descriptions and device
-actions), the manager policy, its schema version, timestamp, tenant ID and source
-Function resource ID. It does not contain credentials, other app settings,
-device data, or audit history. Protect the file because it contains tenant
-object IDs and authorization configuration.
-
-Export and restore both require the same effective Azure **Owner** or
-**Contributor** rights as Policy Manager administration, plus API and delegated
-ARM authentication for the same user. Ordinary policy-manager rights are not
-enough. Both commands use the existing client configuration and accept
-`-ManagementUrl`, `-ApiApplicationIdUri`, `-TenantId` and `-ConfigPath` overrides.
+Export and restore require the same effective Azure **Owner** or
+**Contributor** rights as Policy Manager administration. Ordinary
+policy-manager rights are not enough. The commands handle authentication,
+reusing a matching Azure sign-in or prompting for one.
 
 ```powershell
-# Preview without contacting Azure or changing configuration.
-Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json' -WhatIf
-
-# Replace the target configuration after an explicit confirmation.
-Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json'
-
-# Use another installation's client settings in the same Entra tenant.
-Restore-AutoPilotConfiguration -Path '.\autopilot-configuration.json' `
-    -ConfigPath '.\target-client.settings.json'
+Import-Module AutopilotImport.Client -Force
+Get-Command Export-AutoPilotConfiguration, Restore-AutoPilotConfiguration
 ```
+
+Both commands use the installed `client.settings.json` by default. Check that
+it selects the intended installation. Use `-ConfigPath` to select a specific
+client-settings file, as shown below.
+
+### 2. Export Rules and Policy Managers
+
+`Export-AutoPilotConfiguration` saves the current rules and policy managers
+to a standalone UTF-8 JSON file. Create a timestamped backup in a protected
+directory:
+
+```powershell
+$backupDirectory = Join-Path $env:LOCALAPPDATA 'Intune-Autopilotimporter\Backups'
+New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+$backupPath = Join-Path $backupDirectory (
+    'autopilot-configuration-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $backupPath
+```
+
+The command returns the created file. An existing file is protected; specify
+`-Force` only when you deliberately want to overwrite it:
+
+```powershell
+Export-AutoPilotConfiguration -Path $backupPath -Force
+```
+
+The backup contains all rules, including their IDs, names, descriptions,
+group/tag assignments, extension attributes and device actions, as well as
+the policy-manager configuration and source metadata.
+It does **not** contain credentials, other app settings,
+device data, audit history or Azure infrastructure. It is a configuration
+backup, not a complete deployment backup.
+
+Protect the file because it contains tenant object IDs and authorization
+configuration. Do not commit it to Git. Keep a protected copy outside the
+machine used for administration.
+
+### 3. Import a Backup and Restore the Configuration
+
+`Restore-AutoPilotConfiguration` imports a previously exported JSON file.
+There is no separate `Import-AutoPilotConfiguration` command.
+Choose the intended backup file explicitly. Before restoring, export the
+current target to a **different** file and arrange a maintenance window:
+restore replaces configuration and can restart the Function App.
+
+```powershell
+$backupPath = 'C:\Backups\autopilot-configuration-to-restore.json'
+$backupDirectory = Join-Path $env:LOCALAPPDATA 'Intune-Autopilotimporter\Backups'
+New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+$beforeRestorePath = Join-Path $backupDirectory (
+    'before-restore-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $beforeRestorePath
+
+# Preview the target and operation without network requests or writes.
+Restore-AutoPilotConfiguration -Path $backupPath -WhatIf
+
+# Apply after checking the destination and accepting the confirmation.
+$result = Restore-AutoPilotConfiguration -Path $backupPath
+$result
+```
+
+The command asks for confirmation and returns a result only for a confirmed
+complete restore. A cancelled confirmation or `-WhatIf` does not import data.
+`-WhatIf` does not contact Azure, so it does **not** validate live permissions,
+directory objects or the server's current configuration.
 
 Restore **replaces**, rather than merges, all rules and additional managers.
-It also restores `allowIntuneRoleAdministrators`, but always retains the
+It also restores whether Intune Role Administrators have access, but retains the
 **target installation's protected installer**. The source installer is not
 automatically added as a manager. Empty rule/manager arrays are supported;
 empty rules disable all policy-authorized imports. Cross-tenant restores are
-rejected. Rules, referenced directory objects and current target values are
-checked before any configuration writes.
+rejected.
 
-Rules and managers live in different Azure services, so restore is **not
-atomic**. Rules are written conditionally first, followed by the manager app
-setting, which may restart the Function App. Both changes use permanent
-requested/applied audit events. Errors can mean partial changes or missing
-confirmation; inspect the configuration and both management histories before
-retrying. There is no automatic rollback, and unrelated app settings are
-preserved with the existing ARM collection-replacement concurrency limitation.
-`-WhatIf` does not perform server-side or directory validation.
+To use another installation in the same tenant, select its settings file
+consistently for the safety backup and restore:
+
+```powershell
+Export-AutoPilotConfiguration -Path '.\target-before-restore.json' `
+    -ConfigPath '.\target-client.settings.json'
+Restore-AutoPilotConfiguration -Path $backupPath `
+    -ConfigPath '.\target-client.settings.json'
+```
+
+For the same configured installation, a custom-domain URL can be selected
+without changing the saved tenant or API application settings:
+
+```powershell
+Export-AutoPilotConfiguration -Path '.\custom-domain-backup.json' `
+    -ManagementUrl 'https://autopilot.contoso.com'
+
+Restore-AutoPilotConfiguration -Path '.\custom-domain-backup.json' `
+    -ManagementUrl 'https://autopilot.contoso.com'
+```
+
+### 4. Verify and Handle Errors
+
+After the Function App is available again, export a separate verification file:
+
+```powershell
+$verificationPath = Join-Path $backupDirectory (
+    'after-restore-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $verificationPath
+```
+
+Compare the rules and manager settings with the original backup, not just
+their counts. Check descriptions, group/tag assignments, attributes, device
+actions, additional managers and Intune Role Administrator access. Export
+timestamps change, and another installation retains its own source metadata
+and protected installer. Also check the configuration and Policy changes
+histories in the web UI.
+
+A restore is **not atomic**: an error or interrupted connection can occur
+after some data has already changed. There is no automatic rollback. Do not
+retry blindly; preserve the backups and error details, then inspect the
+current configuration and histories first.
+
+Developer integrations are documented separately in the
+[backup/restore REST API contract](DEVELOPER.md#661-configuration-backup-and-restore-rest-api).
 
 ## Installation
 
@@ -1372,7 +1461,9 @@ errors with Application Insights logs.
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
 | `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
 | `GET` | `/api/management/policy-managers?access=true` | API authentication | Check only the caller's Azure Owner/Contributor eligibility; no ARM browser consent or manager data |
-| `GET`, `PUT` | `/api/management/policy-managers?backup=true` | Azure Owner/Contributor, API and delegated ARM authentication | Export or restore all rules and the manager policy |
+
+For configuration export/import integrations, see the
+[backup/restore REST API contract](DEVELOPER.md#661-configuration-backup-and-restore-rest-api).
 
 ### Get Authorized Group Tags
 
@@ -1580,72 +1671,6 @@ unit is applied to every supplied rule:
 
 Both formats return HTTP `200` with the normalized `policy` array and a
 `correlationId`.
-
-### Configuration Backup and Restore
-
-Both requests use `Authorization: Bearer <Function-API-token>` and
-`x-autopilot-arm-token: <delegated-ARM-token>`. The tokens must belong to the
-same user and tenant; ARM verifies effective Owner/Contributor access.
-
-`GET /api/management/policy-managers?backup=true` returns:
-
-```json
-{
-  "backup": {
-    "format": "autopilot-importer-configuration",
-    "schemaVersion": 1,
-    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
-    "tenantId": "<tenant-GUID>",
-    "sourceResourceId": "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Web/sites/<app>",
-    "rules": [],
-    "managerPolicy": {
-      "installerPrincipalId": "<source-installer-GUID>",
-      "additionalPrincipalIds": [],
-      "allowIntuneRoleAdministrators": true
-    }
-  },
-  "expectedRules": [],
-  "expectedPolicy": "<current-manager-policy-JSON-string>",
-  "correlationId": "<operation-GUID>"
-}
-```
-
-Save the `backup` object as the portable JSON file. To restore, first GET the
-**target** installation to obtain fresh concurrency values, then call
-`PUT /api/management/policy-managers?backup=true`:
-
-```json
-{
-  "backup": {
-    "format": "autopilot-importer-configuration",
-    "schemaVersion": 1,
-    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
-    "tenantId": "<tenant-GUID>",
-    "sourceResourceId": "<source-Function-resource-ID>",
-    "rules": [],
-    "managerPolicy": {
-      "installerPrincipalId": "<source-installer-GUID>",
-      "additionalPrincipalIds": [],
-      "allowIntuneRoleAdministrators": true
-    }
-  },
-  "expectedRules": [],
-  "expectedPolicy": "<unchanged JSON string returned by the target GET>"
-}
-```
-
-Supply the complete saved `backup` **object**, including its actual rules.
-`expectedRules` must be the target GET's complete rule array, not
-necessarily empty. A confirmed restore returns `restored: true`,
-`rulesState: "applied"`, `managersState: "applied"` and `correlationId`.
-Invalid schemas or tenants return `400`; stale initial configuration returns
-`409`. Persistence, directory-service or audit failures return `502`, with
-`rulesState` and `managersState` each set to `notStarted`, `unconfirmed`, or
-`applied`. These states describe confirmed configuration writes, not an atomic
-transaction or guaranteed audit confirmation. Invalid directory object
-references can return `400` before writes. A network error or Function restart
-can also prevent a response after a write has applied. Never infer rollback
-from an error response.
 
 ### Public UI Endpoints
 

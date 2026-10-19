@@ -30,6 +30,7 @@ Importer project.
   - [6.4. Device Retagging Interface](#64-device-retagging-interface)
   - [6.5. Import History Interface](#65-import-history-interface)
   - [6.6. Group Tag Policy Management Interface](#66-group-tag-policy-management-interface)
+    - [6.6.1. Configuration Backup and Restore REST API](#661-configuration-backup-and-restore-rest-api)
   - [6.7. Web Frontend Interface](#67-web-frontend-interface)
   - [6.8. Asynchronous Processing Interfaces](#68-asynchronous-processing-interfaces)
   - [6.9. PowerShell Client Module Interface](#69-powershell-client-module-interface)
@@ -514,7 +515,7 @@ Configuration backups use the separate Owner/Contributor-protected
 policy-manager authorization of `ManageTagPolicy`. GET returns a version-1
 `autopilot-importer-configuration` backup envelope plus destination concurrency
 values; PUT requires the backup object, `expectedRules` and `expectedPolicy`.
-See [the REST contract](README.md#configuration-backup-and-restore).
+See [the REST contract](#661-configuration-backup-and-restore-rest-api).
 The handler's blob input binding reads the same policy as `ManageTagPolicy`,
 including the deployment fallback before the first blob exists. Empty backup
 rules are permitted explicitly, without relaxing ordinary rule-save validation.
@@ -762,6 +763,109 @@ to the Function managed identity using the updated permission script.
 Existing device, administrative-unit and user/group-read permissions remain
 required. No permissions are granted merely by editing code or policies.
 
+#### 6.6.1. Configuration Backup and Restore REST API
+
+For operator-facing PowerShell commands, see
+[Back Up and Restore Rules and Policy Managers](README.md#back-up-and-restore-rules-and-policy-managers).
+The contract below is for direct REST integrations. Routes are relative to
+the trusted Function App's HTTPS origin, including a configured custom domain.
+
+`GET /api/ui/config` exposes public integration metadata: `authority` identifies
+the tenant, `scope` contains the API application ID URI and delegated scope,
+and `policyManagersUrl` identifies the manager endpoint. These values do not
+replace authentication or authorization. The API token targets the Function
+API audience; the delegated ARM token targets `https://management.azure.com/`.
+
+Both requests use `Authorization: Bearer <Function-API-token>` and
+`x-autopilot-arm-token: <delegated-ARM-token>`. The tokens must belong to the
+same user and tenant; ARM verifies effective Owner/Contributor access.
+
+`GET /api/management/policy-managers?backup=true` returns:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Web/sites/<app>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<current-manager-policy-JSON-string>",
+  "correlationId": "<operation-GUID>"
+}
+```
+
+Save the `backup` object as the portable JSON file. To restore, first GET the
+**target** installation to obtain fresh concurrency values, then call
+`PUT /api/management/policy-managers?backup=true` with
+`Content-Type: application/json; charset=utf-8`:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "<source-Function-resource-ID>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<unchanged JSON string returned by the target GET>"
+}
+```
+
+Supply the complete saved `backup` **object**, including its actual rules.
+`expectedRules` must be the target GET's complete rule array, not
+necessarily empty. A confirmed restore returns `restored: true`,
+`rulesState: "applied"`, `managersState: "applied"` and `correlationId`.
+Invalid schemas or tenants return `400`; stale initial configuration returns
+`409`. Persistence, directory-service or audit failures return `502`, with
+`rulesState` and `managersState` each set to `notStarted`, `unconfirmed`, or
+`applied`. These states describe confirmed configuration writes, not an atomic
+transaction or guaranteed audit confirmation. Invalid directory object
+references can return `400` before writes. A network error or Function restart
+can also prevent a response after a write has applied. Never infer rollback
+from an error response.
+
+Restore replaces all rules and additional managers, including the Intune Role
+Administrator access flag. It retains the destination installer; the source
+installer is not automatically added as a manager. Empty rule/manager arrays
+are supported, and an empty rule set disables policy-authorized imports.
+Cross-tenant restores are rejected.
+
+`expectedPolicy` is the exact JSON string returned by the target, not a
+re-serialized object. After a restore, export the target again and compare all
+rules and manager settings. Ignore JSON property order and the new export
+timestamp; another installation retains its own resource ID and installer.
+
+Rules are written conditionally first, followed by the manager app setting,
+which may restart the Function App. Both changes use permanent requested/applied
+audit events with a shared operation ID. There is no cross-service transaction
+or automatic rollback. Unrelated app settings are preserved with the existing
+ARM collection-replacement concurrency limitation.
+
+| Result | Integration action |
+| --- | --- |
+| HTTP 401/403 | Verify API access, delegated ARM authentication for the same user/tenant and effective Owner/Contributor rights. |
+| HTTP 404 or unsupported backup response | Verify the target URL and deploy a Function version containing this API. |
+| HTTP 400 | Correct the schema, tenant or directory-reference problem; do not remove validation fields to force a restore. |
+| HTTP 409 | Re-read and inspect current target configuration before deliberately retrying. |
+| HTTP 5xx, interrupted response or incomplete write states | Read configuration and both management histories first; preserve snapshots and the correlation ID. One store may already have changed. |
+
 ### 6.7. Web Frontend Interface
 
 `WebFrontend` serves `/api/ui/{*path}` from the compiled bundle under
@@ -840,6 +944,11 @@ the standalone backup object as UTF-8 JSON and refuses existing files without
 confirmation by default and supports `-WhatIf` without network requests.
 Neither command exposes tokens in the backup. The API and updated client
 module must both be deployed before using this feature.
+
+See [Back Up and Restore Rules and Policy Managers](README.md#back-up-and-restore-rules-and-policy-managers)
+for the operational runbook: selecting a custom-domain target, exporting JSON,
+preserving a pre-restore snapshot, confirming a restore and verifying the
+result without mistaking `-WhatIf` or partial writes for success.
 
 ### 6.10. Shared Function Runtime Module Interface
 

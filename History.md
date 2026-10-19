@@ -2,6 +2,11 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261019.1` - 2026-10-19
+
+- Document PowerShell backup/export and import/restore in a dedicated README chapter with protected JSON files, pre-restore snapshots, replacement semantics, confirmation and verification. Keep direct REST usage, authentication headers, JSON payloads, concurrency and HTTP error handling in the Developer Guide.
+- Record the successful same-installation live export/restore test on 2026-10-18: rules and manager configuration matched exactly after restore, and the focused client/API regression tests passed. Rebuild versioned frontend and local installation artifacts.
+
 ## `1.4.20261018.6` - 2026-10-18
 
 - Replace the protected nextversion release-line model with arbitrary pushable development/fix branches promoted through tested PRs to dev and then main. Retain dev/main PR-only, merge-commit, no-force-push/no-deletion protections; require current dev ancestry and nondecreasing versions while allowing any development branch to prepare a new minor/major.
