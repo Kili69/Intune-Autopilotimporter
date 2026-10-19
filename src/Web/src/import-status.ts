@@ -171,3 +171,17 @@ export function getOperationProgress(
   const steps = getImportTimeline(record, language);
   return { state, detail: steps[steps.length - 1]?.title ?? record.status };
 }
+
+// Finished operations leave the live status list once Import History lists
+// them. Rows without an operation ID (rejected submissions) and operations not
+// yet visible in the loaded history stay so their outcome is not lost.
+export function removeOperationsInHistory<T extends { operationId?: string; status: string }>(
+  results: T[],
+  historyOperationIds: ReadonlySet<string>,
+): T[] {
+  return results.filter((item) => !(
+    (item.status === 'complete' || item.status === 'error') &&
+    item.operationId !== undefined &&
+    historyOperationIds.has(item.operationId.toLowerCase())
+  ));
+}

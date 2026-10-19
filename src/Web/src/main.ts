@@ -7,7 +7,7 @@ import {
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
 import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from './api';
-import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, ImportTimelineRecord } from './import-status';
+import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, ImportTimelineRecord, removeOperationsInHistory } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
 import { applyCompletedTagChanges, type CompletedTagChange } from './tag-changes';
@@ -389,6 +389,8 @@ let tokenAcquisition: Promise<AuthenticationResult> | null = null;
 let devices: AutopilotDevice[] = [];
 let existingDevices: ExistingAutopilotDevice[] = [];
 let results: ImportResult[] = [];
+let resultsBatchSize = 0;
+let historyOperationIds = new Set<string>();
 let pollTimer: number | undefined;
 let processing = false;
 let policyEditor: ReturnType<typeof mountPolicyEditor> | undefined;
@@ -487,12 +489,23 @@ function updateResults(): void {
     return row;
   }));
 
-  const finished = results.filter((item) => item.status === 'complete' || item.status === 'error').length;
+  resultsPanel.classList.toggle('hidden', results.length === 0);
+  // Rows of finished operations move to Import History, so progress counts
+  // against the size of the submitted batch, not the remaining rows.
+  const total = Math.max(resultsBatchSize, results.length);
+  const finished = total - results.filter((item) => item.status !== 'complete' && item.status !== 'error').length;
   resultsTitle.textContent = `${results.length} ${results.length === 1 ? t('device') : t('devices')}`;
   progressLabel.textContent = language === 'de'
-    ? `${finished} von ${results.length} ${t('completedOf')}`
-    : `${finished} of ${results.length} ${t('completedOf')}`;
-  progressBar.style.width = results.length === 0 ? '0%' : `${Math.round((finished / results.length) * 100)}%`;
+    ? `${finished} von ${total} ${t('completedOf')}`
+    : `${finished} of ${total} ${t('completedOf')}`;
+  progressBar.style.width = total === 0 ? '0%' : `${Math.round((finished / total) * 100)}%`;
+}
+
+function pruneResultsInHistory(): void {
+  const remaining = removeOperationsInHistory(results, historyOperationIds);
+  if (remaining.length === results.length) return;
+  results = remaining;
+  updateResults();
 }
 
 function formatHistoryDate(value?: string): string {
@@ -568,6 +581,9 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
 }
 
 function renderHistory(records: ImportHistoryRecord[]): void {
+  historyOperationIds = new Set(records.flatMap((record) => (
+    record.importId ? [record.importId.toLowerCase()] : []
+  )));
   historyPanel.classList.toggle('hidden', policyTab.getAttribute('aria-selected') === 'true' ||
     managersTab.getAttribute('aria-selected') === 'true');
   historyBody.replaceChildren(...records.map((record) => {
@@ -977,6 +993,7 @@ function completedTagChanges(): CompletedTagChange[] {
 
 async function pollResults(): Promise<void> {
   const pending = results.filter((item) => item.operationId && isActiveResult(item));
+  let newlyFinished = false;
   await Promise.all(pending.map(async (item) => {
     try {
       const statusUrl = item.operationType === 'import'
@@ -993,9 +1010,11 @@ async function pollResults(): Promise<void> {
       if (status.workflowStatus === 'complete') {
         item.status = 'complete';
         item.detail = t('completedDetail');
+        newlyFinished = true;
       } else if (status.workflowStatus === 'error') {
         item.status = 'error';
         item.detail = getImportError(status, language) ?? status.processingError ?? status.status;
+        newlyFinished = true;
       } else {
         const progress = getOperationProgress(status, language);
         item.status = progress.state;
@@ -1022,8 +1041,12 @@ async function pollResults(): Promise<void> {
       refreshes.push(loadExistingDevices());
     }
     await Promise.all(refreshes);
+    pruneResultsInHistory();
     updateImportButton();
     updateTagChangeButton();
+  } else if (newlyFinished) {
+    await loadImportHistory().catch(() => undefined);
+    pruneResultsInHistory();
   }
 }
 
@@ -1108,6 +1131,7 @@ importButton.addEventListener('click', async () => {
   updateImportButton();
   updateTagChangeButton();
   resultsPanel.classList.remove('hidden');
+  resultsBatchSize = devices.length;
   results = devices.map((device) => ({
     serialNumber: device.serialNumber,
     operationType: 'import',
@@ -1140,6 +1164,7 @@ tagChangeButton.addEventListener('click', async () => {
   updateImportButton();
   updateTagChangeButton();
   resultsPanel.classList.remove('hidden');
+  resultsBatchSize = selectedDevices.length;
   results = selectedDevices.map((device) => ({
     serialNumber: device.serialNumber,
     operationType: 'tagChange',

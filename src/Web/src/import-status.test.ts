@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress } from './import-status';
+import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, removeOperationsInHistory } from './import-status';
 import { ApiRequestError, canManageTagPolicies } from './api';
 
 describe('Detailed operation timeline', () => {
@@ -145,5 +145,19 @@ describe('Policy manager access probe', () => {
   it('reports network failures', async () => {
     const error = new TypeError('network failed');
     await expect(canManageTagPolicies(async () => { throw error; })).rejects.toBe(error);
+  });
+});
+
+describe('Live status list cleanup', () => {
+  const results = [
+    { operationId: 'AAAA', status: 'complete' },
+    { operationId: 'bbbb', status: 'error' },
+    { operationId: 'cccc', status: 'processing' },
+    { operationId: 'dddd', status: 'complete' },
+    { status: 'error' },
+  ];
+  it('removes only finished operations that Import History already lists', () => {
+    expect(removeOperationsInHistory(results, new Set(['aaaa', 'bbbb', 'cccc'])))
+      .toEqual([results[2], results[3], results[4]]);
   });
 });

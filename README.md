@@ -323,8 +323,11 @@ are not submitted. The frontend processes up to three selected devices in
 parallel and refreshes running Group Tag changes every 5 seconds. While the
 queue worker processes a change, the result shows **Processing** with the most
 recent recorded step, such as the applied Group Tag or extension attributes.
-After all changes finish, Import History is reloaded; its **Operation ID**
-column matches the `operationId` returned by the API.
+Import History is reloaded when re-tagging starts and whenever an operation
+finishes; its **Operation ID** column matches the `operationId` returned by the
+API. The live status list shows only running operations: a finished row is
+removed as soon as Import History lists its operation, and the list is hidden
+when nothing remains. Rejected submissions without an operation ID stay visible.
 
 ### Change Group Tags with the PowerShell Module
 
