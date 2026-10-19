@@ -3,6 +3,8 @@ export interface ImportStatus {
   deviceErrorName?: string | null;
   deviceErrorCode?: number | null;
   processingCompletedAtUtc?: string;
+  processingFailedAtUtc?: string | null;
+  processingError?: string | null;
 }
 
 export interface ImportTimelineRecord {
@@ -26,6 +28,42 @@ export interface ImportTimelineRecord {
   administrativeUnitName?: string;
   removedAdministrativeUnits?: string[];
   processingCompletedAtUtc?: string;
+  processingErrorAtUtc?: string | null;
+  processingFailedAtUtc?: string | null;
+  processingError?: string | null;
+  processingErrorStep?: string | null;
+  processingAttempt?: number | null;
+  processingMaxAttempts?: number | null;
+}
+
+const processingStepLabels: Record<string, [string, string]> = {
+  policy: ['Regel auswerten', 'Evaluate rule'],
+  graphToken: ['Microsoft-Graph-Token', 'Microsoft Graph token'],
+  autopilotGroupTag: ['Group Tag setzen', 'Apply Group Tag'],
+  autopilotRegistration: ['Autopilot-Registrierung', 'Autopilot registration'],
+  entraDevice: ['Entra-Gerät suchen', 'Find Entra device'],
+  extensionAttributes: ['Extension Attributes setzen', 'Apply extension attributes'],
+  deviceGroups: ['Entra-Gruppen abgleichen', 'Reconcile Entra groups'],
+  administrativeUnits: ['Administrative Units abgleichen', 'Reconcile administrative units'],
+  completion: ['Abschluss', 'Completion'],
+};
+
+export function getProcessingFailureDetail(record: ImportTimelineRecord, language: 'de' | 'en'): string {
+  const de = language === 'de';
+  const step = record.processingErrorStep
+    ? (processingStepLabels[record.processingErrorStep]?.[de ? 0 : 1] ?? record.processingErrorStep)
+    : undefined;
+  const attempt = record.processingAttempt
+    ? `${de ? 'Versuch' : 'Attempt'} ${record.processingAttempt}${record.processingMaxAttempts ? `/${record.processingMaxAttempts}` : ''}`
+    : undefined;
+  const prefix = [step, attempt].filter(Boolean).join(', ');
+  return `${prefix ? `${prefix}: ` : ''}${record.processingError ?? ''}`.trim();
+}
+
+function isProcessingFailed(record: ImportStatus): boolean {
+  if (!record.processingFailedAtUtc) return false;
+  return !record.processingCompletedAtUtc ||
+    Date.parse(record.processingCompletedAtUtc) < Date.parse(record.processingFailedAtUtc);
 }
 
 export function getImportTimeline(record: ImportTimelineRecord, language: 'de' | 'en'): Array<{
@@ -91,23 +129,33 @@ export function getImportTimeline(record: ImportTimelineRecord, language: 'de' |
     ? text('Administrative Unit zugewiesen', 'Administrative unit assigned')
     : text('Administrative-Unit-Mitgliedschaften abgeglichen', 'Administrative unit memberships reconciled'),
   auDetails.join('; ') || unknown);
+  if (record.processingErrorAtUtc && record.processingError && !isProcessingFailed(record)) {
+    add(record.processingErrorAtUtc, record.processingCompletedAtUtc &&
+      Date.parse(record.processingCompletedAtUtc) > Date.parse(record.processingErrorAtUtc)
+      ? text('Fehler, später erfolgreich wiederholt', 'Error, later retried successfully')
+      : text('Fehler, wird automatisch erneut versucht', 'Error, retrying automatically'),
+    getProcessingFailureDetail(record, language));
+  }
   add(record.processingCompletedAtUtc, text('Vorgang abgeschlossen', 'Operation completed'),
     text('Alle für diesen Vorgang konfigurierten Schritte wurden erfolgreich verarbeitet. Dies ist keine Windows-Installation oder Intune-Einschreibung.',
       'All steps configured for this operation were processed successfully. This is not Windows installation or Intune enrollment.'));
   return steps.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 }
 
-export function getImportError(record: ImportStatus): string | undefined {
+export function getImportError(record: ImportStatus & ImportTimelineRecord, language: 'de' | 'en' = 'en'): string | undefined {
   const name = record.deviceErrorName?.trim();
   if (name && name.toLowerCase() !== 'none') return name;
   if (record.deviceErrorCode != null && record.deviceErrorCode !== 0) {
     return String(record.deviceErrorCode);
+  }
+  if (isProcessingFailed(record) && record.processingError) {
+    return getProcessingFailureDetail(record, language);
   }
   return undefined;
 }
 
 export function getHistoryStatus(record: ImportStatus): 'pending' | 'complete' | 'error' {
   const normalized = record.status?.toLowerCase();
-  if (getImportError(record) || normalized === 'error' || normalized === 'failed') return 'error';
+  if (getImportError(record) || normalized === 'error' || normalized === 'failed' || isProcessingFailed(record)) return 'error';
   return record.processingCompletedAtUtc ? 'complete' : 'pending';
 }

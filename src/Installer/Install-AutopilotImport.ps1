@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -119,6 +119,18 @@ and a nonempty InstallerPrincipalId must be supplied when this switch is used.
 Skips assignment of the required Microsoft Graph application permissions to
 the Function managed identity, including GroupMember.Read.All and
 User.ReadBasic.All.
+
+.PARAMETER RestrictedAdministrativeUnitName
+Additional administrative unit names for which the Function managed identity
+receives the Cloud Device Administrator role scoped to the unit when the unit
+is a restricted management administrative unit. Administrative units used by
+the current Group Tag rules are detected automatically.
+
+.PARAMETER SkipAdministrativeUnitRole
+Skips the scoped Cloud Device Administrator assignment for restricted
+management administrative units. Without this role, devices that are already
+members of such a unit cannot be re-tagged.
+
 .PARAMETER SkipPublish
 Deploys infrastructure without publishing the Function source package.
 
@@ -225,6 +237,10 @@ param(
 
     [switch] $SkipGraphPermission,
 
+    [string[]] $RestrictedAdministrativeUnitName,
+
+    [switch] $SkipAdministrativeUnitRole,
+
     [switch] $SkipPublish,
 
     [switch] $SkipSmokeTest
@@ -288,6 +304,7 @@ else {
     Join-Path $projectRoot 'Update-AutopilotImport.ps1'
 }
 $grantScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityGraphPermission.ps1'
+$grantAdministrativeUnitRoleScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityAdministrativeUnitRole.ps1'
 $ensureEntraAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraApiApplication.ps1'
 $ensureEntraWebAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraWebApplication.ps1'
 $autopilotImportModulePath = Join-Path $functionAppRoot `
@@ -2205,6 +2222,60 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
 }
 
 #endregion Smoke test
+
+#region Restricted administrative unit roles
+
+if (-not $SkipAdministrativeUnitRole) {
+    # Tenant-wide Device.ReadWrite.All cannot modify members of a restricted
+    # management administrative unit. Rules that add devices to such a unit
+    # therefore need a role scoped to it, or later re-tagging fails with 403.
+    $ruleAdministrativeUnitNames = @()
+    if (-not $SkipPublish) {
+        try {
+            $policyTokenResult = Get-AzAccessToken -ResourceUrl $ApiAudience -ErrorAction Stop
+            $policyToken = if ($policyTokenResult.Token -is [Security.SecureString]) {
+                $policyTokenResult.Token
+            }
+            else {
+                ConvertTo-SecureString ([string] $policyTokenResult.Token) -AsPlainText -Force
+            }
+            $policyResponse = Invoke-RestMethod `
+                -Method Get `
+                -Uri $managementUrl.TrimEnd('/') `
+                -Authentication Bearer `
+                -Token $policyToken `
+                -ErrorAction Stop
+            $ruleAdministrativeUnitNames = @($policyResponse.policy | ForEach-Object {
+                    if ($_.PSObject.Properties['administrativeUnitName']) {
+                        [string] $_.administrativeUnitName
+                    }
+                })
+        }
+        catch {
+            Write-Warning "The Group Tag rules could not be read to detect restricted administrative units: $($_.Exception.Message)"
+        }
+    }
+    $administrativeUnitNames = @(@($RestrictedAdministrativeUnitName) + $ruleAdministrativeUnitNames |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+        ForEach-Object { ([string] $_).Trim() } |
+        Sort-Object -Unique)
+    if ($administrativeUnitNames.Count -gt 0) {
+        Write-Host "Checking scoped roles for administrative units: $($administrativeUnitNames -join ', ')"
+        try {
+            Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
+            & $grantAdministrativeUnitRoleScriptPath `
+                -ManagedIdentityObjectId $managedIdentityObjectId `
+                -AdministrativeUnitName $administrativeUnitNames `
+                -TenantId $TenantId | ForEach-Object { Write-Host $_ }
+        }
+        catch {
+            $quotedNames = ($administrativeUnitNames | ForEach-Object { "'$($_.Replace("'", "''"))'" }) -join ', '
+            Write-Warning "The scoped role for restricted administrative units could not be assigned: $($_.Exception.Message) Devices in these units cannot be re-tagged until a Privileged Role Administrator runs: .\scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1 -ManagedIdentityObjectId '$managedIdentityObjectId' -AdministrativeUnitName $quotedNames -TenantId '$TenantId' -ForceGraphSignIn"
+        }
+    }
+}
+
+#endregion Restricted administrative unit roles
 
 #region Result
 

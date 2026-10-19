@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -398,6 +398,7 @@ $history = @($auditRecords | ForEach-Object {
             'extensionAttributeUpdatedAtUtc'
             'administrativeUnitAssignedAtUtc'
             'processingCompletedAtUtc'
+            'processingErrorAtUtc'
             'deviceGroupsUpdatedAtUtc'
             'Timestamp'
         )
@@ -450,6 +451,13 @@ $history = @($auditRecords | ForEach-Object {
             extensionAttributeUpdatedAtUtc    = if ($audit) { [string] $audit.extensionAttributeUpdatedAtUtc } else { $null }
             administrativeUnitAssignedAtUtc   = if ($audit) { [string] $audit.administrativeUnitAssignedAtUtc } else { $null }
             processingCompletedAtUtc          = if ($audit) { [string] $audit.processingCompletedAtUtc } else { $null }
+            processingErrorAtUtc              = if ($audit.PSObject.Properties['processingErrorAtUtc']) { [string] $audit.processingErrorAtUtc } else { $null }
+            processingFailedAtUtc             = if ($audit.PSObject.Properties['processingFailedAtUtc'] -and $audit.processingFailedAtUtc) { [string] $audit.processingFailedAtUtc } else { $null }
+            processingError                   = if ($audit.PSObject.Properties['processingError']) { [string] $audit.processingError } else { $null }
+            processingErrorStep               = if ($audit.PSObject.Properties['processingErrorStep']) { [string] $audit.processingErrorStep } else { $null }
+            processingErrorStatusCode         = if ($audit.PSObject.Properties['processingErrorStatusCode'] -and [int] $audit.processingErrorStatusCode -gt 0) { [int] $audit.processingErrorStatusCode } else { $null }
+            processingAttempt                 = if ($audit.PSObject.Properties['processingAttempt']) { [int] $audit.processingAttempt } else { $null }
+            processingMaxAttempts             = if ($audit.PSObject.Properties['processingMaxAttempts']) { [int] $audit.processingMaxAttempts } else { $null }
             policyName                        = if ($audit.PSObject.Properties['policyName']) { [string] $audit.policyName } else { $null }
             deviceGroupsUpdatedAtUtc          = if ($audit.PSObject.Properties['deviceGroupsUpdatedAtUtc']) { [string] $audit.deviceGroupsUpdatedAtUtc } else { $null }
             entraDeviceId                    = if ($audit.PSObject.Properties['entraDeviceId']) { [string] $audit.entraDeviceId } else { $null }

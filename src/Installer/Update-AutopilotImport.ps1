@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -77,6 +77,15 @@ Skips Entra application configuration during the update.
 
 .PARAMETER SkipGraphPermission
 Skips managed identity Microsoft Graph permission assignment.
+
+.PARAMETER RestrictedAdministrativeUnitName
+Additional restricted management administrative units for which the Function
+managed identity receives a scoped Cloud Device Administrator role. Units used
+by the current Group Tag rules are detected automatically.
+
+.PARAMETER SkipAdministrativeUnitRole
+Skips the scoped role assignment for restricted management administrative
+units.
 
 .PARAMETER SkipPublish
 Skips publishing Function source code.
@@ -174,6 +183,10 @@ param(
     [switch] $SkipEntraAppConfiguration,
 
     [switch] $SkipGraphPermission,
+
+    [string[]] $RestrictedAdministrativeUnitName,
+
+    [switch] $SkipAdministrativeUnitRole,
 
     [switch] $SkipPublish,
 
@@ -1369,7 +1382,7 @@ Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host '  Rules        : unchanged; no policy read or write'
+Write-Host '  Rules        : unchanged; read only to detect restricted administrative units'
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 Write-Host "  Custom web redirects: $($additionalWebRedirectUris.Count)"
 
@@ -1395,6 +1408,8 @@ $installerParameters = @{
     SkipExistingDeploymentDetection = $true
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission
+    RestrictedAdministrativeUnitName = @($RestrictedAdministrativeUnitName)
+    SkipAdministrativeUnitRole  = $SkipAdministrativeUnitRole
     SkipPublish                 = $SkipPublish
     SkipSmokeTest               = $SkipSmokeTest
 }

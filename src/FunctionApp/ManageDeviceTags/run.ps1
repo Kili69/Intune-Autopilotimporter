@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -54,7 +54,8 @@ Cache-Control no-store.
 
 HTTP 200, device list: devices array and count.
 HTTP 200, operation status: operationId, serialNumber, groupTag, status and
-workflowStatus (pending or complete).
+workflowStatus (pending, complete or error). Error responses also include
+processingError and processingErrorStep from the queue worker.
 HTTP 202, queued change: operationId, serialNumber, groupTag and status queued.
 Successful POST also writes a JSON message to DeviceAttributeUpdate.
 
@@ -402,8 +403,13 @@ if ([string] $Request.Method -eq 'GET' -and
             return
         }
         # The queue worker's completion timestamp is the status signal here.
-        # Until it is present, this endpoint reports pending.
-        $workflowStatus = if (-not [string]::IsNullOrWhiteSpace(
+        # Until it is present, this endpoint reports pending unless the worker
+        # recorded a failure that needs administrator action.
+        $processingFailed = Test-ProcessingFailed -AuditRecord $record
+        $workflowStatus = if ($processingFailed) {
+            'error'
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace(
                 [string] $record.processingCompletedAtUtc)) {
             'complete'
         }
@@ -416,6 +422,8 @@ if ([string] $Request.Method -eq 'GET' -and
             groupTag      = [string] $record.groupTag
             status        = $workflowStatus
             workflowStatus = $workflowStatus
+            processingError = if ($processingFailed) { [string] $record.processingError } else { $null }
+            processingErrorStep = if ($processingFailed) { [string] $record.processingErrorStep } else { $null }
             correlationId = $correlationId
         }
     }

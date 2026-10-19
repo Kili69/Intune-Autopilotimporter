@@ -554,7 +554,7 @@ function openHistoryTrace(record: ImportHistoryRecord): void {
     const title = document.createElement('strong');
     title.textContent = t('traceError');
     const detail = document.createElement('span');
-    detail.textContent = getImportError(record) ?? t('statusError');
+    detail.textContent = getImportError(record, language) ?? t('statusError');
     content.append(title, detail);
     item.append(marker, content);
     traceSteps.append(item);
@@ -961,13 +961,14 @@ async function pollResults(): Promise<void> {
         status: string;
         deviceErrorName?: string;
         deviceErrorCode?: number;
+        processingError?: string | null;
       }>(statusUrl);
       if (status.workflowStatus === 'complete') {
         item.status = 'complete';
         item.detail = t('completedDetail');
       } else if (status.workflowStatus === 'error') {
         item.status = 'error';
-        item.detail = getImportError(status) ?? status.status;
+        item.detail = getImportError(status, language) ?? status.processingError ?? status.status;
       } else {
         item.detail = status.status;
       }

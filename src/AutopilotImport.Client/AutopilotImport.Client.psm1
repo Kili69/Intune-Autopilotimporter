@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -2204,6 +2204,8 @@ function Get-AutoPilotImportHistory {
             'extensionAttributeUpdatedAtUtc'
             'administrativeUnitAssignedAtUtc'
             'processingCompletedAtUtc'
+            'processingErrorAtUtc'
+            'processingFailedAtUtc'
         )
         $auditTimestamps = @{}
         foreach ($timestampName in $auditTimestampNames) {
@@ -2253,6 +2255,13 @@ function Get-AutoPilotImportHistory {
             ExtensionAttributeUpdatedAtUtc    = $auditTimestamps['extensionAttributeUpdatedAtUtc']
             AdministrativeUnitAssignedAtUtc   = $auditTimestamps['administrativeUnitAssignedAtUtc']
             ProcessingCompletedAtUtc          = $auditTimestamps['processingCompletedAtUtc']
+            ProcessingErrorAtUtc              = $auditTimestamps['processingErrorAtUtc']
+            ProcessingFailedAtUtc             = $auditTimestamps['processingFailedAtUtc']
+            ProcessingError                   = [string] $importProperties['processingError']
+            ProcessingErrorStep               = [string] $importProperties['processingErrorStep']
+            ProcessingErrorStatusCode         = $importProperties['processingErrorStatusCode']
+            ProcessingAttempt                 = $importProperties['processingAttempt']
+            ProcessingMaxAttempts             = $importProperties['processingMaxAttempts']
         }
         $displayPropertySet = [Management.Automation.PSPropertySet]::new(
             'DefaultDisplayPropertySet',

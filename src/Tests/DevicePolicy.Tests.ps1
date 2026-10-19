@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -420,6 +420,56 @@ Describe 'Device policy queue integration' {
         Mock Sync-DevicePolicyGroups { throw 'Membership denied' }
         { & $worker -QueueItem $message -TagPolicyBlob $policy } | Should -Throw '*Membership denied*'
         Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter { $Properties.deviceGroupsUpdatedAtUtc -or $Properties.processingCompletedAtUtc }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.processingErrorStep -eq 'deviceGroups' -and $Properties.processingError -like '*Membership denied*'
+        }
+    }
+    It 'stops and records a failure when the extension attribute patch is denied' {
+        Mock Invoke-RestMethod -ParameterFilter { $Method -eq 'Patch' } {
+            throw [System.Exception]::new('Response status code does not indicate success: 403 (Forbidden).')
+        }
+        { & $worker -QueueItem $message -TagPolicyBlob $policy -TriggerMetadata @{ DequeueCount = 24 } } |
+            Should -Throw "*Processing step 'extensionAttributes' failed*attempt 24 of 24*"
+        Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter {
+            $Properties.extensionAttributeUpdatedAtUtc -or $Properties.processingCompletedAtUtc
+        }
+        Should -Invoke Sync-DevicePolicyGroups -Times 0
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.processingErrorStep -eq 'extensionAttributes' -and
+            $Properties.processingFailedAtUtc -and
+            $Properties.processingAttempt -eq 24
+        }
+    }
+}
+
+Describe 'Processing failure audit helpers' {
+    It 'adds a restricted administrative unit hint for denied requests' {
+        $exception = [System.Exception]::new('Response status code does not indicate success: 403 (Forbidden).')
+        $exception.Data['StatusCode'] = 403
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new($exception, 'Denied', 'PermissionDenied', $null)
+        $errorRecord.ErrorDetails = [System.Management.Automation.ErrorDetails]::new('{"error":{"code":"Authorization_RequestDenied","message":"Target object is a member of a restricted management administrative unit and can only be modified by administrators scoped to that administrative unit."}}')
+        $failure = Get-ProcessingFailureAudit -ErrorRecord $errorRecord -Step extensionAttributes -Attempt 1 -MaxAttempts 24
+        $failure.IsFailed | Should -BeTrue
+        $failure.StatusCode | Should -Be 403
+        $failure.Properties.processingErrorStep | Should -Be 'extensionAttributes'
+        $failure.Properties.processingError | Should -BeLike 'HTTP 403:*restricted management administrative unit*Cloud Device Administrator*'
+        $failure.Properties.processingFailedAtUtc | Should -Not -BeNullOrEmpty
+        $failure.Properties.processingAttempt | Should -Be 1
+    }
+    It 'does not record expected waits before the final attempt' {
+        $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+            [System.Exception]::new('Entra device is not available yet.'), 'Wait', 'NotSpecified', $null)
+        $waiting = Get-ProcessingFailureAudit -ErrorRecord $errorRecord -Step entraDevice -Attempt 2 -MaxAttempts 24
+        $waiting.Properties.Count | Should -Be 0
+        $waiting.IsFailed | Should -BeFalse
+        $final = Get-ProcessingFailureAudit -ErrorRecord $errorRecord -Step entraDevice -Attempt 24 -MaxAttempts 24
+        $final.IsFinal | Should -BeTrue
+        $final.Properties.processingFailedAtUtc | Should -Not -BeNullOrEmpty
+    }
+    It 'reports failures only until a later completion' {
+        Test-ProcessingFailed -AuditRecord ([pscustomobject]@{ processingFailedAtUtc = '2026-10-19T06:00:00Z'; processingCompletedAtUtc = '' }) | Should -BeTrue
+        Test-ProcessingFailed -AuditRecord ([pscustomobject]@{ processingFailedAtUtc = '2026-10-19T06:00:00Z'; processingCompletedAtUtc = '2026-10-19T07:00:00Z' }) | Should -BeFalse
+        Test-ProcessingFailed -AuditRecord ([pscustomobject]@{ processingFailedAtUtc = '' }) | Should -BeFalse
     }
 }
 

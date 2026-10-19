@@ -719,6 +719,32 @@ updated policy is saved. Both units with and without
 `isMemberManagementRestricted` enabled are supported. Without a configured
 unit on the matching rule, imports continue without automatic membership.
 
+Members of a restricted management administrative unit (RMAU) can only be
+modified by principals with a role scoped to that unit; tenant-wide Graph
+application permissions are not sufficient. The first import still works
+because the extension attributes are written before the device joins the unit,
+but a later re-tagging fails with HTTP 403. `Install-AutopilotImport.ps1` and
+`Update-AutopilotImport.ps1` therefore read the current rules and assign the
+Function managed identity the **Cloud Device Administrator** role scoped to
+each restricted unit used by a rule. Use `-RestrictedAdministrativeUnitName`
+for additional units, for example units that contain devices from a removed
+rule, or `-SkipAdministrativeUnitRole` to skip the assignment. The assignment
+requires a Privileged Role Administrator; if it fails, the installer prints a
+warning with the manual command:
+
+```powershell
+.\scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1 `
+    -ManagedIdentityObjectId '<managed-identity-object-id>' `
+    -AdministrativeUnitName 'RMAU-Privileged' `
+    -TenantId '<tenant-id>' `
+    -ForceGraphSignIn
+```
+
+Managed identity tokens can cache role assignments for up to 24 hours, so a
+newly assigned scoped role may not take effect immediately. Failed processing
+steps are recorded in the import history with the Graph error, the failed step
+and the queue attempt.
+
 #### Named Device Policies and Web Editor
 
 Use the **TagPolicies** tab after signing in as a configured policy manager.
@@ -1538,7 +1564,18 @@ device attribute and RMAU processing state:
 ```
 
 Only `workflowStatus: complete` confirms completion of both the Intune import
-and the configured Entra post-processing.
+and the configured Entra post-processing. `workflowStatus: error` with
+`processingError` and `processingErrorStep` reports a background processing
+failure that needs administrator action, such as a missing role for a
+restricted management administrative unit. The queue still retries the
+operation, so a later successful attempt changes the status to `complete`.
+The Group Tag change status endpoint (`GET /api/devices/tags?operationId=...`)
+reports the same error fields. Import history records additionally expose
+`processingErrorAtUtc`, `processingFailedAtUtc`, `processingError`,
+`processingErrorStep`, `processingErrorStatusCode`, `processingAttempt` and
+`processingMaxAttempts`; `Get-AutoPilotImportHistory` returns them as
+`ProcessingError*`, `ProcessingFailedAtUtc`, `ProcessingAttempt` and
+`ProcessingMaxAttempts`.
 
 ### Get Import History
 

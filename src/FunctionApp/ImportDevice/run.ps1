@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -196,6 +196,7 @@ if ([string] $Request.Method -eq 'GET') {
         }
         $extensionAttributeValue = $null
         $entraDeviceId = $null
+        $processingFailure = $null
         # Legacy policies map the tag to one configured extension attribute.
         # Explicit policy actions can replace that expectation with several
         # attribute/value pairs, all of which must match on the Entra device.
@@ -266,6 +267,10 @@ if ([string] $Request.Method -eq 'GET') {
             if (-not $audit -or -not $audit.PSObject.Properties['processingCompletedAtUtc'] -or -not $audit.processingCompletedAtUtc) {
                 $extensionAttributeStatus = 'pending'
             }
+            if (Test-ProcessingFailed -AuditRecord $audit) {
+                $extensionAttributeStatus = 'error'
+                $processingFailure = $audit
+            }
         }
     }
     catch [System.UnauthorizedAccessException] {
@@ -288,7 +293,7 @@ if ([string] $Request.Method -eq 'GET') {
 
     # A Graph import error takes precedence. Otherwise report complete only
     # when both Intune and the downstream attribute check are complete.
-    $workflowStatus = if ($intuneStatus -eq 'error') {
+    $workflowStatus = if ($intuneStatus -eq 'error' -or $extensionAttributeStatus -eq 'error') {
         'error'
     }
     elseif ($intuneStatus -eq 'complete' -and
@@ -311,6 +316,8 @@ if ([string] $Request.Method -eq 'GET') {
         extensionAttributeValue = $extensionAttributeValue
         expectedExtensionAttributes = $expectedAttributes
         entraDeviceId           = $entraDeviceId
+        processingError         = if ($processingFailure) { [string] $processingFailure.processingError } else { $null }
+        processingErrorStep     = if ($processingFailure) { [string] $processingFailure.processingErrorStep } else { $null }
         correlationId           = $correlationId
     }
     return

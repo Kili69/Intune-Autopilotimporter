@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -23,7 +23,8 @@ also contain groupTag and may contain administrativeUnitName.
 
 .PARAMETER TriggerMetadata
 Metadata supplied by the Azure Functions PowerShell worker for the queue
-invocation. The current implementation does not read this value directly.
+invocation. DequeueCount is recorded as the processing attempt when a step
+fails.
 
 .PARAMETER TagPolicyBlob
 Current Group Tag authorization policy from the private configuration blob.
@@ -49,6 +50,10 @@ trigger can retry the message.
 #>
 
 param($QueueItem, $TriggerMetadata, $TagPolicyBlob)
+
+# Invoke-RestMethod HTTP failures are statement-terminating. Without Stop the
+# worker would continue after a failed Graph write and record success.
+$ErrorActionPreference = 'Stop'
 
 # Load the shared validation and Microsoft Graph payload helpers used by the
 # HTTP and queue-triggered Functions.
@@ -111,6 +116,35 @@ Set-ImportAuditRecord `
     -Properties $initialAuditProperties `
     -AccessToken $auditToken
 
+# Record each failed processing attempt with its step and the Graph error,
+# then rethrow so the Storage Queue retry policy runs. The final dequeue
+# attempt marks the operation failed so history no longer reports pending.
+$processingStep = 'policy'
+$processingAttempt = 1
+$dequeueCount = 0
+if ($TriggerMetadata -and [int]::TryParse([string] $TriggerMetadata.DequeueCount, [ref] $dequeueCount)) {
+    $processingAttempt = [math]::Max(1, $dequeueCount)
+}
+$processingMaxAttempts = 24
+trap {
+    # Traps cover the whole script; earlier validation failures have no audit context.
+    if (-not $auditToken -or -not $processingStep) { break }
+    $failure = Get-ProcessingFailureAudit `
+        -ErrorRecord $_ `
+        -Step $processingStep `
+        -Attempt $processingAttempt `
+        -MaxAttempts $processingMaxAttempts
+    if ($failure.Properties.Count -gt 0) {
+        try {
+            Set-ImportAuditRecord -ImportId $auditId -Properties $failure.Properties -AccessToken $auditToken
+        }
+        catch {
+            Write-Warning "Could not record the processing failure for work item '$auditId': $($_.Exception.Message)"
+        }
+    }
+    throw "Processing step '$processingStep' failed for work item '$auditId' (attempt $processingAttempt of $processingMaxAttempts): $($failure.Message)"
+}
+
 $tagAuthorizationPolicyJson = ConvertFrom-BlobBindingContent `
     -Value $TagPolicyBlob
 if ([string]::IsNullOrWhiteSpace($tagAuthorizationPolicyJson)) {
@@ -154,6 +188,7 @@ $targetGroups = if ($policyActions.PSObject.Properties['deviceGroupIds']) {
 
 # Acquire a Microsoft Graph token through the managed Azure context initialized
 # by profile.ps1 and normalize Az.Accounts token formats to SecureString.
+$processingStep = 'graphToken'
 $tokenResult = Get-AzAccessToken `
     -ResourceUrl 'https://graph.microsoft.com/' `
     -ErrorAction Stop
@@ -168,6 +203,7 @@ $secureToken = ConvertTo-SecureString $accessToken -AsPlainText -Force
 # Resolve either the asynchronous import identity chain or the existing
 # registered Autopilot identity selected for a Group Tag change.
 if ($isTagChange) {
+    $processingStep = 'autopilotGroupTag'
     $registeredDevice = Invoke-RestMethod `
         -Method Get `
         -Uri "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$registeredDeviceId" `
@@ -193,6 +229,7 @@ if ($isTagChange) {
         -AccessToken $auditToken
 }
 else {
+    $processingStep = 'autopilotRegistration'
     $importedDevice = Invoke-RestMethod `
         -Method Get `
         -Uri "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importId" `
@@ -220,6 +257,7 @@ if (-not $isTagChange -and $importedDevice.state.PSObject.Properties['deviceImpo
     Set-ImportAuditRecord -ImportId $auditId -Properties $registrationProperties -AccessToken $auditToken
 }
 $entraDeviceId = [guid]::Empty
+$processingStep = 'entraDevice'
 if (-not [guid]::TryParse(
         [string] $registeredDevice.azureActiveDirectoryDeviceId,
         [ref] $entraDeviceId)) {
@@ -256,6 +294,7 @@ if ($isTagChange -or
 $attributeNames = if ($payload.extensionAttributes -is [Collections.IDictionary]) {
     @($payload.extensionAttributes.Keys)
 } else { @($payload.extensionAttributes.PSObject.Properties | ForEach-Object Name) }
+$processingStep = 'extensionAttributes'
 if ($attributeNames.Count -gt 0) {
     Invoke-RestMethod `
         -Method Patch `
@@ -281,6 +320,7 @@ else {
 $managedGroups = @($tagAuthorizationPolicy | ForEach-Object {
     if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
 })
+$processingStep = 'deviceGroups'
 $state = Get-DevicePolicyState -DeviceId $entraDeviceId -AccessToken $auditToken
 $previousGroupIds = @($state.groupIdsJson | ConvertFrom-Json)
 if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 0 -or $previousGroupIds.Count -gt 0) {
@@ -299,10 +339,11 @@ if ($policyActions.PSObject.Properties['groupTag'] -or $managedGroups.Count -gt 
     Set-ImportAuditRecord -ImportId $auditId -AccessToken $auditToken -Properties @{
         deviceGroupsUpdatedAtUtc = [datetime]::UtcNow.ToString('o')
         targetDeviceGroupIdsJson = ConvertTo-Json -InputObject @($targetGroups) -Compress
-        addedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.AddedGroupIds) -Compress
-        removedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.RemovedGroupIds) -Compress
+        addedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.AddedGroupIds | Where-Object { $_ }) -Compress
+        removedDeviceGroupIdsJson = ConvertTo-Json -InputObject @($groupResult.RemovedGroupIds | Where-Object { $_ }) -Compress
     }
 }
+$processingStep = 'administrativeUnits'
 if ($deviceObjectId -ne [guid]::Empty) {
     $membershipResult = Sync-EntraDeviceAdministrativeUnits `
         -Policy $tagAuthorizationPolicy `
@@ -320,9 +361,16 @@ if ($deviceObjectId -ne [guid]::Empty) {
     Write-Information "Synchronized policy-managed administrative units for Entra device '$entraDeviceId'."
 }
 
+$processingStep = 'completion'
+$completionProperties = @{
+    processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
+}
+# A later successful retry supersedes an earlier failure marker.
+if ($existingAuditRecord -and $existingAuditRecord.PSObject.Properties['processingFailedAtUtc'] -and
+    -not [string]::IsNullOrWhiteSpace([string] $existingAuditRecord.processingFailedAtUtc)) {
+    $completionProperties.processingFailedAtUtc = ''
+}
 Set-ImportAuditRecord `
     -ImportId $auditId `
-    -Properties @{
-        processingCompletedAtUtc = [datetime]::UtcNow.ToString('o')
-    } `
+    -Properties $completionProperties `
     -AccessToken $auditToken

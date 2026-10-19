@@ -313,6 +313,7 @@ reference.
 | `Ensure-EntraApiApplication.ps1` | Creates or updates the Entra application used by the Autopilot import API. |
 | `Ensure-EntraWebApplication.ps1` | Creates or updates the Entra single-page application for the web frontend. |
 | `Grant-ManagedIdentityGraphPermission.ps1` | Grants the required Microsoft Graph application permissions to the Function managed identity. |
+| `Grant-ManagedIdentityAdministrativeUnitRole.ps1` | Assigns the Function managed identity a Cloud Device Administrator role scoped to restricted management administrative units so re-tagging can update member devices. |
 | `Import-AutopilotDevice.ps1` | Imports Windows Autopilot devices through the secured REST API. |
 | `Start-IntuneAutopilotImporter.ps1` | Creates a Windows Autopilot device hash and opens the web importer. This is the standalone PowerShell Gallery script. |
 | `Set-TagAuthorizationPolicy.ps1` | Compatibility wrapper for the `AutopilotImport.Client` tag policy commands. |

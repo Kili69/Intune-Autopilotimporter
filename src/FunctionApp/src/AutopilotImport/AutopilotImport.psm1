@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -394,6 +394,145 @@ function Set-ImportAuditRecord {
                 -AccessToken $AccessToken
         }
     }
+}
+
+function Get-ProcessingFailureAudit {
+    <#
+    .SYNOPSIS
+    Converts a queue-worker failure into audit properties.
+
+    .DESCRIPTION
+    Extracts the HTTP status and Microsoft Graph error message from an error
+    record, adds remediation guidance for restricted management administrative
+    units, and returns the audit properties for the failed attempt. Expected
+    waits for asynchronous Intune objects are only recorded on the final
+    attempt so normal imports do not show errors while they are retried.
+
+    .PARAMETER ErrorRecord
+    PowerShell error record raised by the worker.
+
+    .PARAMETER Step
+    Processing step that failed, for example extensionAttributes.
+
+    .PARAMETER Attempt
+    Queue dequeue count of the current invocation.
+
+    .PARAMETER MaxAttempts
+    Configured queue maxDequeueCount. The attempt reaching this value is final.
+
+    .OUTPUTS
+    PSCustomObject with Message, StatusCode, IsFinal, IsFailed and Properties.
+    Properties is empty when the failure should not be audited.
+
+    .EXAMPLE
+    $failure = Get-ProcessingFailureAudit -ErrorRecord $_ -Step 'extensionAttributes' -Attempt 1
+
+    .NOTES
+    HTTP 400, 401 and 403 errors require administrator action and mark the
+    operation as failed immediately, while the queue still retries the
+    message so a later permission fix can complete it.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [Management.Automation.ErrorRecord] $ErrorRecord,
+
+        [Parameter(Mandatory)]
+        [string] $Step,
+
+        [ValidateRange(1, [int]::MaxValue)]
+        [int] $Attempt = 1,
+
+        [ValidateRange(1, [int]::MaxValue)]
+        [int] $MaxAttempts = 24
+    )
+
+    $statusCode = $null
+    $exception = $ErrorRecord.Exception
+    if ($exception.PSObject.Properties['Response'] -and $exception.Response -and
+        $exception.Response.PSObject.Properties['StatusCode']) {
+        $statusCode = [int] $exception.Response.StatusCode
+    }
+    elseif ($exception.Data.Contains('StatusCode')) {
+        $statusCode = [int] $exception.Data['StatusCode']
+    }
+
+    $detail = $null
+    if ($ErrorRecord.ErrorDetails -and
+        -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+        try {
+            $graphError = $ErrorRecord.ErrorDetails.Message | ConvertFrom-Json -ErrorAction Stop
+            if ($graphError.PSObject.Properties['error'] -and $graphError.error.message) {
+                $detail = [string] $graphError.error.message
+            }
+        }
+        catch {
+            $detail = [string] $ErrorRecord.ErrorDetails.Message
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($detail)) {
+        $detail = [string] $exception.Message
+    }
+    $message = if ($statusCode) { "HTTP ${statusCode}: $($detail.Trim())" } else { $detail.Trim() }
+    if ($statusCode -eq 403 -and $detail -match 'restricted management administrative unit') {
+        $message += ' Assign the Function managed identity the Cloud Device Administrator role scoped to the restricted management administrative unit that contains the device. Install-AutopilotImport.ps1 and Update-AutopilotImport.ps1 assign it automatically for restricted administrative units used by rules; new assignments can take up to 24 hours to reach the managed identity token.'
+    }
+    if ($message.Length -gt 2000) {
+        $message = $message.Substring(0, 2000)
+    }
+
+    $isFinal = $Attempt -ge $MaxAttempts
+    $isFailed = $isFinal -or $statusCode -in @(400, 401, 403)
+    $isExpectedWait = $null -eq $statusCode -and $detail -match 'is not available yet'
+    $properties = [ordered]@{}
+    if ($isFinal -or -not $isExpectedWait) {
+        $now = [datetime]::UtcNow.ToString('o')
+        $properties.processingErrorAtUtc = $now
+        $properties.processingError = $message
+        $properties.processingErrorStep = $Step
+        $properties.processingAttempt = $Attempt
+        $properties.processingMaxAttempts = $MaxAttempts
+        $properties.processingErrorStatusCode = if ($statusCode) { $statusCode } else { 0 }
+        if ($isFailed) {
+            $properties.processingFailedAtUtc = $now
+        }
+    }
+
+    return [pscustomobject]@{
+        Message    = $message
+        StatusCode = $statusCode
+        IsFinal    = $isFinal
+        IsFailed   = $isFailed -and $properties.Count -gt 0
+        Properties = $properties
+    }
+}
+
+function Test-ProcessingFailed {
+    <#
+    .SYNOPSIS
+    Tests whether an audit record reports an unresolved processing failure.
+
+    .PARAMETER AuditRecord
+    Audit table entity, or null when no record exists.
+
+    .OUTPUTS
+    System.Boolean. True when processingFailedAtUtc is set and no later
+    processingCompletedAtUtc supersedes it.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([AllowNull()] $AuditRecord)
+
+    if (-not $AuditRecord -or -not $AuditRecord.PSObject.Properties['processingFailedAtUtc'] -or
+        [string]::IsNullOrWhiteSpace([string] $AuditRecord.processingFailedAtUtc)) {
+        return $false
+    }
+    if (-not $AuditRecord.PSObject.Properties['processingCompletedAtUtc'] -or
+        [string]::IsNullOrWhiteSpace([string] $AuditRecord.processingCompletedAtUtc)) {
+        return $true
+    }
+    return [datetimeoffset] [string] $AuditRecord.processingCompletedAtUtc -lt
+        [datetimeoffset] [string] $AuditRecord.processingFailedAtUtc
 }
 
 function Get-ImportAuditRecords {
@@ -2940,6 +3079,8 @@ Export-ModuleMember -Function @(
     'Get-ImportAuditAccessToken',
     'Get-DeviceHashSha256',
     'Set-ImportAuditRecord',
+    'Get-ProcessingFailureAudit',
+    'Test-ProcessingFailed',
     'Get-ImportAuditRecords',
     'Get-ImportAuditRetentionCutoffUtc',
     'Get-ImportAuditHistory',

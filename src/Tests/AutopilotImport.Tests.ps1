@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.1
+# Project-Version: 1.4.20261019.2
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -4259,7 +4259,9 @@ Describe 'Update script deployment discovery' {
 
     It 'updates without management API access or rule conversion' {
         $updateAst.Extent.Text | Should -Not -Match 'Get-AutoPilotTagPolicy|ConvertTo-UpdateTagAuthorizationRules'
-        $updateAst.Extent.Text | Should -Not -Match 'TagAuthorizationRule\s*=|AdministrativeUnitName\s*='
+        $updateAst.Extent.Text | Should -Not -Match 'TagAuthorizationRule\s*=|\bAdministrativeUnitName\s*='
+        $updateAst.Extent.Text | Should -Match 'RestrictedAdministrativeUnitName\s*=\s*@\(\$RestrictedAdministrativeUnitName\)'
+        $updateAst.Extent.Text | Should -Match 'SkipAdministrativeUnitRole\s*=\s*\$SkipAdministrativeUnitRole'
         $updateAst.Extent.Text | Should -Not -Match 'Set-AzStorageBlobContent|Get-AzStorageBlobContent'
     }
 
@@ -6403,6 +6405,7 @@ Describe 'Deployment package' {
                     'scripts/Ensure-EntraApiApplication.ps1'
                     'scripts/Ensure-EntraWebApplication.ps1'
                     'scripts/Grant-ManagedIdentityGraphPermission.ps1'
+                    'scripts/Grant-ManagedIdentityAdministrativeUnitRole.ps1'
                     'scripts/FunctionDeployment.psm1'
                     'scripts/Import-AutopilotDevice.ps1'
                     'scripts/Start-IntuneAutopilotImporter.ps1'

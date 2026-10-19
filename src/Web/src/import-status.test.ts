@@ -83,6 +83,34 @@ describe('Import history error state', () => {
   it('uses the real code instead of the None sentinel for an actual error', () => {
     expect(getImportError({ deviceErrorName: 'None', deviceErrorCode: 808 })).toBe('808');
   });
+  it('reports unresolved background processing failures', () => {
+    const record = {
+      status: 'complete',
+      deviceErrorCode: 0,
+      deviceErrorName: 'None',
+      processingErrorAtUtc: '2026-10-19T06:00:00Z',
+      processingFailedAtUtc: '2026-10-19T06:00:00Z',
+      processingError: 'HTTP 403: denied',
+      processingErrorStep: 'extensionAttributes',
+    };
+    expect(getHistoryStatus(record)).toBe('error');
+    expect(getImportError(record, 'en')).toContain('HTTP 403: denied');
+  });
+  it('clears the failure once a later attempt completes', () => {
+    const record = {
+      status: 'complete',
+      deviceErrorCode: 0,
+      deviceErrorName: 'None',
+      processingErrorAtUtc: '2026-10-19T06:00:00Z',
+      processingFailedAtUtc: '2026-10-19T06:00:00Z',
+      processingError: 'HTTP 403: denied',
+      processingErrorStep: 'extensionAttributes',
+      processingCompletedAtUtc: '2026-10-19T07:00:00Z',
+    };
+    expect(getHistoryStatus(record)).toBe('complete');
+    expect(getImportError(record, 'en')).toBeUndefined();
+    expect(getImportTimeline(record, 'en').map(step => step.title)).toContain('Error, later retried successfully');
+  });
 });
 
 describe('Policy manager access probe', () => {
