@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.4
+# Project-Version: 1.4.20261019.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -441,25 +441,25 @@ $history = @($auditRecords | ForEach-Object {
             requestedByObjectId              = if ($audit) { [string] $audit.actorObjectId } else { $null }
             requestedByUserPrincipalName     = if ($audit) { [string] $audit.actorUserPrincipalName } else { $null }
             requestedByDisplayName           = if ($audit) { [string] $audit.actorDisplayName } else { $null }
-            requestReceivedAtUtc              = if ($audit) { [string] $audit.requestReceivedAtUtc } else { $null }
-            graphImportCreatedAtUtc           = if ($audit) { [string] $audit.graphImportCreatedAtUtc } else { $null }
-            graphImportCompletedAtUtc         = if ($audit.PSObject.Properties['graphImportCompletedAtUtc']) { [string] $audit.graphImportCompletedAtUtc } else { $null }
-            queuedAtUtc                       = if ($audit) { [string] $audit.queuedAtUtc } else { $null }
-            processingStartedAtUtc            = if ($audit) { [string] $audit.processingStartedAtUtc } else { $null }
-            entraDeviceResolvedAtUtc          = if ($audit) { [string] $audit.entraDeviceResolvedAtUtc } else { $null }
-            autopilotGroupTagUpdatedAtUtc     = if ($audit.PSObject.Properties['autopilotGroupTagUpdatedAtUtc']) { [string] $audit.autopilotGroupTagUpdatedAtUtc } else { $null }
-            extensionAttributeUpdatedAtUtc    = if ($audit) { [string] $audit.extensionAttributeUpdatedAtUtc } else { $null }
-            administrativeUnitAssignedAtUtc   = if ($audit) { [string] $audit.administrativeUnitAssignedAtUtc } else { $null }
-            processingCompletedAtUtc          = if ($audit) { [string] $audit.processingCompletedAtUtc } else { $null }
-            processingErrorAtUtc              = if ($audit.PSObject.Properties['processingErrorAtUtc']) { [string] $audit.processingErrorAtUtc } else { $null }
-            processingFailedAtUtc             = if ($audit.PSObject.Properties['processingFailedAtUtc'] -and $audit.processingFailedAtUtc) { [string] $audit.processingFailedAtUtc } else { $null }
+            requestReceivedAtUtc              = if ($audit) { ConvertTo-AuditTimestamp $audit.requestReceivedAtUtc } else { $null }
+            graphImportCreatedAtUtc           = if ($audit) { ConvertTo-AuditTimestamp $audit.graphImportCreatedAtUtc } else { $null }
+            graphImportCompletedAtUtc         = if ($audit.PSObject.Properties['graphImportCompletedAtUtc']) { ConvertTo-AuditTimestamp $audit.graphImportCompletedAtUtc } else { $null }
+            queuedAtUtc                       = if ($audit) { ConvertTo-AuditTimestamp $audit.queuedAtUtc } else { $null }
+            processingStartedAtUtc            = if ($audit) { ConvertTo-AuditTimestamp $audit.processingStartedAtUtc } else { $null }
+            entraDeviceResolvedAtUtc          = if ($audit) { ConvertTo-AuditTimestamp $audit.entraDeviceResolvedAtUtc } else { $null }
+            autopilotGroupTagUpdatedAtUtc     = if ($audit.PSObject.Properties['autopilotGroupTagUpdatedAtUtc']) { ConvertTo-AuditTimestamp $audit.autopilotGroupTagUpdatedAtUtc } else { $null }
+            extensionAttributeUpdatedAtUtc    = if ($audit) { ConvertTo-AuditTimestamp $audit.extensionAttributeUpdatedAtUtc } else { $null }
+            administrativeUnitAssignedAtUtc   = if ($audit) { ConvertTo-AuditTimestamp $audit.administrativeUnitAssignedAtUtc } else { $null }
+            processingCompletedAtUtc          = if ($audit) { ConvertTo-AuditTimestamp $audit.processingCompletedAtUtc } else { $null }
+            processingErrorAtUtc              = if ($audit.PSObject.Properties['processingErrorAtUtc']) { ConvertTo-AuditTimestamp $audit.processingErrorAtUtc } else { $null }
+            processingFailedAtUtc             = if ($audit.PSObject.Properties['processingFailedAtUtc'] -and $audit.processingFailedAtUtc) { ConvertTo-AuditTimestamp $audit.processingFailedAtUtc } else { $null }
             processingError                   = if ($audit.PSObject.Properties['processingError']) { [string] $audit.processingError } else { $null }
             processingErrorStep               = if ($audit.PSObject.Properties['processingErrorStep']) { [string] $audit.processingErrorStep } else { $null }
             processingErrorStatusCode         = if ($audit.PSObject.Properties['processingErrorStatusCode'] -and [int] $audit.processingErrorStatusCode -gt 0) { [int] $audit.processingErrorStatusCode } else { $null }
             processingAttempt                 = if ($audit.PSObject.Properties['processingAttempt']) { [int] $audit.processingAttempt } else { $null }
             processingMaxAttempts             = if ($audit.PSObject.Properties['processingMaxAttempts']) { [int] $audit.processingMaxAttempts } else { $null }
             policyName                        = if ($audit.PSObject.Properties['policyName']) { [string] $audit.policyName } else { $null }
-            deviceGroupsUpdatedAtUtc          = if ($audit.PSObject.Properties['deviceGroupsUpdatedAtUtc']) { [string] $audit.deviceGroupsUpdatedAtUtc } else { $null }
+            deviceGroupsUpdatedAtUtc          = if ($audit.PSObject.Properties['deviceGroupsUpdatedAtUtc']) { ConvertTo-AuditTimestamp $audit.deviceGroupsUpdatedAtUtc } else { $null }
             entraDeviceId                    = if ($audit.PSObject.Properties['entraDeviceId']) { [string] $audit.entraDeviceId } else { $null }
             appliedExtensionAttributes       = $actionDetails['appliedExtensionAttributes']
             targetDeviceGroupIds             = $actionDetails['targetDeviceGroupIds']

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.4
+# Project-Version: 1.4.20261019.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -818,6 +818,89 @@ function Get-ImportAuditHistory {
         }
         $recordedAt
     } -Descending | Select-Object -First $Top)
+}
+
+function ConvertTo-AuditTimestamp {
+    <#
+    .SYNOPSIS
+    Formats an audit timestamp as an ISO 8601 UTC string.
+
+    .DESCRIPTION
+    Table Storage responses deserialized by Invoke-RestMethod turn ISO strings
+    into DateTime values whose default string form is culture-style and has no
+    time zone, which browsers interpret as local time. This helper returns a
+    round-trip UTC string for DateTime, DateTimeOffset and parseable text.
+    Unspecified DateTime kinds and zone-less text are treated as UTC.
+
+    .PARAMETER Value
+    Raw audit property value.
+
+    .OUTPUTS
+    System.String in round-trip format, the original text when it cannot be
+    parsed, or null for null/blank input.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()] $Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [datetimeoffset]) {
+        return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [datetime]) {
+        $dateTime = if ($Value.Kind -eq [DateTimeKind]::Unspecified) {
+            [datetime]::SpecifyKind($Value, [DateTimeKind]::Utc)
+        }
+        else {
+            $Value.ToUniversalTime()
+        }
+        return $dateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    $text = [string] $Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+    $parsed = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse(
+            $text,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal,
+            [ref] $parsed)) {
+        return $parsed.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    return $text
+}
+
+function Get-TagChangeProcessingStage {
+    <#
+    .SYNOPSIS
+    Returns the current processing stage of an audit record.
+
+    .PARAMETER AuditRecord
+    Raw audit entity of an import or tag-change operation.
+
+    .OUTPUTS
+    System.String: error, complete, processing (the queue worker has started)
+    or queued.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)] $AuditRecord)
+
+    if (Test-ProcessingFailed -AuditRecord $AuditRecord) {
+        return 'error'
+    }
+    if ($AuditRecord.PSObject.Properties['processingCompletedAtUtc'] -and
+        -not [string]::IsNullOrWhiteSpace([string] $AuditRecord.processingCompletedAtUtc)) {
+        return 'complete'
+    }
+    if ($AuditRecord.PSObject.Properties['processingStartedAtUtc'] -and
+        -not [string]::IsNullOrWhiteSpace([string] $AuditRecord.processingStartedAtUtc)) {
+        return 'processing'
+    }
+    return 'queued'
 }
 
 function Resolve-RecentTagChangeGroupTag {
@@ -3165,6 +3248,8 @@ Export-ModuleMember -Function @(
     'Get-ImportAuditRecords',
     'Get-ImportAuditRetentionCutoffUtc',
     'Get-ImportAuditHistory',
+    'ConvertTo-AuditTimestamp',
+    'Get-TagChangeProcessingStage',
     'Resolve-RecentTagChangeGroupTag',
     'Remove-ExpiredImportAuditRecords',
     'Write-ManagementAuditEvent',

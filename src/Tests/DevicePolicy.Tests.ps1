@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.4
+# Project-Version: 1.4.20261019.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -1077,6 +1077,65 @@ Describe 'Recently completed tag changes in the device list' {
                 $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).devices[0].groupTag -eq 'PAW'
             }
             Should -Invoke Write-Warning -Times 1
+        }
+    }
+}
+
+Describe 'Live tag change progress' {
+    BeforeAll {
+        Import-Module Az.Accounts
+        function Push-OutputBinding { param($Name, $Value) }
+    }
+    It 'formats <Name> as ISO 8601 UTC' -ForEach @(
+        @{ Name = 'UTC DateTime values'; Value = [datetime]::new(2026, 10, 19, 11, 36, 57, [DateTimeKind]::Utc) }
+        @{ Name = 'deserialized DateTime values without kind'; Value = [datetime]::new(2026, 10, 19, 11, 36, 57, [DateTimeKind]::Unspecified) }
+        @{ Name = 'DateTimeOffset values'; Value = [datetimeoffset]::new(2026, 10, 19, 13, 36, 57, [timespan]::FromHours(2)) }
+        @{ Name = 'ISO text'; Value = '2026-10-19T11:36:57Z' }
+        @{ Name = 'culture text without a zone'; Value = '10/19/2026 11:36:57' }
+    ) {
+        ConvertTo-AuditTimestamp $Value | Should -Be '2026-10-19T11:36:57.0000000Z'
+    }
+    It 'returns null for empty timestamps' {
+        ConvertTo-AuditTimestamp $null | Should -BeNullOrEmpty
+        ConvertTo-AuditTimestamp '' | Should -BeNullOrEmpty
+    }
+    It 'reports the <Expected> stage' -ForEach @(
+        @{ Expected = 'queued'; Record = @{ queuedAtUtc = '2026-10-19T11:36:57Z' } }
+        @{ Expected = 'processing'; Record = @{ processingStartedAtUtc = '2026-10-19T11:37:17Z' } }
+        @{ Expected = 'complete'; Record = @{ processingStartedAtUtc = '2026-10-19T11:37:17Z'; processingCompletedAtUtc = '2026-10-19T11:37:21Z' } }
+    ) {
+        Get-TagChangeProcessingStage -AuditRecord ([pscustomobject] $Record) | Should -Be $Expected
+    }
+    It 'returns processing progress and ISO timestamps from the status endpoint' {
+        $operationId = '445fc072-2036-41ba-b21e-c9b579ae476c'
+        $request = @{ Method = 'GET'; Headers = @{ 'x-ms-client-principal' = 'mock' }; Query = @{ operationId = $operationId } }
+        Mock Import-Module {}
+        Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
+        Mock ConvertFrom-ClientPrincipalHeader { [pscustomobject]@{ claims = @([pscustomobject]@{ typ = 'oid'; val = 'actor' }) } }
+        Mock Get-CurrentPolicyPrincipal { $Principal }
+        Mock Get-AuthorizedGroupTags { @('VIP') }
+        Mock Get-ImportAuditAccessToken { ConvertTo-SecureString 'storage' -AsPlainText -Force }
+        Mock Get-ImportAuditRecords {
+            @{ '445fc072-2036-41ba-b21e-c9b579ae476c' = [pscustomobject]@{
+                operationType = 'tagChange'; actorObjectId = 'actor'; serialNumber = 'SN1'
+                groupTag = 'BG-Default'; previousGroupTag = 'VIP'
+                requestReceivedAtUtc = [datetime]::new(2026, 10, 19, 11, 36, 57, [DateTimeKind]::Unspecified)
+                processingStartedAtUtc = '2026-10-19T11:37:17Z'
+                autopilotGroupTagUpdatedAtUtc = '2026-10-19T11:37:18Z'
+            } }
+        }
+        Mock Push-OutputBinding {}
+        & (Join-Path $PSScriptRoot '..\FunctionApp\ManageDeviceTags\run.ps1') -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["VIP"]}]'
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Value.StatusCode | Should -Be 200
+            $body = $Value.Body | ConvertFrom-Json -DateKind String
+            $body.workflowStatus | Should -Be 'pending'
+            $body.processingStage | Should -Be 'processing'
+            $body.previousGroupTag | Should -Be 'VIP'
+            $body.requestReceivedAtUtc | Should -Be '2026-10-19T11:36:57.0000000Z'
+            $body.autopilotGroupTagUpdatedAtUtc | Should -Be '2026-10-19T11:37:18.0000000Z'
+            $body.processingCompletedAtUtc | Should -BeNullOrEmpty
+            $true
         }
     }
 }

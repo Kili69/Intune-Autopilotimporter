@@ -7,7 +7,7 @@ import {
 } from '@azure/msal-browser';
 import { AutopilotDevice, parseAutopilotCsv } from './csv';
 import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from './api';
-import { getHistoryStatus, getImportError, getImportTimeline, ImportTimelineRecord } from './import-status';
+import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, ImportTimelineRecord } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
 import { applyCompletedTagChanges, type CompletedTagChange } from './tag-changes';
@@ -39,7 +39,7 @@ interface ImportResult {
   serialNumber: string;
   operationId?: string;
   operationType: 'import' | 'tagChange';
-  status: 'ready' | 'sending' | 'pending' | 'complete' | 'error';
+  status: 'ready' | 'sending' | 'pending' | 'processing' | 'complete' | 'error';
   detail?: string;
   deviceId?: string;
   previousGroupTag?: string;
@@ -92,7 +92,7 @@ const translations = {
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
     importStatus: 'Verarbeitungsstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', operationId: 'Vorgangs-ID', status: 'Status', details: 'Details',
     historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
-    footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', author: 'Autor: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
+    footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', author: 'Autor: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusProcessing: 'In Bearbeitung', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
     device: 'Gerät', devices: 'Geräte', checked: 'geprüft', tagsLoadFailed: 'Tags konnten nicht geladen werden.', csvValidationFailed: 'CSV konnte nicht validiert werden.',
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
@@ -117,7 +117,7 @@ const translations = {
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
-    footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusComplete: 'Complete', statusError: 'Error',
+    footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusProcessing: 'Processing', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
     device: 'device', devices: 'devices', checked: 'validated', tagsLoadFailed: 'Tags could not be loaded.', csvValidationFailed: 'The CSV could not be validated.',
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
@@ -301,7 +301,7 @@ app.innerHTML = `
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>${t('lastUpdated')}</th><th>${t('serialNumber')}</th><th>${t('status')}</th><th>${t('requestedBy')}</th></tr></thead>
+              <thead><tr><th>${t('lastUpdated')}</th><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('requestedBy')}</th></tr></thead>
               <tbody id="history-body"></tbody>
             </table>
           </div>
@@ -465,7 +465,7 @@ function updateResults(): void {
       ? 'status-error'
       : result.status === 'complete'
         ? 'status-complete'
-        : 'status-pending';
+        : result.status === 'processing' ? 'status-processing' : 'status-pending';
     for (const value of [result.serialNumber, result.operationId ?? '—']) {
       const cell = document.createElement('td');
       cell.textContent = value;
@@ -475,7 +475,8 @@ function updateResults(): void {
     const badge = document.createElement('span');
     badge.className = `status ${statusClass}`;
     const statusKeys: Record<ImportResult['status'], TranslationKey> = {
-      ready: 'statusReady', sending: 'statusSending', pending: 'statusPending', complete: 'statusComplete', error: 'statusError',
+      ready: 'statusReady', sending: 'statusSending', pending: 'statusPending', processing: 'statusProcessing',
+      complete: 'statusComplete', error: 'statusError',
     };
     badge.textContent = t(statusKeys[result.status]);
     statusCell.append(badge);
@@ -590,6 +591,11 @@ function renderHistory(records: ImportHistoryRecord[]): void {
     const serialCell = document.createElement('td');
     serialCell.textContent = record.serialNumber ?? '—';
     row.append(serialCell);
+
+    const operationCell = document.createElement('td');
+    operationCell.className = 'operation-id';
+    operationCell.textContent = record.importId ?? '—';
+    row.append(operationCell);
 
     const statusCell = document.createElement('td');
     const statusBadge = document.createElement('span');
@@ -956,6 +962,10 @@ async function changeExistingDeviceTag(
   updateResults();
 }
 
+function isActiveResult(item: ImportResult): boolean {
+  return item.status === 'pending' || item.status === 'processing';
+}
+
 function completedTagChanges(): CompletedTagChange[] {
   return results.flatMap((item) => (
     item.operationType === 'tagChange' && item.status === 'complete' &&
@@ -966,15 +976,16 @@ function completedTagChanges(): CompletedTagChange[] {
 }
 
 async function pollResults(): Promise<void> {
-  const pending = results.filter((item) => item.operationId && item.status === 'pending');
+  const pending = results.filter((item) => item.operationId && isActiveResult(item));
   await Promise.all(pending.map(async (item) => {
     try {
       const statusUrl = item.operationType === 'import'
         ? `${config.importUrl}?importId=${encodeURIComponent(item.operationId ?? '')}`
         : `${config.deviceTagAssignmentsUrl}?operationId=${encodeURIComponent(item.operationId ?? '')}`;
-      const status = await apiRequest<{
+      const status = await apiRequest<ImportTimelineRecord & {
         workflowStatus: string;
         status: string;
+        processingStage?: string;
         deviceErrorName?: string;
         deviceErrorCode?: number;
         processingError?: string | null;
@@ -986,7 +997,9 @@ async function pollResults(): Promise<void> {
         item.status = 'error';
         item.detail = getImportError(status, language) ?? status.processingError ?? status.status;
       } else {
-        item.detail = status.status;
+        const progress = getOperationProgress(status, language);
+        item.status = progress.state;
+        item.detail = progress.detail;
       }
     } catch (error) {
       item.detail = error instanceof Error ? error.message : t('statusFailed');
@@ -1004,10 +1017,7 @@ async function pollResults(): Promise<void> {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     pollTimer = undefined;
     processing = false;
-    const refreshes: Promise<void>[] = [];
-    if (results.some((item) => item.operationType === 'import')) {
-      refreshes.push(loadImportHistory());
-    }
+    const refreshes: Promise<void>[] = [loadImportHistory()];
     if (results.some((item) => item.operationType === 'tagChange')) {
       refreshes.push(loadExistingDevices());
     }
@@ -1114,7 +1124,7 @@ importButton.addEventListener('click', async () => {
   };
   await Promise.all(Array.from({ length: Math.min(3, devices.length) }, worker));
   await pollResults();
-  if (results.some((item) => item.status === 'pending')) {
+  if (results.some(isActiveResult)) {
     pollTimer = window.setInterval(() => void pollResults(), 15_000);
   }
   updateImportButton();
@@ -1149,8 +1159,11 @@ tagChangeButton.addEventListener('click', async () => {
     Array.from({ length: Math.min(3, selectedDevices.length) }, worker),
   );
   await pollResults();
-  if (results.some((item) => item.status === 'pending')) {
-    pollTimer = window.setInterval(() => void pollResults(), 15_000);
+  if (results.some(isActiveResult)) {
+    // Tag changes finish within seconds once the queue worker starts; poll
+    // more often so intermediate steps become visible.
+    pollTimer = window.setInterval(() => void pollResults(), 5_000);
+    void loadImportHistory().catch(() => undefined);
   }
   updateTagChangeButton();
 });

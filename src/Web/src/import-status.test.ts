@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getHistoryStatus, getImportError, getImportTimeline } from './import-status';
+import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress } from './import-status';
 import { ApiRequestError, canManageTagPolicies } from './api';
 
 describe('Detailed operation timeline', () => {
@@ -59,6 +59,24 @@ describe('Detailed operation timeline', () => {
   });
   it('does not show any steps without recorded evidence', () => {
     expect(getImportTimeline({}, 'en')).toEqual([]);
+  });
+});
+
+describe('Live operation progress', () => {
+  const at = (second: number): string => `2026-10-19T11:37:${String(second).padStart(2, '0')}Z`;
+  it('reports queued tag changes as pending', () => {
+    expect(getOperationProgress({
+      operationType: 'tagChange', processingStage: 'queued', requestReceivedAtUtc: at(0), queuedAtUtc: at(0),
+    }, 'en')).toEqual({ state: 'pending', detail: 'Entra configuration queued' });
+  });
+  it('reports the newest recorded worker step while processing', () => {
+    expect(getOperationProgress({
+      operationType: 'tagChange', processingStage: 'processing', requestReceivedAtUtc: at(0), queuedAtUtc: at(0),
+      processingStartedAtUtc: at(17), autopilotGroupTagUpdatedAtUtc: at(18), extensionAttributeUpdatedAtUtc: at(19),
+    }, 'de')).toEqual({ state: 'processing', detail: 'Extension Attributes gesetzt' });
+  });
+  it('falls back to the service status without step timestamps', () => {
+    expect(getOperationProgress({ status: 'pending' }, 'en')).toEqual({ state: 'pending', detail: 'pending' });
   });
 });
 

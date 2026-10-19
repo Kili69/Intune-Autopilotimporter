@@ -466,7 +466,7 @@ devices or accepting a new Group Tag. Only Autopilot devices with an
 | --- | --- | --- |
 | `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `groups`, and `administrativeUnits`. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
 | `POST /api/devices/tags/assignments` | JSON `{ "deviceId": "<GUID>", "groupTag": "<authorized-tag>" }` | `202` with `operationId`, `serialNumber`, `groupTag`, `status: "queued"`, and `correlationId`. |
-| `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `status`, `workflowStatus`, and `correlationId`. |
+| `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `previousGroupTag`, `status`, `workflowStatus`, `processingStage` (`queued`, `processing`, `complete`, `error`), `processingError`, `processingErrorStep`, the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 
 The POST operation validates the device state, verifies that the requested tag
 is authorized for the caller, records an audit entry, and queues the

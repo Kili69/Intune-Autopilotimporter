@@ -6,15 +6,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261019.4] - 2026-10-19
+## [1.4.20261019.5] - 2026-10-19
 
 ### Fixed
 
 - Re-tagging devices in restricted management administrative units no longer reports success when Microsoft Graph denies the extension attribute update. The queue worker stops on HTTP errors, records the failed step, Graph error and attempt, and import history, tag-change status, the web timeline and `Get-AutoPilotImportHistory` show the error until a later retry succeeds.
 - The re-tagging device list (web UI and `GET /api/devices/tags/assignments`) now shows the new Group Tag immediately after a successful change instead of the previous tag that Intune keeps reporting for a short propagation delay.
+- Import history and tag-change status timestamps are returned as ISO 8601 UTC, so the web UI no longer shows them shifted by the local time-zone offset.
 
 ### Added
 
+- Live re-tagging progress: the tag-change status endpoint returns `processingStage`, `previousGroupTag`, `processingAttempt` and the worker step timestamps, and the web UI refreshes every 5 seconds showing **Processing** with the latest step.
+- The web Import History shows an **Operation ID** column and reloads when re-tagging starts and finishes.
 - `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1` create the custom Entra role `Autopilot Import Device Attribute Writer` (device read and extension attribute sets 1-3 update) and assign it to the Function managed identity scoped to restricted administrative units used by rules; built-in AU-scopable roles such as Cloud Device Administrator cannot update extension attributes, with `-RestrictedAdministrativeUnitName` and `-SkipAdministrativeUnitRole`, through the new `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
 
 ### Changed

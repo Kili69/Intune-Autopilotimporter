@@ -159,3 +159,15 @@ export function getHistoryStatus(record: ImportStatus): 'pending' | 'complete' |
   if (getImportError(record) || normalized === 'error' || normalized === 'failed' || isProcessingFailed(record)) return 'error';
   return record.processingCompletedAtUtc ? 'complete' : 'pending';
 }
+
+// Summarizes an unfinished operation for live status polling: the worker has
+// started once processingStartedAtUtc is recorded, and the newest recorded
+// step describes the current progress.
+export function getOperationProgress(
+  record: ImportTimelineRecord & { processingStage?: string; status?: string },
+  language: 'de' | 'en',
+): { state: 'pending' | 'processing'; detail?: string } {
+  const state = record.processingStage === 'processing' || record.processingStartedAtUtc ? 'processing' : 'pending';
+  const steps = getImportTimeline(record, language);
+  return { state, detail: steps[steps.length - 1]?.title ?? record.status };
+}

@@ -320,7 +320,11 @@ or policy scope.
 Devices with an empty current Group Tag or a tag different from the authorized
 target tag can be selected. Devices that already use the selected target tag
 are not submitted. The frontend processes up to three selected devices in
-parallel and refreshes pending operations every 15 seconds.
+parallel and refreshes running Group Tag changes every 5 seconds. While the
+queue worker processes a change, the result shows **Processing** with the most
+recent recorded step, such as the applied Group Tag or extension attributes.
+After all changes finish, Import History is reloaded; its **Operation ID**
+column matches the `operationId` returned by the API.
 
 ### Change Group Tags with the PowerShell Module
 
@@ -426,6 +430,16 @@ do {
 
 The service validates the target Group Tag and device eligibility for every
 request. Submit one POST request per device.
+
+While `workflowStatus` is `pending`, `processingStage` distinguishes `queued`
+from `processing` (the queue worker has started). The response also contains
+`previousGroupTag`, `processingAttempt` and the step timestamps
+`requestReceivedAtUtc`, `queuedAtUtc`, `processingStartedAtUtc`,
+`autopilotGroupTagUpdatedAtUtc`, `entraDeviceResolvedAtUtc`,
+`extensionAttributeUpdatedAtUtc`, `deviceGroupsUpdatedAtUtc`,
+`administrativeUnitAssignedAtUtc`, `processingErrorAtUtc` and
+`processingCompletedAtUtc` as ISO 8601 UTC strings (`null` until recorded).
+Only the user who submitted the change can read its status.
 
 ### Re-Tagging Workflow
 
@@ -1611,7 +1625,9 @@ Content-Type: application/json
 ```
 
 `top` is optional, defaults to `100`, and must be between `1` and `1000`. Only
-records from the last 30 days are returned. The response intentionally excludes
+records from the last 30 days are returned. All `*AtUtc` timestamps are ISO
+8601 UTC strings. For Group Tag changes, `importId` is the `operationId`
+returned by the tag assignment API. The response intentionally excludes
 raw DeviceHashes, their indexes, and product keys:
 
 ```json

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.4
+# Project-Version: 1.4.20261019.5
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -56,9 +56,11 @@ include correlationId, with the same value in X-Correlation-Id, and
 Cache-Control no-store.
 
 HTTP 200, device list: devices array and count.
-HTTP 200, operation status: operationId, serialNumber, groupTag, status and
-workflowStatus (pending, complete or error). Error responses also include
-processingError and processingErrorStep from the queue worker.
+HTTP 200, operation status: operationId, serialNumber, groupTag,
+previousGroupTag, status and workflowStatus (pending, complete or error),
+processingStage (queued, processing, complete or error) and the ISO 8601 UTC
+step timestamps recorded so far (null when not reached). Error responses also
+include processingError and processingErrorStep from the queue worker.
 HTTP 202, queued change: operationId, serialNumber, groupTag and status queued.
 Successful POST also writes a JSON message to DeviceAttributeUpdate.
 
@@ -419,16 +421,35 @@ if ([string] $Request.Method -eq 'GET' -and
         else {
             'pending'
         }
-        Send-JsonResponse -StatusCode OK -Body @{
+        $processingStage = Get-TagChangeProcessingStage -AuditRecord $record
+        $statusBody = [ordered]@{
             operationId   = $operationId
             serialNumber  = [string] $record.serialNumber
             groupTag      = [string] $record.groupTag
+            previousGroupTag = [string] $record.previousGroupTag
             status        = $workflowStatus
             workflowStatus = $workflowStatus
+            processingStage = $processingStage
             processingError = if ($processingFailed) { [string] $record.processingError } else { $null }
             processingErrorStep = if ($processingFailed) { [string] $record.processingErrorStep } else { $null }
             correlationId = $correlationId
         }
+        # Expose the worker's step timestamps so clients can show progress
+        # between queuing and completion.
+        foreach ($name in @(
+                'requestReceivedAtUtc', 'queuedAtUtc', 'processingStartedAtUtc',
+                'autopilotGroupTagUpdatedAtUtc', 'entraDeviceResolvedAtUtc',
+                'extensionAttributeUpdatedAtUtc', 'deviceGroupsUpdatedAtUtc',
+                'administrativeUnitAssignedAtUtc', 'processingErrorAtUtc',
+                'processingCompletedAtUtc'
+            )) {
+            $statusBody[$name] = if ($record.PSObject.Properties[$name]) {
+                ConvertTo-AuditTimestamp $record.$name
+            } else { $null }
+        }
+        $statusBody['processingAttempt'] = if ($record.PSObject.Properties['processingAttempt'] -and
+            $record.processingAttempt) { [int] $record.processingAttempt } else { $null }
+        Send-JsonResponse -StatusCode OK -Body $statusBody
     }
     catch {
         Write-Error "[$correlationId] Tag change status lookup failed: $($_.Exception.Message)"
