@@ -925,7 +925,7 @@ async function importDevice(index: number, groupTag: string): Promise<void> {
       operationId: response.importId,
       operationType: 'import',
       status: 'pending',
-      detail: response.status,
+      detail: getOperationProgress({ operationType: 'import', status: response.status }, language).detail,
     };
   } catch (error) {
     results[index] = {
@@ -962,7 +962,7 @@ async function changeExistingDeviceTag(
       operationId: response.operationId,
       operationType: 'tagChange',
       status: 'pending',
-      detail: response.status,
+      detail: getOperationProgress({ operationType: 'tagChange', status: response.status }, language).detail,
       deviceId: device.id,
       previousGroupTag: device.groupTag,
       groupTag,
@@ -1016,7 +1016,7 @@ async function pollResults(): Promise<void> {
         item.detail = getImportError(status, language) ?? status.processingError ?? status.status;
         newlyFinished = true;
       } else {
-        const progress = getOperationProgress(status, language);
+        const progress = getOperationProgress({ ...status, operationType: item.operationType }, language);
         item.status = progress.state;
         item.detail = progress.detail;
       }

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.6
+# Project-Version: 1.4.20261019.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -1205,6 +1205,32 @@ Describe 'Named policy import status' {
         & $handler -Request $request -TagPolicyBlob $policy
         Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
             ($Value.Body | ConvertFrom-Json).workflowStatus -eq 'pending'
+        }
+    }
+    It 'reports the processing stage and step timestamps of a pending import' {
+        Mock Get-ImportAuditRecords {
+            @{ $id = [pscustomobject]@{
+                graphImportCreatedAtUtc = '2026-10-19T13:50:00Z'; queuedAtUtc = '2026-10-19T13:50:01Z'
+                processingStartedAtUtc = '2026-10-19T13:51:00Z'; processingAttempt = 2
+            } }
+        }
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $body = $Value.Body | ConvertFrom-Json -DateKind String
+            $body.workflowStatus | Should -Be 'pending'
+            $body.processingStage | Should -Be 'processing'
+            $body.processingStartedAtUtc | Should -Be '2026-10-19T13:51:00.0000000Z'
+            $body.processingCompletedAtUtc | Should -BeNullOrEmpty
+            $body.processingAttempt | Should -Be 2
+            $true
+        }
+    }
+    It 'still reports import status without a Group Tag action when the audit store is unavailable' {
+        Mock Get-DevicePolicyActions { [pscustomobject]@{ extensionAttributes = $expectedAttributes } }
+        Mock Get-ImportAuditRecords { throw 'Storage unavailable' }
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).workflowStatus -eq 'complete'
         }
     }
 }

@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261019.6] - 2026-10-19
+## [1.4.20261019.7] - 2026-10-19
 
 ### Fixed
 
@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Live re-tagging progress: the tag-change status endpoint returns `processingStage`, `previousGroupTag`, `processingAttempt` and the worker step timestamps, and the web UI refreshes every 5 seconds showing **Processing** with the latest step.
+- Live re-tagging and import progress: the tag-change and import status endpoints return `processingStage`, `processingAttempt` and the worker step timestamps, and the web UI shows **Processing** with the latest step and what the operation is waiting for instead of the raw Graph import state (tag changes refresh every 5 seconds).
 - The web Import History shows an **Operation ID** column and reloads when re-tagging starts and whenever an operation finishes. The live processing status list keeps only running operations; finished rows move to Import History and the list hides when empty.
 - `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1` create the custom Entra role `Autopilot Import Device Attribute Writer` (device read and extension attribute sets 1-3 update) and assign it to the Function managed identity scoped to restricted administrative units used by rules; built-in AU-scopable roles such as Cloud Device Administrator cannot update extension attributes, with `-RestrictedAdministrativeUnitName` and `-SkipAdministrativeUnitRole`, through the new `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
 

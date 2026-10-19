@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.6
+# Project-Version: 1.4.20261019.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -197,6 +197,7 @@ if ([string] $Request.Method -eq 'GET') {
         $extensionAttributeValue = $null
         $entraDeviceId = $null
         $processingFailure = $null
+        $audit = $null
         # Legacy policies map the tag to one configured extension attribute.
         # Explicit policy actions can replace that expectation with several
         # attribute/value pairs, all of which must match on the Entra device.
@@ -272,6 +273,16 @@ if ([string] $Request.Method -eq 'GET') {
                 $processingFailure = $audit
             }
         }
+        else {
+            # Without a Group Tag action the audit record only adds progress
+            # details, so an unavailable audit store must not fail the poll.
+            try {
+                $audit = (Get-ImportAuditRecords -ImportId $parsedImportId -AccessToken (Get-ImportAuditAccessToken))[[string] $parsedImportId]
+            }
+            catch {
+                Write-Information "[$correlationId] Import progress details are unavailable for '$parsedImportId': $($_.Exception.Message)"
+            }
+        }
     }
     catch [System.UnauthorizedAccessException] {
         # Distinguish a definitive authorization denial from an unavailable
@@ -303,7 +314,7 @@ if ([string] $Request.Method -eq 'GET') {
     else {
         'pending'
     }
-    Send-JsonResponse -StatusCode OK -Body @{
+    $statusBody = [ordered]@{
         importId                = $graphResponse.id
         serialNumber            = $graphResponse.serialNumber
         groupTag                = $authorizedGroupTag
@@ -318,8 +329,25 @@ if ([string] $Request.Method -eq 'GET') {
         entraDeviceId           = $entraDeviceId
         processingError         = if ($processingFailure) { [string] $processingFailure.processingError } else { $null }
         processingErrorStep     = if ($processingFailure) { [string] $processingFailure.processingErrorStep } else { $null }
+        processingStage         = if ($audit) { Get-TagChangeProcessingStage -AuditRecord $audit } else { $null }
         correlationId           = $correlationId
     }
+    # Step timestamps let clients show which stage a pending import is in.
+    foreach ($name in @(
+            'requestReceivedAtUtc', 'graphImportCreatedAtUtc', 'queuedAtUtc',
+            'processingStartedAtUtc', 'graphImportCompletedAtUtc',
+            'autopilotGroupTagUpdatedAtUtc', 'entraDeviceResolvedAtUtc',
+            'extensionAttributeUpdatedAtUtc', 'deviceGroupsUpdatedAtUtc',
+            'administrativeUnitAssignedAtUtc', 'processingErrorAtUtc',
+            'processingCompletedAtUtc'
+        )) {
+        $statusBody[$name] = if ($audit -and $audit.PSObject.Properties[$name]) {
+            ConvertTo-AuditTimestamp $audit.$name
+        } else { $null }
+    }
+    $statusBody['processingAttempt'] = if ($audit -and $audit.PSObject.Properties['processingAttempt'] -and
+        $audit.processingAttempt) { [int] $audit.processingAttempt } else { $null }
+    Send-JsonResponse -StatusCode OK -Body $statusBody
     return
 }
 

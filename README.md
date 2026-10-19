@@ -119,6 +119,11 @@ The frontend performs the first status request immediately after submission.
 While at least one device is pending, it refreshes the status every 15 seconds.
 Polling stops when every device has reached `complete` or `error`. Temporary
 status-request errors are displayed and retried during the next polling cycle.
+While a device is pending, **Details** shows the latest recorded step and what
+the operation is waiting for, for example the Autopilot import of the device
+hash, the start of background processing, or the Entra device (with the retry
+attempt). The Graph import state alone is not shown, because Autopilot reports
+`complete` before the Entra configuration has run.
 
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The

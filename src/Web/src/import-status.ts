@@ -160,16 +160,34 @@ export function getHistoryStatus(record: ImportStatus): 'pending' | 'complete' |
   return record.processingCompletedAtUtc ? 'complete' : 'pending';
 }
 
-// Summarizes an unfinished operation for live status polling: the worker has
-// started once processingStartedAtUtc is recorded, and the newest recorded
-// step describes the current progress.
+// Summarizes an unfinished operation for live status polling: the newest
+// recorded step plus what the operation is currently waiting for. For imports
+// `status` is the Graph import state, which completes before the Entra and
+// queue stages and therefore must not be shown on its own.
 export function getOperationProgress(
-  record: ImportTimelineRecord & { processingStage?: string; status?: string },
+  record: ImportTimelineRecord & { processingStage?: string | null; status?: string },
   language: 'de' | 'en',
 ): { state: 'pending' | 'processing'; detail?: string } {
+  const text = (german: string, english: string): string => language === 'de' ? german : english;
   const state = record.processingStage === 'processing' || record.processingStartedAtUtc ? 'processing' : 'pending';
+  const graphStatus = record.status?.toLowerCase();
+  let waiting: string;
+  if (record.operationType !== 'tagChange' && !record.graphImportCompletedAtUtc &&
+    graphStatus !== 'complete') {
+    waiting = text('Wartet auf den Autopilot-Import des Device Hash', 'Waiting for Autopilot to import the device hash');
+  } else if (!record.processingStartedAtUtc) {
+    waiting = text('Wartet auf den Start der Hintergrundverarbeitung', 'Waiting for background processing to start');
+  } else if (!record.entraDeviceResolvedAtUtc) {
+    waiting = text('Wartet auf das Entra-Gerät', 'Waiting for the Entra device');
+  } else {
+    waiting = text('Entra-Konfiguration wird angewendet', 'Applying Entra configuration');
+  }
+  if (record.processingAttempt && record.processingAttempt > 1) {
+    waiting += ` (${text('Versuch', 'attempt')} ${record.processingAttempt})`;
+  }
   const steps = getImportTimeline(record, language);
-  return { state, detail: steps[steps.length - 1]?.title ?? record.status };
+  const last = steps[steps.length - 1]?.title;
+  return { state, detail: last ? `${last} · ${waiting}` : waiting };
 }
 
 // Finished operations leave the live status list once Import History lists

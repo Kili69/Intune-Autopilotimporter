@@ -437,7 +437,7 @@ asynchronously.
 | Method | Request | Result |
 | --- | --- | --- |
 | `POST /api/devices/import` | JSON `{ "serialNumber": "<serial>", "hardwareIdentifier": "<Base64-hash>", "groupTag": "<requested-tag>" }` | `202` with `importId`, `serialNumber`, `groupTag`, `status`, and `correlationId`. |
-| `GET /api/devices/import?importId=<GUID>` | Authenticated request | `200` with `importId`, `serialNumber`, `groupTag`, `status`, `workflowStatus`, `deviceErrorCode`, `deviceErrorName`, `extensionAttributeName`, `extensionAttributeStatus`, `extensionAttributeValue`, `entraDeviceId`, and `correlationId`. |
+| `GET /api/devices/import?importId=<GUID>` | Authenticated request | `200` with `importId`, `serialNumber`, `groupTag`, `status` (Graph import state only), `workflowStatus`, `deviceErrorCode`, `deviceErrorName`, `extensionAttributeName`, `extensionAttributeStatus`, `extensionAttributeValue`, `entraDeviceId`, `processingStage` (`queued`, `processing`, `complete`, `error` or `null` without an audit record), the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 
 `ConvertTo-AutoPilotImportPayload` validates the required fields, the size
 limits, and the Base64 encoding before the Graph request is created. The
