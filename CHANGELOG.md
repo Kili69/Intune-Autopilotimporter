@@ -6,11 +6,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261019.3] - 2026-10-19
+## [1.4.20261019.4] - 2026-10-19
 
 ### Fixed
 
 - Re-tagging devices in restricted management administrative units no longer reports success when Microsoft Graph denies the extension attribute update. The queue worker stops on HTTP errors, records the failed step, Graph error and attempt, and import history, tag-change status, the web timeline and `Get-AutoPilotImportHistory` show the error until a later retry succeeds.
+- The re-tagging device list (web UI and `GET /api/devices/tags/assignments`) now shows the new Group Tag immediately after a successful change instead of the previous tag that Intune keeps reporting for a short propagation delay.
 
 ### Added
 

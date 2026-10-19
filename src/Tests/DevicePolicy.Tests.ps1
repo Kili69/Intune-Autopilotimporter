@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.3
+# Project-Version: 1.4.20261019.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -999,6 +999,84 @@ Describe 'Empty policy authorization' {
         & (Join-Path $PSScriptRoot '..\FunctionApp\GetAuthorizedTags\run.ps1') -Request $request -TagPolicyBlob ''
         Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
             $Value.StatusCode -eq $Status -and ($Value.Body | ConvertFrom-Json).error -eq $ExpectedError
+        }
+    }
+}
+
+Describe 'Recently completed tag changes in the device list' {
+    BeforeAll {
+        Import-Module Az.Accounts
+        function Push-OutputBinding { param($Name, $Value) }
+        $deviceId = 'cd1f0bdf-4229-4328-9658-9f0d91614b74'
+        $now = [datetimeoffset]::UtcNow
+        $completed = [pscustomobject]@{
+            operationType = 'tagChange'; registeredDeviceId = $deviceId.ToUpperInvariant()
+            previousGroupTag = 'PAW'; groupTag = 'VIP'
+            processingCompletedAtUtc = $now.AddMinutes(-1).ToString('o')
+        }
+    }
+    It 'reports the confirmed destination tag while Autopilot still returns the previous tag' {
+        $devices = @(
+            [pscustomobject]@{ id = $deviceId; groupTag = 'paw' }
+            [pscustomobject]@{ id = 'other'; groupTag = 'PAW' }
+        )
+        $result = @(Resolve-RecentTagChangeGroupTag -Device $devices -AuditRecord @($completed) -CompletedAfterUtc $now.AddMinutes(-60))
+        $result.groupTag | Should -Be @('VIP', 'PAW')
+    }
+    It 'ignores <Name>' -ForEach @(
+        @{ Name = 'failed changes'; Change = @{ processingFailedAtUtc = '9999-12-31T00:00:00.0000000Z' } }
+        @{ Name = 'incomplete changes'; Change = @{ processingCompletedAtUtc = '' } }
+        @{ Name = 'old completions'; Change = @{ processingCompletedAtUtc = [datetimeoffset]::UtcNow.AddHours(-2).ToString('o') } }
+        @{ Name = 'other operation types'; Change = @{ operationType = 'import' } }
+        @{ Name = 'devices whose tag changed independently'; Change = @{ previousGroupTag = 'Sales' } }
+    ) {
+        $record = $completed.PSObject.Copy()
+        foreach ($entry in $Change.GetEnumerator()) {
+            $record | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value -Force
+        }
+        $device = [pscustomobject]@{ id = $deviceId; groupTag = 'PAW' }
+        (Resolve-RecentTagChangeGroupTag -Device @($device) -AuditRecord @($record) -CompletedAfterUtc $now.AddMinutes(-60)).groupTag |
+            Should -Be 'PAW'
+    }
+    It 'uses the newest completed change for a device' {
+        $older = $completed.PSObject.Copy()
+        $older.groupTag = 'BG-Default'
+        $older.processingCompletedAtUtc = $now.AddMinutes(-5).ToString('o')
+        $device = [pscustomobject]@{ id = $deviceId; groupTag = 'PAW' }
+        (Resolve-RecentTagChangeGroupTag -Device @($device) -AuditRecord @($completed, $older) -CompletedAfterUtc $now.AddMinutes(-60)).groupTag |
+            Should -Be 'VIP'
+    }
+    Context 'device list endpoint' {
+        BeforeEach {
+            $request = @{ Method = 'GET'; Headers = @{ 'x-ms-client-principal' = 'mock' }; Query = @{} }
+            Mock Import-Module {}
+            Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
+            Mock ConvertFrom-ClientPrincipalHeader { [pscustomobject]@{ claims = @() } }
+            Mock Get-CurrentPolicyPrincipal { $Principal }
+            Mock Get-AuthorizedGroupTags { @('PAW', 'VIP') }
+            Mock Get-ImportAuditAccessToken { ConvertTo-SecureString 'storage' -AsPlainText -Force }
+            Mock Invoke-RestMethod {
+                [pscustomobject]@{ value = @([pscustomobject]@{
+                    id = $deviceId; serialNumber = 'SN1'; groupTag = 'PAW'; enrollmentState = 'notContacted'
+                }) }
+            }
+            Mock Push-OutputBinding {}
+            Mock Write-Warning {}
+        }
+        It 'overlays recent completed tag changes from the audit history' {
+            Mock Get-ImportAuditHistory { @($completed) }
+            & (Join-Path $PSScriptRoot '..\FunctionApp\ManageDeviceTags\run.ps1') -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["PAW"]}]'
+            Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).devices[0].groupTag -eq 'VIP'
+            }
+        }
+        It 'still lists Autopilot tags when the audit history is unavailable' {
+            Mock Get-ImportAuditHistory { throw 'Storage unavailable' }
+            & (Join-Path $PSScriptRoot '..\FunctionApp\ManageDeviceTags\run.ps1') -Request $request -TagPolicyBlob '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["PAW"]}]'
+            Should -Invoke Push-OutputBinding -Times 1 -ParameterFilter {
+                $Value.StatusCode -eq 200 -and ($Value.Body | ConvertFrom-Json).devices[0].groupTag -eq 'PAW'
+            }
+            Should -Invoke Write-Warning -Times 1
         }
     }
 }

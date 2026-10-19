@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.3
+# Project-Version: 1.4.20261019.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -818,6 +818,87 @@ function Get-ImportAuditHistory {
         }
         $recordedAt
     } -Descending | Select-Object -First $Top)
+}
+
+function Resolve-RecentTagChangeGroupTag {
+    <#
+    .SYNOPSIS
+    Applies recently completed tag changes that Autopilot does not yet report.
+
+    .DESCRIPTION
+    Intune updates the windowsAutopilotDeviceIdentities groupTag property
+    asynchronously after updateDeviceProperties succeeds, so a device list
+    read shortly after a completed change can still show the previous tag.
+    For each device, selects the newest successfully completed tagChange audit
+    record for its registered Autopilot ID with processingCompletedAtUtc at or
+    after CompletedAfterUtc. When the device still reports that record's
+    previousGroupTag, the destination groupTag is returned instead. A device
+    reporting any other tag is left unchanged, so later external changes win.
+
+    .PARAMETER Device
+    Device-list entries with id (registered Autopilot ID) and groupTag.
+
+    .PARAMETER AuditRecord
+    Raw audit entities. Non-tagChange, failed and incomplete records are ignored.
+
+    .PARAMETER CompletedAfterUtc
+    Oldest completion instant for which Autopilot propagation lag is assumed.
+
+    .OUTPUTS
+    The supplied device objects in input order; groupTag is updated in place.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [object[]] $Device = @(),
+
+        [AllowEmptyCollection()]
+        [object[]] $AuditRecord = @(),
+
+        [Parameter(Mandatory)]
+        [datetimeoffset] $CompletedAfterUtc
+    )
+
+    $latestByDevice = @{}
+    foreach ($record in @($AuditRecord)) {
+        if (-not $record -or [string] $record.operationType -ne 'tagChange' -or
+            [string]::IsNullOrWhiteSpace([string] $record.registeredDeviceId) -or
+            [string]::IsNullOrWhiteSpace([string] $record.processingCompletedAtUtc) -or
+            (Test-ProcessingFailed -AuditRecord $record)) {
+            continue
+        }
+        $completedAt = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse(
+                [string] $record.processingCompletedAtUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::AssumeUniversal,
+                [ref] $completedAt) -or $completedAt -lt $CompletedAfterUtc) {
+            continue
+        }
+        $key = ([string] $record.registeredDeviceId).ToLowerInvariant()
+        if (-not $latestByDevice.ContainsKey($key) -or
+            $latestByDevice[$key].CompletedAt -lt $completedAt) {
+            $latestByDevice[$key] = [pscustomobject]@{
+                CompletedAt = $completedAt
+                Record      = $record
+            }
+        }
+    }
+
+    foreach ($item in @($Device)) {
+        if (-not $item) {
+            continue
+        }
+        $key = ([string] $item.id).ToLowerInvariant()
+        if ($latestByDevice.ContainsKey($key)) {
+            $record = $latestByDevice[$key].Record
+            if ([string] $item.groupTag -ieq [string] $record.previousGroupTag -and
+                [string] $item.groupTag -ine [string] $record.groupTag) {
+                $item.groupTag = [string] $record.groupTag
+            }
+        }
+        $item
+    }
 }
 
 function Remove-ExpiredImportAuditRecords {
@@ -3084,6 +3165,7 @@ Export-ModuleMember -Function @(
     'Get-ImportAuditRecords',
     'Get-ImportAuditRetentionCutoffUtc',
     'Get-ImportAuditHistory',
+    'Resolve-RecentTagChangeGroupTag',
     'Remove-ExpiredImportAuditRecords',
     'Write-ManagementAuditEvent',
     'Get-TagPolicyRuleId',

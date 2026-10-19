@@ -10,6 +10,7 @@ import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from '.
 import { getHistoryStatus, getImportError, getImportTimeline, ImportTimelineRecord } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
+import { applyCompletedTagChanges, type CompletedTagChange } from './tag-changes';
 import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
 import type { ManagementHistory } from './management-history';
 import './style.css';
@@ -40,6 +41,9 @@ interface ImportResult {
   operationType: 'import' | 'tagChange';
   status: 'ready' | 'sending' | 'pending' | 'complete' | 'error';
   detail?: string;
+  deviceId?: string;
+  previousGroupTag?: string;
+  groupTag?: string;
 }
 
 interface ExistingAutopilotDevice {
@@ -745,7 +749,7 @@ async function loadExistingDevices(): Promise<void> {
     const response = await apiRequest<{ devices?: ExistingAutopilotDevice[] }>(
       config.deviceTagAssignmentsUrl,
     );
-    existingDevices = response.devices ?? [];
+    existingDevices = applyCompletedTagChanges(response.devices ?? [], completedTagChanges());
     renderExistingDevices();
   } finally {
     reloadDevices.disabled = false;
@@ -937,6 +941,9 @@ async function changeExistingDeviceTag(
       operationType: 'tagChange',
       status: 'pending',
       detail: response.status,
+      deviceId: device.id,
+      previousGroupTag: device.groupTag,
+      groupTag,
     };
   } catch (error) {
     results[resultIndex] = {
@@ -947,6 +954,15 @@ async function changeExistingDeviceTag(
     };
   }
   updateResults();
+}
+
+function completedTagChanges(): CompletedTagChange[] {
+  return results.flatMap((item) => (
+    item.operationType === 'tagChange' && item.status === 'complete' &&
+    item.deviceId && item.previousGroupTag !== undefined && item.groupTag
+      ? [{ deviceId: item.deviceId, previousGroupTag: item.previousGroupTag, groupTag: item.groupTag }]
+      : []
+  ));
 }
 
 async function pollResults(): Promise<void> {
@@ -977,6 +993,13 @@ async function pollResults(): Promise<void> {
     }
   }));
   updateResults();
+  if (completedTagChanges().length > 0) {
+    const updatedDevices = applyCompletedTagChanges(existingDevices, completedTagChanges());
+    if (updatedDevices.some((device, index) => device !== existingDevices[index])) {
+      existingDevices = updatedDevices;
+      renderExistingDevices();
+    }
+  }
   if (results.every((item) => item.status === 'complete' || item.status === 'error')) {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
     pollTimer = undefined;

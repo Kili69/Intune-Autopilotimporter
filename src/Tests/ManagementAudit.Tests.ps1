@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.3
+# Project-Version: 1.4.20261019.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.3
+# Project-Version: 1.4.20261019.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -12,7 +12,10 @@ GET without operationId returns registered Autopilot devices whose
 enrollmentState is notContacted, provided the caller has at least one
 authorized tag. It does not restrict devices by their current Group Tag.
 Results include device ID, serial number, current tag, and available Entra
-group/administrative-unit display names, sorted by serial number.
+group/administrative-unit display names, sorted by serial number. Because
+Intune reports a changed Autopilot groupTag only after a propagation delay,
+tag changes completed within the last 60 minutes are applied from their
+audit records while Autopilot still returns the previous tag.
 
 POST requires deviceId (registered Autopilot identity GUID) and groupTag in
 the JSON body. The destination tag must be authorized for the caller's current
@@ -497,6 +500,25 @@ if ([string] $Request.Method -eq 'GET') {
                 administrativeUnits = $administrativeUnits
             }
         } | Sort-Object serialNumber)
+        if ($visibleDevices.Count -gt 0) {
+            try {
+                # Autopilot reports a new groupTag only after a propagation
+                # delay. Overlay recently completed changes so the list does
+                # not show the previous tag right after a successful change.
+                $nowUtc = [datetimeoffset]::UtcNow
+                $recentTagChanges = @(Get-ImportAuditHistory `
+                    -SinceUtc $nowUtc.AddHours(-24) `
+                    -Top 1000 `
+                    -AccessToken (Get-ImportAuditAccessToken))
+                $visibleDevices = @(Resolve-RecentTagChangeGroupTag `
+                    -Device $visibleDevices `
+                    -AuditRecord $recentTagChanges `
+                    -CompletedAfterUtc $nowUtc.AddMinutes(-60))
+            }
+            catch {
+                Write-Warning "[$correlationId] Recent tag changes could not be applied to the device list: $($_.Exception.Message)"
+            }
+        }
         Send-JsonResponse -StatusCode OK -Body @{
             devices       = $visibleDevices
             count         = $visibleDevices.Count

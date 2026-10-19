@@ -1348,7 +1348,9 @@ and assign an authorized Group Tag. The same queued post-processing used after i
 the configured Entra extension attribute, removes memberships from other
 administrative units managed by the Tag policy, and adds the target rule's
 administrative unit. Current Entra group and administrative-unit memberships
-are shown for each eligible device.
+are shown for each eligible device. After a successful change the list shows
+the new Group Tag immediately, even while Intune still reports the previous
+tag for a short propagation delay.
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
