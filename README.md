@@ -723,10 +723,17 @@ Members of a restricted management administrative unit (RMAU) can only be
 modified by principals with a role scoped to that unit; tenant-wide Graph
 application permissions are not sufficient. The first import still works
 because the extension attributes are written before the device joins the unit,
-but a later re-tagging fails with HTTP 403. `Install-AutopilotImport.ps1` and
-`Update-AutopilotImport.ps1` therefore read the current rules and assign the
-Function managed identity the **Cloud Device Administrator** role scoped to
-each restricted unit used by a rule. Use `-RestrictedAdministrativeUnitName`
+but a later re-tagging fails with HTTP 403. None of the built-in roles that can
+be scoped to an administrative unit may update device extension attributes
+(Cloud Device Administrator, for example, can only enable, disable and delete
+devices). `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1`
+therefore read the current rules, create or update the custom Entra role
+**Autopilot Import Device Attribute Writer** (device read and
+`extensionAttributeSet1`-`3` update, covering `extensionAttribute1` to
+`extensionAttribute15`) and assign it to the Function managed identity scoped
+to each restricted unit used by a rule. Custom roles require Microsoft Entra ID
+P1, which restricted administrative units already require. Use
+`-RestrictedAdministrativeUnitName`
 for additional units, for example units that contain devices from a removed
 rule, or `-SkipAdministrativeUnitRole` to skip the assignment. The assignment
 requires a Privileged Role Administrator; if it fails, the installer prints a

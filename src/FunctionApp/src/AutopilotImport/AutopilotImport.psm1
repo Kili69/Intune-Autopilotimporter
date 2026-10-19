@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.2
+# Project-Version: 1.4.20261019.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -475,7 +475,7 @@ function Get-ProcessingFailureAudit {
     }
     $message = if ($statusCode) { "HTTP ${statusCode}: $($detail.Trim())" } else { $detail.Trim() }
     if ($statusCode -eq 403 -and $detail -match 'restricted management administrative unit') {
-        $message += ' Assign the Function managed identity the Cloud Device Administrator role scoped to the restricted management administrative unit that contains the device. Install-AutopilotImport.ps1 and Update-AutopilotImport.ps1 assign it automatically for restricted administrative units used by rules; new assignments can take up to 24 hours to reach the managed identity token.'
+        $message += ' Assign the Function managed identity the custom role ''Autopilot Import Device Attribute Writer'' scoped to the restricted management administrative unit that contains the device. Install-AutopilotImport.ps1, Update-AutopilotImport.ps1 and Grant-ManagedIdentityAdministrativeUnitRole.ps1 create and assign it automatically for restricted administrative units used by rules; new assignments can take up to 24 hours to reach the managed identity token.'
     }
     if ($message.Length -gt 2000) {
         $message = $message.Substring(0, 2000)

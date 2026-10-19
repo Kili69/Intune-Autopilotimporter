@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261019.2
+# Project-Version: 1.4.20261019.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -122,12 +122,12 @@ User.ReadBasic.All.
 
 .PARAMETER RestrictedAdministrativeUnitName
 Additional administrative unit names for which the Function managed identity
-receives the Cloud Device Administrator role scoped to the unit when the unit
+receives the custom role 'Autopilot Import Device Attribute Writer' scoped to the unit when the unit
 is a restricted management administrative unit. Administrative units used by
 the current Group Tag rules are detected automatically.
 
 .PARAMETER SkipAdministrativeUnitRole
-Skips the scoped Cloud Device Administrator assignment for restricted
+Skips the scoped custom role assignment for restricted
 management administrative units. Without this role, devices that are already
 members of such a unit cannot be re-tagged.
 

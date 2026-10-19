@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261019.2
+# Project-Version: 1.4.20261019.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -80,7 +80,7 @@ Skips managed identity Microsoft Graph permission assignment.
 
 .PARAMETER RestrictedAdministrativeUnitName
 Additional restricted management administrative units for which the Function
-managed identity receives a scoped Cloud Device Administrator role. Units used
+managed identity receives a scoped custom role 'Autopilot Import Device Attribute Writer'. Units used
 by the current Group Tag rules are detected automatically.
 
 .PARAMETER SkipAdministrativeUnitRole

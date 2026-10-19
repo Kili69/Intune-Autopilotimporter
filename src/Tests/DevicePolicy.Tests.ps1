@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261019.2
+# Project-Version: 1.4.20261019.3
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -452,7 +452,7 @@ Describe 'Processing failure audit helpers' {
         $failure.IsFailed | Should -BeTrue
         $failure.StatusCode | Should -Be 403
         $failure.Properties.processingErrorStep | Should -Be 'extensionAttributes'
-        $failure.Properties.processingError | Should -BeLike 'HTTP 403:*restricted management administrative unit*Cloud Device Administrator*'
+        $failure.Properties.processingError | Should -BeLike 'HTTP 403:*restricted management administrative unit*Autopilot Import Device Attribute Writer*'
         $failure.Properties.processingFailedAtUtc | Should -Not -BeNullOrEmpty
         $failure.Properties.processingAttempt | Should -Be 1
     }
@@ -1069,5 +1069,31 @@ Describe 'Named policy import status' {
         Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
             ($Value.Body | ConvertFrom-Json).workflowStatus -eq 'pending'
         }
+    }
+}
+
+Describe 'Restricted administrative unit role script' {
+    BeforeAll {
+        $grantScriptPath = Join-Path $PSScriptRoot '..\Scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1'
+        $grantScriptText = Get-Content -LiteralPath $grantScriptPath -Raw
+    }
+    It 'parses without errors' {
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($grantScriptPath, [ref] $tokens, [ref] $errors) | Out-Null
+        $errors | Should -BeNullOrEmpty
+    }
+    It 'creates a custom role that can update all extension attribute sets' {
+        foreach ($action in @(
+                'microsoft.directory/devices/standard/read'
+                'microsoft.directory/devices/extensionAttributeSet1/update'
+                'microsoft.directory/devices/extensionAttributeSet2/update'
+                'microsoft.directory/devices/extensionAttributeSet3/update')) {
+            $grantScriptText | Should -Match ([regex]::Escape("'$action'"))
+        }
+        $grantScriptText | Should -Match "RoleDisplayName = 'Autopilot Import Device Attribute Writer'"
+    }
+    It 'does not assign the built-in Cloud Device Administrator role' {
+        $grantScriptText | Should -Not -Match '7698a772-787b-4ac8-901f-60d6b08affd2'
     }
 }

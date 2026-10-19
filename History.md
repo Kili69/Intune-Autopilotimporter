@@ -2,10 +2,10 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261019.2` - 2026-10-19
+## `1.4.20261019.3` - 2026-10-19
 
 - Fix silent re-tagging failures for devices in restricted management administrative units: the queue worker now stops on Graph HTTP errors, audits the failed step, Graph error, status code and attempt with a remediation hint, and no longer records attribute, group or completion success after a failure. Import history, tag-change and import status (`workflowStatus: error`), the web trace/timeline and `Get-AutoPilotImportHistory` expose the failure until a later retry completes.
-- Let the installer and updater assign the Function managed identity a Cloud Device Administrator role scoped to every restricted administrative unit used by rules (plus `-RestrictedAdministrativeUnitName`, skippable with `-SkipAdministrativeUnitRole`) through the packaged `Grant-ManagedIdentityAdministrativeUnitRole.ps1`; failures only warn with the manual command. Document the RMAU role requirement and managed identity token delay.
+- Let the installer and updater create the custom Entra role `Autopilot Import Device Attribute Writer` (device read and `extensionAttributeSet1`-`3` update) and assign it to the Function managed identity scoped to every restricted administrative unit used by rules, because no built-in AU-scopable role (including Cloud Device Administrator) may update extension attributes (plus `-RestrictedAdministrativeUnitName`, skippable with `-SkipAdministrativeUnitRole`) through the packaged `Grant-ManagedIdentityAdministrativeUnitRole.ps1`; failures only warn with the manual command. Document the RMAU role requirement and managed identity token delay.
 - Document PowerShell backup/export and import/restore in a dedicated README chapter with protected JSON files, pre-restore snapshots, replacement semantics, confirmation and verification. Keep direct REST usage, authentication headers, JSON payloads, concurrency and HTTP error handling in the Developer Guide.
 - Record the successful same-installation live export/restore test on 2026-10-18: rules and manager configuration matched exactly after restore, and the focused client/API regression tests passed. Rebuild versioned frontend and local installation artifacts.
 

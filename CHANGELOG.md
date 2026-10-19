@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261019.2] - 2026-10-19
+## [1.4.20261019.3] - 2026-10-19
 
 ### Fixed
 
@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1` assign the Function managed identity a Cloud Device Administrator role scoped to restricted administrative units used by rules, with `-RestrictedAdministrativeUnitName` and `-SkipAdministrativeUnitRole`, through the new `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
+- `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1` create the custom Entra role `Autopilot Import Device Attribute Writer` (device read and extension attribute sets 1-3 update) and assign it to the Function managed identity scoped to restricted administrative units used by rules; built-in AU-scopable roles such as Cloud Device Administrator cannot update extension attributes, with `-RestrictedAdministrativeUnitName` and `-SkipAdministrativeUnitRole`, through the new `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
 
 ### Changed
 
