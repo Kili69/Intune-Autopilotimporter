@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261020.3] - 2026-10-20
+## [1.4.20261020.4] - 2026-10-20
 
 ### Added
 

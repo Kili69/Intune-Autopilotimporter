@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.3
+# Project-Version: 1.4.20261020.4
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -90,6 +90,7 @@ function Resolve-ClientConfiguration {
         }
     }
 
+    # Ensure the configuration hashtable is initialized even if the file does not exist.
     $configuration = @{}
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
         try {
@@ -111,12 +112,14 @@ function Resolve-ClientConfiguration {
         }
     }
 
+    # Ensure the management URL is normalized if present.
     if ($configuration.ContainsKey('managementUrl') -and
         -not [string]::IsNullOrWhiteSpace([string] $configuration['managementUrl'])) {
         $configuration['managementUrl'] = Resolve-ClientManagementUrl `
             -ManagementUrl $configuration['managementUrl']
     }
 
+    # Persist the configuration path for reference.
     $configuration.ConfigPath = $ConfigPath
     return $configuration
 }
@@ -155,11 +158,13 @@ function Resolve-ClientManagementUrl {
         [string] $Route = 'tag-policy'
     )
 
+    # Return early if the management URL is empty or consists only of whitespace.
     if ([string]::IsNullOrWhiteSpace($ManagementUrl)) {
         return $ManagementUrl
     }
 
     $trimmedUrl = $ManagementUrl.Trim()
+    # Trim any leading or trailing whitespace from the management URL.
     try {
         $uri = [uri] $trimmedUrl
     }
@@ -167,6 +172,7 @@ function Resolve-ClientManagementUrl {
         return $trimmedUrl
     }
 
+    # Normalize the route relative to /api/management.
     $normalizedRoute = if ([string]::IsNullOrWhiteSpace($Route)) {
         'tag-policy'
     }
@@ -179,15 +185,19 @@ function Resolve-ClientManagementUrl {
         return $trimmedUrl
     }
 
+    # Determine the appropriate API endpoint based on the path.
     if ($path -match '(?i)^/api/management/?$') {
         return "$authority/api/management/$normalizedRoute"
     }
+    # If the path does not match any known patterns, return the original absolute URI.
     if ($path -match '(?i)^/api/management/.*$') {
         return $uri.AbsoluteUri.TrimEnd('/')
     }
+    # If the path matches the UI route, redirect to the normalized API endpoint.
     if ($path -match '(?i)^/api/ui(?:/.*)?$') {
         return "$authority/api/management/$normalizedRoute"
     }
+    # If the path is empty or the root, redirect to the normalized API endpoint.
     if ([string]::IsNullOrWhiteSpace($path) -or $path -eq '/') {
         return "$authority/api/management/$normalizedRoute"
     }
@@ -217,7 +227,7 @@ function Get-DefaultClientConfigurationPath {
     if ([string]::IsNullOrWhiteSpace($userProfilePath)) {
         throw 'The current user profile path could not be determined.'
     }
-
+    # Ensure the configuration directory exists.
     $configurationDirectory = Join-Path `
         ([IO.Path]::GetFullPath($userProfilePath)) `
         '.autopilotimporter'
@@ -253,6 +263,8 @@ function Get-ConfigurationValue {
     )
 
     $value = [string] $Configuration[$Name]
+    # Trim any leading or trailing whitespace from the value.
+    $value = $value.Trim()
     if ([string]::IsNullOrWhiteSpace($value)) {
         throw "$Description is missing. Run Get-AutoPilotImporterClientConfiguration -FunctionUrl '<Function-URL>' once, provide -ConfigPath, or pass the value explicitly."
     }
@@ -294,30 +306,36 @@ function Get-ClientApiErrorMessage {
     )
 
     $response = $null
+    # Initialize the response object to null.
     $responseText = if ($ErrorRecord.ErrorDetails) {
         [string] $ErrorRecord.ErrorDetails.Message
     }
     else {
         ''
     }
+    # Attempt to parse the response text as JSON if it is not empty.
     if (-not [string]::IsNullOrWhiteSpace($responseText)) {
         try { $response = $responseText | ConvertFrom-Json }
         catch { $response = $null }
     }
 
+    # Extract relevant fields from the parsed response, if available.
     $errorCode = if ($response -and $response.PSObject.Properties['error']) {
         [string] $response.error
     }
     else { '' }
+    # Extract the server-provided error code, message, and correlation ID for later use.
     $serverMessage = if ($response -and $response.PSObject.Properties['message']) {
         [string] $response.message
     }
     else { '' }
+    # Extract the correlation ID for later use.
     $correlationId = if ($response -and $response.PSObject.Properties['correlationId']) {
         [string] $response.correlationId
     }
     else { '' }
 
+    # Determine the appropriate error message based on the extracted error code.
     $message = switch ($errorCode) {
         'groupTagNotAllowed' {
             "Group Tag '$GroupTag' is not allowed for the signed-in user. Verify the tag and the user's Entra group assignments."
@@ -347,6 +365,7 @@ function Get-ClientApiErrorMessage {
         }
     }
 
+    # Prepend the serial number to the error message for context.
     $message = "Import failed for serial '$SerialNumber'. $message"
     if (-not [string]::IsNullOrWhiteSpace($correlationId)) {
         $message += " Correlation ID: $correlationId."
@@ -380,10 +399,12 @@ function Add-ClientImportMetadata {
         [datetimeoffset] $ImportedAt = [datetimeoffset]::Now
     )
 
+    # Add client-side metadata to the import response.
     $ImportResponse | Add-Member `
         -NotePropertyName importedAt `
         -NotePropertyValue $ImportedAt.ToString('yyyy-MM-dd HH:mm:ss zzz') `
         -Force
+    # Add a note about Intune's asynchronous processing to the import response.
     $ImportResponse | Add-Member `
         -NotePropertyName intuneAvailabilityNote `
         -NotePropertyValue 'Intune processes imports asynchronously. It may take several minutes before the device appears in the Intune admin center.' `
@@ -416,6 +437,7 @@ function Add-ClientImportStatusMetadata {
     #>
     param([Parameter(Mandatory)][object] $ImportStatus)
 
+    # Normalize the import status and extension attribute status to lowercase strings for consistent processing.
     $status = ([string] $ImportStatus.status).ToLowerInvariant()
     $extensionStatus = if ($ImportStatus.PSObject.Properties['extensionAttributeStatus']) {
         ([string] $ImportStatus.extensionAttributeStatus).ToLowerInvariant()
@@ -423,6 +445,7 @@ function Add-ClientImportStatusMetadata {
     else {
         'unknown'
     }
+    # Determine the human-readable description based on the normalized status values.
     $description = switch ($status) {
         'unknown' {
             'Intune has accepted the import, but asynchronous processing has not reported a definitive state yet.'
@@ -449,6 +472,7 @@ function Add-ClientImportStatusMetadata {
         }
     }
 
+    # Add the human-readable description and final-state flag to the import status response.
     $ImportStatus | Add-Member -NotePropertyName statusDescription `
         -NotePropertyValue $description -Force
     $isFinal = $status -eq 'error' -or
@@ -492,15 +516,18 @@ function Get-ClientAccessToken {
         [string] $SubscriptionId
     )
 
+    # Acquire an access token for the specified resource and tenant, optionally scoped to a subscription.
     Assert-ClientCommand -Name 'Get-AzContext', 'Connect-AzAccount', 'Get-AzAccessToken'
     $context = Get-AzContext -ErrorAction SilentlyContinue
     # Reuse the current login only when it belongs to the requested tenant and,
     # for control-plane calls, the requested subscription.
     $contextMatches = $context -and [string] $context.Tenant.Id -eq $TenantId
+    # Check if the current context matches the requested tenant and subscription.
     if (-not [string]::IsNullOrWhiteSpace($SubscriptionId)) {
         $contextMatches = $contextMatches -and
             [string] $context.Subscription.Id -eq $SubscriptionId
     }
+    # If the current context does not match, initiate a new login with the specified tenant and subscription.
     if (-not $contextMatches) {
         $connectParameters = @{ Tenant = $TenantId }
         if (-not [string]::IsNullOrWhiteSpace($SubscriptionId)) {
@@ -559,13 +586,17 @@ function Resolve-ClientFunctionAppFromUrl {
         'Get-AzWebApp'
         'Set-AzContext'
     )
+    # Parse the function URL and extract the hostname for matching against Function Apps.
     $functionUri = [uri] $FunctionUrl
+    # Extract the hostname from the URI for later comparison with Function App hostnames.
     $hostName = $functionUri.Host
     [void] (Get-ClientAccessToken `
         -TenantId $TenantId `
         -ResourceUrl 'https://management.azure.com/' `
         -SubscriptionId $SubscriptionId)
+    # Store the original Azure context to restore it later, ensuring the caller's context is not disrupted.
     $originalContext = Get-AzContext -ErrorAction SilentlyContinue
+    # Initialize a list to hold matching Function Apps.
     $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
         @(Get-AzSubscription -TenantId $TenantId -ErrorAction Stop)
     }
@@ -575,8 +606,10 @@ function Resolve-ClientFunctionAppFromUrl {
             -TenantId $TenantId `
             -ErrorAction Stop)
     }
+    # Iterate through each subscription to find matching Function Apps.
     $matches = [Collections.Generic.List[object]]::new()
     try {
+        # Loop through each subscription to search for Function Apps matching the hostname.
         foreach ($subscription in $subscriptions) {
             try {
                 $subscriptionContext = Set-AzContext `
@@ -612,9 +645,11 @@ function Resolve-ClientFunctionAppFromUrl {
                 -ErrorAction SilentlyContinue | Out-Null
         }
     }
+    # Return the single matching Function App or throw an error if none or multiple matches are found.
     if ($matches.Count -eq 0) {
         throw "No accessible Azure Function App uses hostname '$hostName'. Verify Azure access or pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
     }
+    # If exactly one match is found, return it.
     if ($matches.Count -gt 1) {
         throw "Hostname '$hostName' matched more than one accessible Azure Function App. Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
     }
@@ -647,15 +682,19 @@ function Save-ClientDeploymentConfiguration {
         [object] $Deployment
     )
 
+    # Get the path to the client configuration file and ensure it exists before proceeding.
     $settingsPath = [string] $Configuration.ConfigPath
+    # If the configuration file does not exist, exit early.
     if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
         return
     }
+    # Read the existing configuration and update it with the discovered deployment coordinates.
     $settings = Get-Content -LiteralPath $settingsPath -Raw |
         ConvertFrom-Json -AsHashtable
     $settings['subscriptionId'] = [string] $Deployment.SubscriptionId
     $settings['resourceGroupName'] = [string] $Deployment.ResourceGroupName
     $settings['functionAppName'] = [string] $Deployment.FunctionAppName
+    # Write the updated configuration to a temporary file and replace the original atomically.
     $temporaryPath = "$settingsPath.tmp"
     try {
         $settings | ConvertTo-Json | Set-Content `
@@ -667,6 +706,7 @@ function Save-ClientDeploymentConfiguration {
             -Force
     }
     finally {
+        # Clean up the temporary file even if the move fails.
         Remove-Item `
             -LiteralPath $temporaryPath `
             -Force `
@@ -691,12 +731,16 @@ function Get-CoreModulePath {
     .OUTPUTS
     System.String containing the path to AutopilotImport.psm1.
     #>
+
+    # Define candidate paths for the core module and select the first existing one.
     $candidates = @(
         (Join-Path $PSScriptRoot 'AutopilotImport.psm1'),
         (Join-Path $PSScriptRoot '..\AutopilotImport\AutopilotImport.psm1')
     )
+    # Attempt to find the first existing core module path from the candidate list.
     $modulePath = $candidates | Where-Object { Test-Path $_ -PathType Leaf } |
         Select-Object -First 1
+    # If no existing core module path is found, throw an error.
     if (-not $modulePath) {
         throw "Required AutopilotImport core module was not found. Checked: $($candidates -join ', ')"
     }
@@ -789,6 +833,7 @@ function Get-AutoPilotImporterClientConfiguration {
         [string] $ConfigPath
     )
 
+    # Ensure that the FunctionUrl is provided and is a valid HTTPS URL before proceeding.
     if (-not [string]::IsNullOrWhiteSpace($FunctionUrl)) {
         $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
             Get-DefaultClientConfigurationPath
@@ -836,11 +881,13 @@ function Get-AutoPilotImporterClientConfiguration {
             throw "The Function runtime configuration from '$runtimeConfigurationUrl' is incomplete."
         }
 
+        # Validate and parse the client ID as a GUID before proceeding.
         $parsedClientId = [guid]::Empty
         if (-not [guid]::TryParse($clientId, [ref] $parsedClientId)) {
             throw "The Function runtime configuration contains an invalid web client ID '$clientId'."
         }
 
+        # Validate and parse the authority URL to extract the tenant ID.
         $authorityUri = [uri] $authority
         $tenantId = $authorityUri.AbsolutePath.Trim('/')
         $parsedTenantId = [guid]::Empty
@@ -874,6 +921,7 @@ function Get-AutoPilotImporterClientConfiguration {
             throw 'The Function runtime configuration contains an import URL from a different origin.'
         }
 
+        # Infer the Function App name from the host if it follows the standard Azure Websites naming convention.
         $inferredFunctionAppName = if ($functionUri.Host.EndsWith(
                 '.azurewebsites.net',
                 [StringComparison]::OrdinalIgnoreCase)) {
@@ -882,6 +930,7 @@ function Get-AutoPilotImporterClientConfiguration {
         else {
             $null
         }
+        # If the Function App name could not be inferred, it will be resolved from the existing configuration or provided parameters.
         $resolvedSubscriptionId = if (
             $PSBoundParameters.ContainsKey('SubscriptionId')) {
             $SubscriptionId.ToString()
@@ -889,6 +938,7 @@ function Get-AutoPilotImporterClientConfiguration {
         else {
             [string] $existingConfiguration['subscriptionId']
         }
+        # Resolve the Function App name from the existing configuration or provided parameters if it could not be inferred.
         $resolvedResourceGroupName = if (
             $PSBoundParameters.ContainsKey('ResourceGroupName')) {
             $ResourceGroupName
@@ -896,6 +946,7 @@ function Get-AutoPilotImporterClientConfiguration {
         else {
             [string] $existingConfiguration['resourceGroupName']
         }
+        # At this point, all necessary Azure-related values have been resolved.
         $resolvedFunctionAppName = if (
             $PSBoundParameters.ContainsKey('FunctionAppName')) {
             $FunctionAppName
@@ -907,6 +958,7 @@ function Get-AutoPilotImporterClientConfiguration {
         else {
             [string] $existingConfiguration['functionAppName']
         }
+        # Ensure the configuration directory exists before writing the settings file.
         $configurationDirectory = Split-Path `
             -Parent `
             -Path $resolvedConfigPath
@@ -915,6 +967,7 @@ function Get-AutoPilotImporterClientConfiguration {
             -ItemType Directory `
             -Force | Out-Null
 
+        # Prepare the settings hashtable with all resolved values before writing it to the configuration file.
         $settings = [ordered]@{
             functionUrl         = $importUri.AbsoluteUri
             managementUrl       = "$origin/api/management/tag-policy"
@@ -945,6 +998,7 @@ function Get-AutoPilotImporterClientConfiguration {
                 -Force `
                 -ErrorAction SilentlyContinue
         }
+        # Check for any missing Azure-related values and warn the user if necessary.
         $missingAzureValues = @(
             if ([string]::IsNullOrWhiteSpace($resolvedSubscriptionId)) {
                 'SubscriptionId'
@@ -956,11 +1010,13 @@ function Get-AutoPilotImporterClientConfiguration {
                 'FunctionAppName'
             }
         )
+        # If any required Azure-related values are missing, they will be included in the $missingAzureValues array.
         if ($missingAzureValues.Count -gt 0) {
             Write-Warning "The API configuration was saved, but Azure deployment details required by manager-policy commands are missing: $($missingAzureValues -join ', '). Run this command again with -SubscriptionId, -ResourceGroupName, and -FunctionAppName."
         }
     }
 
+    # Resolve the client configuration and ensure the configuration file exists.
     $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath
     $resolvedConfigPath = [IO.Path]::GetFullPath(
         [string] $configuration.ConfigPath
@@ -969,6 +1025,7 @@ function Get-AutoPilotImporterClientConfiguration {
         throw "Client configuration '$resolvedConfigPath' was not found. Run Get-AutoPilotImporterClientConfiguration -FunctionUrl '<Function-URL>' once or provide -ConfigPath."
     }
 
+    # Define the required settings and their descriptions for user prompts.
     $requiredSettings = [ordered]@{
         functionUrl         = 'Function URL'
         managementUrl       = 'management URL'
@@ -977,6 +1034,7 @@ function Get-AutoPilotImporterClientConfiguration {
         webUrl              = 'web URL'
     }
     $resolvedSettings = @{}
+    # Iterate through each required setting and resolve its value from the configuration or user input.
     foreach ($setting in $requiredSettings.GetEnumerator()) {
         $resolvedSettings[$setting.Key] = Get-ConfigurationValue `
             -Configuration $configuration `
@@ -1085,14 +1143,16 @@ function New-AutoPilotImporterClientConfiguration {
         [switch] $Force
     )
 
+    # Ensure the user is authenticated and has the correct Azure context before proceeding with the client configuration.
     Assert-ClientCommand -Name @(
         'Get-AzContext'
         'Connect-AzAccount'
         'Set-AzContext'
         'Invoke-AzRestMethod'
     )
-
+    # Retrieve the current Azure context to verify the subscription and tenant.
     $context = Get-AzContext -ErrorAction SilentlyContinue
+    # If the context is not set or does not match the provided subscription and tenant, prompt the user to authenticate.
     if (-not $context -or
         [string] $context.Subscription.Id -ne $SubscriptionId -or
         [string] $context.Tenant.Id -ne $TenantId) {
@@ -1100,14 +1160,17 @@ function New-AutoPilotImporterClientConfiguration {
             -Tenant $TenantId `
             -Subscription $SubscriptionId | Out-Null
     }
+    # Set the Azure context to the specified subscription and tenant.
     Set-AzContext `
         -Tenant $TenantId `
         -Subscription $SubscriptionId | Out-Null
 
     $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
+    # Invoke the REST method to retrieve the Easy Auth settings for the Function App.
     $authenticationResponse = Invoke-AzRestMethod `
         -Method GET `
         -Path "$resourceId/config/authsettingsV2?api-version=2023-12-01"
+    # Check if the REST method returned an error and throw an exception if it did.
     if ($authenticationResponse.StatusCode -ge 400) {
         throw "Unable to read Easy Auth settings for Function App '$FunctionAppName'."
     }
@@ -1124,24 +1187,32 @@ function New-AutoPilotImporterClientConfiguration {
             } |
             Select-Object -First 1
     )[0]
+    # If the API application ID URI is not explicitly set, attempt to construct it from the client ID.
     if ([string]::IsNullOrWhiteSpace($apiApplicationIdUri) -and
         -not [string]::IsNullOrWhiteSpace($clientId)) {
         $apiApplicationIdUri = "api://$clientId"
     }
+    # Ensure that the API application ID URI is set, throwing an exception if it is missing.
     if ([string]::IsNullOrWhiteSpace($apiApplicationIdUri)) {
         throw "Function App '$FunctionAppName' does not contain an API application ID URI in its Easy Auth settings."
     }
 
+    # Resolve the output path for the client configuration and ensure the directory exists.
     $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
+    # Determine the full path for the client settings file within the resolved output directory.
     $settingsPath = Join-Path $resolvedOutputPath 'client.settings.json'
+    # Check if the client settings file already exists and handle the -Force parameter.
     if ((Test-Path -LiteralPath $settingsPath) -and -not $Force) {
         throw "Client configuration '$settingsPath' already exists. Use -Force to replace it."
     }
+    # Confirm with the user before creating the client configuration file.
     if (-not $PSCmdlet.ShouldProcess($settingsPath, 'Create client configuration')) {
         return
     }
 
+    # Create the output directory if it does not exist.
     New-Item -Path $resolvedOutputPath -ItemType Directory -Force | Out-Null
+    # Construct the client configuration as an ordered hashtable.
     [ordered]@{
         functionUrl            = "https://$FunctionAppName.azurewebsites.net/api/devices/import"
         managementUrl          = "https://$FunctionAppName.azurewebsites.net/api/management/tag-policy"
@@ -1154,7 +1225,7 @@ function New-AutoPilotImporterClientConfiguration {
     } | ConvertTo-Json | Set-Content `
         -LiteralPath $settingsPath `
         -Encoding utf8NoBOM
-
+    # Inform the user to copy the client settings file to the script root for default usage.
     Write-Warning "Copy '$settingsPath' to '$PSScriptRoot\client.settings.json' so the AutopilotImport.Client module uses it by default."
     Get-Item -LiteralPath $settingsPath
 }
@@ -1249,6 +1320,7 @@ function Import-AutoPilotDevice {
         [switch] $ValidateOnly
     )
 
+    # Ensure the CSV file exists and is not empty before proceeding.
     if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) {
         throw "The Autopilot CSV file '$CsvPath' does not exist or is not a file. Verify the path and try again."
     }
@@ -1256,13 +1328,14 @@ function Import-AutoPilotDevice {
     if ($csvFile.Length -eq 0) {
         throw "The Autopilot CSV file '$($csvFile.FullName)' is empty. Export the device data again and try again."
     }
-
+    # Resolve the client configuration, applying any overrides provided via parameters.
     $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath -Overrides @{
         functionUrl = $FunctionUrl
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
     }
     $rows = @(Import-Csv -LiteralPath $CsvPath)
+    # Import the CSV file and store its rows in an array for further processing.
     if ($rows.Count -eq 0) {
         throw 'The Autopilot CSV does not contain any devices.'
     }
@@ -1275,6 +1348,7 @@ function Import-AutoPilotDevice {
 
     # Materialize and validate every row before authentication or network I/O,
     # preventing a partially submitted batch when a later row is malformed.
+    # This ensures that all rows are well-formed before any network requests are made.
     $devices = for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
         $serialNumber = [string] $rows[$rowIndex].'Device Serial Number'
         $hardwareIdentifier = [string] $rows[$rowIndex].'Hardware Hash'
@@ -1294,7 +1368,7 @@ function Import-AutoPilotDevice {
             hardwareIdentifier = $hardwareIdentifier
         }
     }
-
+    # At this point, all devices have been validated and are ready for import.
     if ($ValidateOnly) {
         return [pscustomobject]@{
             CsvPath = (Resolve-Path -LiteralPath $CsvPath).Path
@@ -1309,28 +1383,35 @@ function Import-AutoPilotDevice {
             IsValid = $true
         }
     }
-
+    # Confirm with the user before proceeding with the import operation.
     if (-not $PSCmdlet.ShouldProcess(
             "$($devices.Count) device(s) from '$($csvFile.FullName)'",
             "Import with Group Tag '$GroupTag'")) {
         return
     }
-
+    # Resolve the necessary configuration values for the import operation.
     $resolvedFunctionUrl = Get-ConfigurationValue $configuration functionUrl 'FunctionUrl'
+    # Resolve the function URL from the configuration, ensuring it is available for the import request.
+    # Resolve the API audience from the configuration.
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    # Resolve the tenant ID from the configuration.
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    # Parse and validate the tenant ID as a GUID.
     $parsedTenantId = [guid]::Empty
     if (-not [guid]::TryParse($resolvedTenantId, [ref] $parsedTenantId)) {
         throw 'TenantId must be a GUID.'
     }
+    # Acquire an access token for the client to authenticate with the import service.
     $token = Get-ClientAccessToken -TenantId $resolvedTenantId -ResourceUrl $audience
-
+    # Iterate over each device and perform the import operation.
     foreach ($device in $devices) {
+        # Prepare the request body for the current device.
         $body = @{
             serialNumber = $device.serialNumber
             hardwareIdentifier = $device.hardwareIdentifier
             groupTag = $GroupTag
         } | ConvertTo-Json -Compress
+        # Convert the request body to JSON format for the HTTP request.
         try {
             $response = Invoke-RestMethod -Method Post -Uri $resolvedFunctionUrl.TrimEnd('/') `
                 -Authentication Bearer -Token $token -ContentType 'application/json' `
@@ -1365,9 +1446,11 @@ function Resolve-ClientDeviceTagAssignmentsUrl {
         [Parameter(Mandatory)]
         [hashtable] $Configuration
     )
-
+    # Determine the appropriate URL for device tag assignments, either from the configuration or derived from the function URL.
     $configuredUrl = [string] $Configuration['deviceTagAssignmentsUrl']
+    # Check if a deviceTagAssignmentsUrl is explicitly configured.
     if (-not [string]::IsNullOrWhiteSpace($configuredUrl)) {
+        # Validate that the configured URL is an absolute HTTPS URL.
         $assignmentsUri = [uri] $configuredUrl
         if (-not $assignmentsUri.IsAbsoluteUri -or
             $assignmentsUri.Scheme -ne 'https') {
@@ -1376,11 +1459,14 @@ function Resolve-ClientDeviceTagAssignmentsUrl {
         return $assignmentsUri.AbsoluteUri
     }
 
+    # Derive the device tag assignments URL from the function URL if not explicitly configured.
+    # Validate that the function URL is an absolute HTTPS URL before constructing the assignments endpoint.
     $functionUrl = Get-ConfigurationValue `
         -Configuration $Configuration `
         -Name functionUrl `
         -Description FunctionUrl
     $functionUri = [uri] $functionUrl
+    # Ensure the function URL is properly parsed into a URI object.
     if (-not $functionUri.IsAbsoluteUri -or $functionUri.Scheme -ne 'https') {
         throw 'FunctionUrl must be an absolute HTTPS URL.'
     }
@@ -1412,8 +1498,9 @@ function Get-ClientTagChangeErrorMessage {
         [Parameter(Mandatory)]
         [string] $Action
     )
-
+    # Attempt to parse the error details from the API response, if available.
     $response = $null
+    # Initialize the response variable to null before attempting to parse the error details.
     if ($ErrorRecord.ErrorDetails -and
         -not [string]::IsNullOrWhiteSpace(
             [string] $ErrorRecord.ErrorDetails.Message)) {
@@ -1424,7 +1511,7 @@ function Get-ClientTagChangeErrorMessage {
             $response = $null
         }
     }
-
+    # Determine the most appropriate error message to display to the user.
     $message = if ($response -and
         $response.PSObject.Properties['message'] -and
         -not [string]::IsNullOrWhiteSpace([string] $response.message)) {
@@ -1436,6 +1523,7 @@ function Get-ClientTagChangeErrorMessage {
     else {
         $ErrorRecord.Exception.Message
     }
+    # Construct the final error message, including the action description and any correlation ID if available.
     $result = "$Action failed. $message"
     if ($response -and $response.PSObject.Properties['correlationId']) {
         $result += " Correlation ID: $($response.correlationId)."
@@ -1493,7 +1581,7 @@ function Get-AutoPilotDeviceTagAssignment {
         [string] $TenantId,
         [string] $ConfigPath
     )
-
+    # Resolve the client configuration, applying any overrides provided via parameters.
     $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath `
         -Overrides @{
             deviceTagAssignmentsUrl = $DeviceTagAssignmentsUrl
@@ -1501,8 +1589,10 @@ function Get-AutoPilotDeviceTagAssignment {
             apiApplicationIdUri = $ApiApplicationIdUri
             tenantId = $TenantId
         }
+    # Determine the resolved URL for device tag assignments based on the configuration.
     $url = Resolve-ClientDeviceTagAssignmentsUrl `
         -Configuration $configuration
+    # Retrieve the audience (API application ID URI) from the resolved configuration.
     $audience = Get-ConfigurationValue `
         -Configuration $configuration `
         -Name apiApplicationIdUri `
@@ -1511,10 +1601,11 @@ function Get-AutoPilotDeviceTagAssignment {
         -Configuration $configuration `
         -Name tenantId `
         -Description TenantId
+    # Acquire an access token for the API using the resolved tenant ID and audience.
     $token = Get-ClientAccessToken `
         -TenantId $resolvedTenantId `
         -ResourceUrl $audience
-
+    # Invoke the REST API to retrieve the list of eligible Autopilot devices using the acquired access token.
     try {
         $response = Invoke-RestMethod `
             -Method Get `
@@ -1528,6 +1619,7 @@ function Get-AutoPilotDeviceTagAssignment {
                 -ErrorRecord $_ `
                 -Action 'Retrieving eligible Autopilot devices')
     }
+    # Check if the response contains a devices collection and throw an error if it does not.
     if (-not $response.PSObject.Properties['devices']) {
         throw 'Retrieving eligible Autopilot devices failed. The service response does not contain a devices collection.'
     }
@@ -1617,8 +1709,9 @@ function Set-AutoPilotDeviceGroupTag {
         [ValidateRange(1, 86400)]
         [int] $TimeoutSeconds = 1800
     )
-
+    # Begin block for initializing configuration, resolving URLs, and acquiring initial access token.
     begin {
+        # Resolve the client configuration, applying any overrides provided via parameters.
         $configuration = Resolve-ClientConfiguration -ConfigPath $ConfigPath `
             -Overrides @{
                 deviceTagAssignmentsUrl = $DeviceTagAssignmentsUrl
@@ -1626,35 +1719,44 @@ function Set-AutoPilotDeviceGroupTag {
                 apiApplicationIdUri = $ApiApplicationIdUri
                 tenantId = $TenantId
             }
+        # Resolve the URL for device tag assignments based on the resolved configuration.
         $url = Resolve-ClientDeviceTagAssignmentsUrl `
             -Configuration $configuration
+        # Retrieve the audience (API application ID URI) from the resolved configuration.
         $audience = Get-ConfigurationValue `
             -Configuration $configuration `
             -Name apiApplicationIdUri `
             -Description ApiApplicationIdUri
+        # Retrieve the resolved tenant ID from the configuration.
         $resolvedTenantId = Get-ConfigurationValue `
             -Configuration $configuration `
             -Name tenantId `
             -Description TenantId
+        # Initialize the access token variable to null.
         $token = $null
     }
-
+    # Process block for iterating over each device ID and assigning the group tag.
     process {
+        # Iterate over each device ID provided in the input.
         foreach ($id in $DeviceId) {
+            # Check if the operation should proceed for the current device ID.
             if (-not $PSCmdlet.ShouldProcess(
                     "Autopilot device '$id'",
                     "Assign Group Tag '$GroupTag'")) {
                 continue
             }
+            # Acquire an access token if it has not been acquired yet.
             if ($null -eq $token) {
                 $token = Get-ClientAccessToken `
                     -TenantId $resolvedTenantId `
                     -ResourceUrl $audience
             }
+            # Construct the request body for assigning the group tag to the device.
             $body = @{
                 deviceId = $id.ToString()
                 groupTag = $GroupTag
             } | ConvertTo-Json -Compress
+            # Invoke the REST API to assign the group tag to the device and handle any errors that occur.
             try {
                 $result = Invoke-RestMethod `
                     -Method Post `
@@ -1671,6 +1773,7 @@ function Set-AutoPilotDeviceGroupTag {
                         -Action "Changing the Group Tag for Autopilot device '$id'")
             }
 
+            # If the caller does not want to wait for the operation to complete, mark the result as not final and continue.
             if (-not $Wait) {
                 $result | Add-Member `
                     -NotePropertyName isFinal `
@@ -1680,12 +1783,14 @@ function Set-AutoPilotDeviceGroupTag {
                 continue
             }
 
+            # Parse the operation ID from the result and validate it.
             $operationId = [guid]::Empty
             if (-not [guid]::TryParse(
                     [string] $result.operationId,
                     [ref] $operationId)) {
                 throw "Changing the Group Tag for Autopilot device '$id' failed. The service returned an invalid operation ID."
             }
+            # Construct the status URL for polling the operation status and start the stopwatch.
             $statusUrl = "${url}?operationId=$operationId"
             $stopwatch = [Diagnostics.Stopwatch]::StartNew()
             do {
@@ -1712,10 +1817,12 @@ function Set-AutoPilotDeviceGroupTag {
                     $statusResult
                     break
                 }
+                # Check if the operation has timed out and throw an error if it has.
                 if ($stopwatch.Elapsed.TotalSeconds +
                     $PollIntervalSeconds -gt $TimeoutSeconds) {
                     throw "Group Tag change '$operationId' did not complete within $TimeoutSeconds seconds. Last status: $status."
                 }
+                # Wait for the specified polling interval before checking the status again.
                 Start-Sleep -Seconds $PollIntervalSeconds
             } while ($true)
         }
@@ -1797,19 +1904,26 @@ function Get-AutoPilotImportStatus {
         [ValidateRange(1, 300)][int] $PollIntervalSeconds = 15,
         [ValidateRange(1, 86400)][int] $TimeoutSeconds = 1800
     )
-
+    # Resolve the client configuration and retrieve the necessary values for the function URL, audience, and tenant ID.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         functionUrl = $FunctionUrl
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
     }
+    # Retrieve the resolved values from the configuration.
     $url = Get-ConfigurationValue $configuration functionUrl 'FunctionUrl'
+    # Retrieve the audience and tenant ID from the configuration.
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    # Acquire an access token using the resolved tenant ID and audience.
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    # Acquire the access token for the API.
     $token = Get-ClientAccessToken $resolvedTenantId $audience
+    # Construct the status URL for polling the import status.
     $statusUrl = "$($url.TrimEnd('/'))?importId=$ImportId"
 
+    # Start the stopwatch to track the elapsed time for polling.
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    # Begin polling loop to check the import status at regular intervals.
     do {
         try {
             $result = Invoke-RestMethod `
@@ -1873,12 +1987,14 @@ function Get-ClientDeviceHashSha256 {
         [string] $DeviceHash
     )
 
+    # Attempt to decode the Base64 device hash and handle any errors.
     try {
         $deviceHashBytes = [Convert]::FromBase64String($DeviceHash)
     }
     catch {
         throw 'DeviceHash must be the Base64 Hardware Hash from the Autopilot CSV. To search by the displayed device serial number, use -SerialNumber.'
     }
+    # Ensure the decoded device hash is not empty before computing the SHA-256 index.
     if ($deviceHashBytes.Length -eq 0) {
         throw 'DeviceHash must not be empty.'
     }
@@ -2024,11 +2140,13 @@ function Get-AutoPilotImportHistory {
         [switch] $Raw
     )
 
+    # Resolve the client configuration and retrieve the necessary values for the function URL, audience, and tenant ID.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         importHistoryUrl = $ImportHistoryUrl
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
     }
+    # Determine the final URL for the import history API, either from the configuration or derived from the management URL.
     $url = if ($configuration.ContainsKey('importHistoryUrl') -and
         -not [string]::IsNullOrWhiteSpace(
             [string] $configuration.importHistoryUrl)) {
@@ -2044,24 +2162,29 @@ function Get-AutoPilotImportHistory {
         }
         $managementUrl -replace '/tag-policy/?$', '/imports'
     }
+    # Retrieve the audience and tenant ID from the configuration.
     $audience = Get-ConfigurationValue `
         $configuration `
         apiApplicationIdUri `
         'ApiApplicationIdUri'
+    # Acquire an access token using the resolved tenant ID and audience.
     $resolvedTenantId = Get-ConfigurationValue `
         $configuration `
         tenantId `
         'TenantId'
+    # Acquire an access token using the resolved tenant ID and audience.
     try {
         $token = Get-ClientAccessToken $resolvedTenantId $audience
     }
     catch {
         throw 'Authentication for the Autopilot import history failed. Run Connect-AzAccount and retry.'
     }
+    # Initialize the arrays for the requested import IDs, serial numbers, users, and device hashes.
     [guid[]] $requestedImportIds = @()
     if ($PSBoundParameters.ContainsKey('ImportId')) {
         $requestedImportIds = @($ImportId)
     }
+    # Process the requested import IDs if provided.
     [string[]] $requestedSerialNumbers = @()
     if ($PSBoundParameters.ContainsKey('SerialNumber')) {
         $requestedSerialNumbers = @($SerialNumber | ForEach-Object {
@@ -2072,6 +2195,7 @@ function Get-AutoPilotImportHistory {
             throw 'SerialNumber values must not be empty.'
         }
     }
+    # Process the requested users if provided.
     [string[]] $requestedUsers = @()
     if ($PSBoundParameters.ContainsKey('User')) {
         $requestedUsers = @($User | ForEach-Object {
@@ -2082,21 +2206,26 @@ function Get-AutoPilotImportHistory {
             throw 'User values must not be empty.'
         }
     }
+    # Process the requested device hashes if provided.
     [string[]] $requestedDeviceHashes = @()
     if ($PSBoundParameters.ContainsKey('DeviceHash')) {
         $requestedDeviceHashes = @($DeviceHash)
     }
+    # Determine if any explicit filters have been provided by the user.
     $hasExplicitFilter = $requestedImportIds.Count -gt 0 -or
         $requestedSerialNumbers.Count -gt 0 -or
         $requestedUsers.Count -gt 0 -or
         $requestedDeviceHashes.Count -gt 0
+    # Validate that ShowAll is not combined with explicit filters.
     if ($ShowAll -and $hasExplicitFilter) {
         throw 'ShowAll cannot be combined with ImportId, SerialNumber, DeviceHash, or User.'
     }
+    # Validate that the total number of requested import IDs, serial numbers, device hashes, and users does not exceed 50.
     if ($requestedImportIds.Count + $requestedSerialNumbers.Count +
         $requestedDeviceHashes.Count + $requestedUsers.Count -gt 50) {
         throw 'At most 50 ImportId, SerialNumber, DeviceHash, and User values may be requested.'
     }
+    # Construct the request URL with the appropriate query parameters.
     $requestUrl = "$($url.TrimEnd('/'))?top=$Top"
     if ($ShowAll) {
         $requestUrl += '&showAll=true'
@@ -2108,6 +2237,7 @@ function Get-AutoPilotImportHistory {
         Token = $token
         ErrorAction = 'Stop'
     }
+    # If explicit filters are provided, include them in the request body as JSON.
     if ($hasExplicitFilter) {
         $requestParameters.ContentType = 'application/json'
         $requestParameters.Body = @{
@@ -2119,7 +2249,7 @@ function Get-AutoPilotImportHistory {
             })
         } | ConvertTo-Json -Compress
     }
-
+    # Invoke the REST method and handle any errors that occur during the request.
     try {
         $response = Invoke-RestMethod @requestParameters
     }
@@ -2178,6 +2308,7 @@ function Get-AutoPilotImportHistory {
                 }
             }
         }
+        # Append the correlation ID to the error message if available.
         if ($serviceResponse -and
             $serviceResponse.PSObject.Properties['correlationId']) {
             $message += " Correlation ID: $($serviceResponse.correlationId)."
@@ -2322,6 +2453,7 @@ function ConvertTo-ClientTagPolicyResult {
         [string] $CorrelationId
     )
 
+    # Resolve the extension attribute to use, defaulting to extensionAttribute1 if not provided.
     $resolvedExtensionAttribute = if (
         -not [string]::IsNullOrWhiteSpace([string] $ExtensionAttribute)) {
         [string] $ExtensionAttribute.Trim()
@@ -2330,6 +2462,7 @@ function ConvertTo-ClientTagPolicyResult {
         'extensionAttribute1'
     }
 
+    # Construct the result object with the resolved extension attribute and other properties.
     $result = [pscustomobject][ordered]@{
         PSTypeName = 'AutopilotImport.TagPolicyRule'
         Name = if ($Rule.PSObject.Properties['name']) { [string] $Rule.name } else { "Policy $($Rule.groupId)" }
@@ -2347,11 +2480,13 @@ function ConvertTo-ClientTagPolicyResult {
         }
         CorrelationId = $CorrelationId
     }
+    # Add any additional properties from the original rule that are present.
     foreach ($key in @('ruleId', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
         if ($Rule.PSObject.Properties[$key]) {
             $result | Add-Member -NotePropertyName $key -NotePropertyValue $Rule.$key
         }
     }
+    # Define the default display property set for the result object.
     $displayPropertySet = [Management.Automation.PSPropertySet]::new(
         'DefaultDisplayPropertySet',
         [string[]] @(
@@ -2437,15 +2572,23 @@ function Get-AutoPilotTagPolicy {
         [switch] $Raw
     )
 
+    # Resolve the client configuration using the provided parameters and any defaults from the configuration file.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
         deviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     }
+    # Extract the resolved values for the management URL, API audience, tenant ID, and extension attribute.
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    # Extract the resolved management URL from the configuration.
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
+    # Extract the resolved API audience from the configuration.
+    # Extract the resolved tenant ID from the configuration.
+    # Determine the resolved extension attribute, falling back to 'extensionAttribute1' if not specified.
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    # Extract the resolved tenant ID from the configuration.
+    # Determine the resolved extension attribute, falling back to 'extensionAttribute1' if not specified.
     $resolvedExtensionAttribute = if (
         $PSBoundParameters.ContainsKey('DeviceTagExtensionAttribute') -and
         -not [string]::IsNullOrWhiteSpace([string] $DeviceTagExtensionAttribute)) {
@@ -2465,6 +2608,7 @@ function Get-AutoPilotTagPolicy {
         return $response
     }
 
+    # Convert the response into an array of policy rules for further processing.
     $policy = @($response.policy)
     if ($policy.Count -eq 0) {
         return
@@ -2475,6 +2619,7 @@ function Get-AutoPilotTagPolicy {
     $graphToken = Get-ClientAccessToken `
         $resolvedTenantId `
         'https://graph.microsoft.com/'
+    # Iterate over each policy rule to enrich it with group display names and convert it to the client tag policy result.
     foreach ($rule in $policy) {
         $groupId = [string] $rule.groupId
         try {
@@ -2494,7 +2639,7 @@ function Get-AutoPilotTagPolicy {
             Write-Warning "Could not resolve Entra group '$groupId': $($_.Exception.Message)"
             $groupName = '[Unresolved group]'
         }
-
+        # Convert the enriched policy rule into the client tag policy result.
         ConvertTo-ClientTagPolicyResult `
             -Rule $rule `
             -GroupName $groupName `
@@ -2542,16 +2687,24 @@ function Get-AutoPilotTagPolicyHistory {
         [string] $TenantId,
         [string] $ConfigPath
     )
+    # Build the request URI with the rule ID and optional continuation token.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
     }
+    # Extract the resolved values for the management URL, API audience, and tenant ID from the configuration.
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
+    # Extract the resolved management URL from the configuration.
+    # Extract the resolved API audience from the configuration.
+    # Extract the resolved tenant ID from the configuration.
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $tenant = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $uri = [UriBuilder]::new($url)
     $uri.Query = "history=true&ruleId=$RuleId"
+    # Append the continuation token to the query string if provided.
     if ($Continuation) { $uri.Query = $uri.Query.TrimStart('?') + "&continuation=$([uri]::EscapeDataString($Continuation))" }
+    # Acquire an access token for the API using the resolved tenant and audience.
     $token = Get-ClientAccessToken $tenant $audience
+    # Invoke the REST API to retrieve the policy history using the constructed URI and access token.
     Invoke-RestMethod -Method Get -Uri $uri.Uri.AbsoluteUri -Authentication Bearer -Token $token -ErrorAction Stop
 }
 
@@ -2648,6 +2801,7 @@ function Add-AutoPilotTagPolicy {
         [string] $ConfigPath
     )
 
+    # Normalize and validate the provided group tags before proceeding with the API request.
     $tags = @($GroupTag | ForEach-Object { $_.Split(',') } |
         ForEach-Object { $_.Trim() } |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
@@ -2655,24 +2809,28 @@ function Add-AutoPilotTagPolicy {
     if ($tags.Count -eq 0) {
         throw 'Specify at least one Group Tag.'
     }
+    # Ensure each group tag does not exceed the maximum allowed length of 128 characters.
     foreach ($tag in $tags) {
         if ($tag.Length -gt 128) {
             throw "Group Tag '$tag' must not exceed 128 characters."
         }
     }
 
+    # Resolve the client configuration using the provided configuration path and any explicitly specified parameters.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
     }
+    # Extract the resolved management URL, API audience, and tenant ID from the configuration.
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    # Acquire an access token for the API using the resolved tenant and audience.
     $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
-
+    # Convert the provided group ID to a string for consistent comparison and indexing.
     $resolvedGroupId = $GroupId.ToString()
-
+    # Retrieve the current policy from the API for further processing and merging with local changes.
     $currentResponse = Invoke-RestMethod `
         -Method Get `
         -Uri $url.TrimEnd('/') `
@@ -2685,9 +2843,11 @@ function Add-AutoPilotTagPolicy {
     $rulesByGroup = [ordered]@{}
     $mauByGroup = @{}
     $sourceRules = @{}
+    # Check for duplicate group IDs in the current policy to prevent ambiguous updates.
     if (@($currentPolicy | Group-Object groupId | Where-Object Count -gt 1).Count -gt 0) {
         throw 'Multiple named rules share a user group. Use Set-AutoPilotTagPolicy with complete rule objects to avoid ambiguous updates.'
     }
+    # Iterate through each rule in the current policy to build indexed collections for efficient merging and validation.
     foreach ($rule in $currentPolicy) {
         $currentGroupId = ([guid] $rule.groupId).ToString()
         $sourceRules[$currentGroupId] = $rule
@@ -2704,17 +2864,20 @@ function Add-AutoPilotTagPolicy {
             ''
         }
     }
+    # Merge the new tags into the existing rules for the resolved group ID, ensuring uniqueness and non-empty values.
     $rulesByGroup[$resolvedGroupId] = @(
         @($rulesByGroup[$resolvedGroupId]) + $tags |
             Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
             Select-Object -Unique
     )
 
+    # Update the administrative unit name for the resolved group ID if explicitly specified.
     if ($PSBoundParameters.ContainsKey(
             'AdministrativeUnitName')) {
         $mauByGroup[$resolvedGroupId] =
             $AdministrativeUnitName.Trim()
     }
+    # Construct the updated policy by combining the merged tags and administrative unit names with the original rule properties.
     $updatedPolicy = @($rulesByGroup.Keys | ForEach-Object {
         $policyEntry = [ordered]@{
             groupId = $_
@@ -2734,13 +2897,14 @@ function Add-AutoPilotTagPolicy {
     $body = @{
         policy = $updatedPolicy
     } | ConvertTo-Json -Depth 8 -Compress
-
+    # Send the updated policy to the API and handle the response, including extracting the updated rule and correlation ID.
     if (-not $PSCmdlet.ShouldProcess(
             $resolvedGroupId,
             "Add Group Tags '$($tags -join ', ')' to the Autopilot policy")) {
         return
     }
 
+    # Invoke the REST API to update the policy with the merged changes.
     $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
@@ -2755,9 +2919,11 @@ function Add-AutoPilotTagPolicy {
     else {
         $updatedPolicy
     }
+    # Extract the updated rule for the resolved group ID from the response policy.
     $updatedRule = @($responsePolicy | Where-Object {
         ([guid] $_.groupId).ToString() -eq $resolvedGroupId
     }) | Select-Object -First 1
+    # Determine the extension attribute to use for device tagging, defaulting to 'extensionAttribute1' if not specified in the configuration.
     $resolvedExtensionAttribute = if (
         $configuration.ContainsKey('deviceTagExtensionAttribute') -and
         -not [string]::IsNullOrWhiteSpace([string] $configuration['deviceTagExtensionAttribute'])) {
@@ -2766,6 +2932,7 @@ function Add-AutoPilotTagPolicy {
     else {
         'extensionAttribute1'
     }
+    # Convert the updated rule and extension attribute into a client-friendly result object for further processing or output.
     ConvertTo-ClientTagPolicyResult `
         -Rule $updatedRule `
         -ExtensionAttribute $resolvedExtensionAttribute `
@@ -2856,28 +3023,36 @@ function Remove-AutoPilotTagPolicy {
         apiApplicationIdUri = $ApiApplicationIdUri
         tenantId = $TenantId
     }
+    # Resolve the management URL, API audience, and tenant ID from the client configuration.
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $apiToken = Get-ClientAccessToken $resolvedTenantId $audience
 
+    # Attempt to parse the provided group identifier as a GUID to determine if it is an object ID or a display name.
     $parsedGroupId = [guid]::Empty
     $groupDisplayName = $null
+    # Initialize variables to hold the resolved group ID and display name.
     if ([guid]::TryParse($Group.Trim(), [ref] $parsedGroupId)) {
         $resolvedGroupId = $parsedGroupId.ToString()
     }
     else {
+        # If the group identifier is not a GUID, treat it as a display name and attempt to resolve it via the Microsoft Graph API.
         $graphToken = Get-ClientAccessToken `
             $resolvedTenantId `
             'https://graph.microsoft.com/'
+        # Acquire a Microsoft Graph API access token for the resolved tenant ID.
+        # Escape the group display name to safely include it in the OData filter query.
         $escapedName = $Group.Trim().Replace("'", "''")
         $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+        # Construct the OData filter query for the Microsoft Graph API request.
         $groupResponse = Invoke-RestMethod `
             -Method Get `
             -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
             -Authentication Bearer `
             -Token $graphToken `
             -ErrorAction Stop
+        # Extract the list of matching groups from the API response.
         $matchingGroups = @($groupResponse.value)
         if ($matchingGroups.Count -eq 0) {
             throw "Entra group '$Group' was not found. Specify its exact display name or object ID."
@@ -2885,17 +3060,21 @@ function Remove-AutoPilotTagPolicy {
         if ($matchingGroups.Count -gt 1) {
             throw "Multiple Entra groups are named '$Group'. Specify the group object ID instead."
         }
+        # Resolve the group ID and display name from the single matching group.
         $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
         $groupDisplayName = [string] $matchingGroups[0].displayName
     }
 
+    # Invoke the REST API to retrieve the current policy for the resolved group ID.
     $currentResponse = Invoke-RestMethod `
         -Method Get `
         -Uri $url.TrimEnd('/') `
         -Authentication Bearer `
         -Token $apiToken `
         -ErrorAction Stop
+    # Extract the current policy from the API response.
     $currentPolicy = @($currentResponse.policy)
+    # Find the policy rule that matches the resolved group ID.
     $matchingRule = @($currentPolicy | Where-Object {
         ([guid] $_.groupId).ToString() -eq $resolvedGroupId
     })
@@ -2909,6 +3088,9 @@ function Remove-AutoPilotTagPolicy {
     # Supplying GroupTag means a partial update; omitting it removes the entire
     # group rule while still preserving every unrelated rule.
     $removeTags = @()
+    # Initialize the list of Group Tags to be removed.
+    # Check if the GroupTag parameter was supplied.
+    # If it was, process the tags to be removed by splitting, trimming, and ensuring uniqueness.
     if ($PSBoundParameters.ContainsKey('GroupTag')) {
         $removeTags = @($GroupTag | ForEach-Object { $_.Split(',') } |
             ForEach-Object { $_.Trim() } |
@@ -2923,6 +3105,7 @@ function Remove-AutoPilotTagPolicy {
             }
         }
 
+        # Extract the current list of Group Tags from the matching policy rule, ensuring they are trimmed, non-empty, and unique.
         $currentTags = @($matchingRule[0].tags | ForEach-Object {
             ([string] $_).Trim()
         } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
@@ -2937,7 +3120,7 @@ function Remove-AutoPilotTagPolicy {
         if ($remainingTags.Count -eq 0) {
             throw 'The last Group Tag cannot be removed from a policy rule. Omit -GroupTag to remove the complete group rule.'
         }
-
+        # Construct the remaining policy by updating the tags for the resolved group ID while preserving other rules.
         $remainingPolicy = @($currentPolicy | ForEach-Object {
             $ruleGroupId = ([guid] $_.groupId).ToString()
             $ruleTags = if ($ruleGroupId -eq $resolvedGroupId) {
@@ -2950,9 +3133,11 @@ function Remove-AutoPilotTagPolicy {
                 groupId = $ruleGroupId
                 tags = @($ruleTags)
             }
+            # Preserve additional properties from the original policy rule if they exist.
             foreach ($key in @('ruleId', 'name', 'description', 'groupTag', 'extensionAttributes', 'deviceGroupIds')) {
                 if ($_.PSObject.Properties[$key]) { $policyEntry[$key] = $_.$key }
             }
+            # Preserve the administrativeUnitName property from the original policy rule if it exists and is not empty.
             if ($_.PSObject.Properties[
                     'administrativeUnitName'] -and
                 -not [string]::IsNullOrWhiteSpace(
@@ -2964,13 +3149,16 @@ function Remove-AutoPilotTagPolicy {
         })
     }
     else {
+        # If no specific tags are being removed, construct the remaining policy by excluding the rule for the resolved group ID.
         $remainingPolicy = @($currentPolicy | Where-Object {
             ([guid] $_.groupId).ToString() -ne $resolvedGroupId
         })
+        # Check if the remaining policy is empty, which would indicate that the last group tag policy rule is being removed.
         if ($remainingPolicy.Count -eq 0) {
             throw 'The last Group Tag policy rule cannot be removed. Use Set-AutoPilotTagPolicy to replace the policy.'
         }
     }
+    # Prepare the request body for the API call with the remaining policy.
     $body = @{
         policy = $remainingPolicy
     } | ConvertTo-Json -Depth 8 -Compress
@@ -2981,6 +3169,7 @@ function Remove-AutoPilotTagPolicy {
     else {
         "$groupDisplayName ($resolvedGroupId)"
     }
+    # Determine the operation description for the ShouldProcess confirmation.
     $operation = if ($removeTags.Count -gt 0) {
         "Remove Group Tags '$($removeTags -join ', ')' from the Autopilot policy"
     }
@@ -2990,7 +3179,7 @@ function Remove-AutoPilotTagPolicy {
     if (-not $PSCmdlet.ShouldProcess($target, $operation)) {
         return
     }
-
+    # Perform the API call to update the Autopilot tag policy with the remaining policy.
     $response = Invoke-RestMethod `
         -Method Put `
         -Uri $url.TrimEnd('/') `
@@ -3000,12 +3189,14 @@ function Remove-AutoPilotTagPolicy {
         -Body $body `
         -ErrorAction Stop
 
+    # Extract the group label for display purposes based on whether the group display name is available.
     $groupLabel = if ([string]::IsNullOrWhiteSpace($groupDisplayName)) {
         $resolvedGroupId
     }
     else {
         $groupDisplayName
     }
+    # Construct the message to be displayed based on the number of tags being removed.
     $message = if ($removeTags.Count -eq 0) {
         "The tag policy for group '$groupLabel' was removed."
     }
@@ -3015,6 +3206,7 @@ function Remove-AutoPilotTagPolicy {
     else {
         "Group Tags '$($removeTags -join ', ')' were removed from the tag policy for group '$groupLabel'."
     }
+    # Attach additional metadata to the message object, including group ID, group name, removed tags, rule removal status, correlation ID, update status, and the API response.
     $message | Add-Member `
         -NotePropertyMembers @{
             GroupId      = $resolvedGroupId
@@ -3129,17 +3321,21 @@ function Set-AutoPilotTagPolicy {
         [string] $TenantId,
         [string] $ConfigPath
     )
-
+    # Determine if the command is operating in group update mode based on the presence of -GroupName and -Tags parameters.
     $groupUpdateMode = $PSBoundParameters.ContainsKey('GroupName') -or
         $PSBoundParameters.ContainsKey('Tags')
+    # $groupUpdateMode will be $true if either -GroupName or -Tags is specified, indicating that the command is updating a single group rule.
     if ($groupUpdateMode -and $PSBoundParameters.ContainsKey('TagAuthorizationRule')) {
         throw 'Use either -TagAuthorizationRule or -GroupName with -Tags, not both.'
     }
+    #   If $groupUpdateMode is $true, the command expects -GroupName and -Tags to be specified.
+    #   If $groupUpdateMode is $false, the command expects -TagAuthorizationRule to be specified.
     if ($groupUpdateMode -and (
             -not $PSBoundParameters.ContainsKey('GroupName') -or
             -not $PSBoundParameters.ContainsKey('Tags'))) {
         throw 'Specify both -GroupName and -Tags when updating a single rule.'
     }
+    # Resolve the client configuration using the provided configuration path and override values for management URL, API application ID URI, and tenant ID.
     if (-not $groupUpdateMode -and -not $PSBoundParameters.ContainsKey('TagAuthorizationRule')) {
         throw 'Specify either -TagAuthorizationRule or -GroupName with -Tags.'
     }
@@ -3147,11 +3343,16 @@ function Set-AutoPilotTagPolicy {
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
     }
+    # Retrieve the resolved values for management URL, API application ID URI, and tenant ID from the configuration.
     $url = Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
+    # Obtain the client access token using the resolved tenant ID and audience.
     $token = Get-ClientAccessToken $resolvedTenantId $audience
 
+    # If the command is operating in group update mode, normalize the tags and resolve the group ID.
+    #   Normalizing the tags involves splitting the comma-separated list, trimming whitespace, and removing empty entries.
+    #   Resolving the group ID involves checking if the provided group name is a valid GUID or querying the Microsoft Graph API for the group ID based on the display name.
     if ($groupUpdateMode) {
         $normalizedTags = @($Tags | ForEach-Object { $_.Split(',') } |
             ForEach-Object { $_.Trim() } |
@@ -3167,9 +3368,11 @@ function Set-AutoPilotTagPolicy {
             $resolvedGroupId = $parsedGroupId.ToString()
         }
         else {
+            # If the group name is not a valid GUID, query the Microsoft Graph API to resolve the group ID based on the display name.
             $graphToken = Get-ClientAccessToken $resolvedTenantId 'https://graph.microsoft.com/'
             $escapedName = $GroupName.Trim().Replace("'", "''")
             $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
+            # Construct the filter query for the Microsoft Graph API request to search for the group by display name.
             $groupResponse = Invoke-RestMethod `
                 -Method Get `
                 -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=$filter&`$select=id,displayName" `
@@ -3182,32 +3385,38 @@ function Set-AutoPilotTagPolicy {
             else {
                 @($groupResponse)
             }
+            # Ensure that exactly one matching group was found and retrieve its ID.
             if ($matchingGroups.Count -eq 0) {
                 throw "Entra group '$GroupName' was not found. Specify its exact display name or object ID."
             }
+            # At this point, $matchingGroups contains exactly one group, and its ID is stored in $resolvedGroupId.
             if ($matchingGroups.Count -gt 1) {
                 throw "Multiple Entra groups are named '$GroupName'. Specify the group object ID instead."
             }
             $resolvedGroupId = ([guid] $matchingGroups[0].id).ToString()
         }
 
+        # Retrieve the current Group Tag policy for the resolved group ID.
         $currentResponse = Invoke-RestMethod `
             -Method Get `
             -Uri $url.TrimEnd('/') `
             -Authentication Bearer `
             -Token $token `
             -ErrorAction Stop
+        # The response contains the current policy, which will be used to determine the matching rule and prepare the updated policy.
         $currentPolicy = @($currentResponse.policy)
+        # Find the policy rule that matches the resolved group ID.
         $matchingRule = @($currentPolicy | Where-Object {
             ([guid] $_.groupId).ToString() -eq $resolvedGroupId
         })
+        # Ensure that exactly one matching rule is found for the group.
         if ($matchingRule.Count -eq 0) {
             throw "Entra group '$GroupName' does not have a Group Tag policy rule."
         }
         if ($matchingRule.Count -gt 1) {
             throw 'Multiple named rules match this group. Use Set-AutoPilotTagPolicy with complete rule objects.'
         }
-
+        # Prepare the updated policy by modifying the matching rule with the new tags and preserving other properties.
         $updatedPolicy = @($currentPolicy | ForEach-Object {
             $ruleGroupId = ([guid] $_.groupId).ToString()
             if ($ruleGroupId -ne $resolvedGroupId) {
@@ -3237,17 +3446,21 @@ function Set-AutoPilotTagPolicy {
             [pscustomobject] $policyEntry
         })
 
+        # Convert the updated policy to JSON for the API request body.
         $body = @{
             policy = $updatedPolicy
         } | ConvertTo-Json -Depth 8 -Compress
+        # Prompt the user for confirmation before making the API request to update the policy.
         if (-not $PSCmdlet.ShouldProcess(
                 $resolvedGroupId,
                 "Update Group Tags '$($normalizedTags -join ', ')' for the Autopilot policy")) {
             return
         }
 
+        # Make the API request to update the policy with the new tags.
         Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
             -Token $token -ContentType 'application/json' -Body $body
+        # Retrieve the fresh policy after the update to ensure the changes were applied.
         $freshPolicy = Get-AutoPilotTagPolicy `
             -ManagementUrl $url `
             -ApiApplicationIdUri $audience `
@@ -3259,18 +3472,23 @@ function Set-AutoPilotTagPolicy {
     # identical to the Function's accepted rule format.
     $coreModulePath = Get-CoreModulePath
     Import-Module $coreModulePath -Force
+    # Convert the tag authorization rules to the policy format expected by the API.
     $policy = ConvertTo-TagAuthorizationPolicy `
         -Rules $TagAuthorizationRule `
         -AdministrativeUnitName `
             $AdministrativeUnitName
+    # Prompt the user for confirmation before replacing the tag authorization policy.
     if (-not $PSCmdlet.ShouldProcess($url, "Replace tag authorization policy with $($policy.Count) group rule(s)")) {
         return
     }
+    # Convert the policy to JSON for the API request body.
     $body = @{
         policy = $policy
     } | ConvertTo-Json -Depth 8 -Compress
+    # Make the API request to replace the tag authorization policy.
     Invoke-RestMethod -Method Put -Uri $url.TrimEnd('/') -Authentication Bearer `
         -Token $token -ContentType 'application/json' -Body $body
+    # Retrieve the fresh policy after the replacement to ensure the changes were applied.
     $freshPolicy = Get-AutoPilotTagPolicy `
         -ManagementUrl $url `
         -ApiApplicationIdUri $audience `
@@ -3328,11 +3546,14 @@ function Get-AutoPilotTagPolicyManager {
         [string] $ConfigPath
     )
 
+    # Ensure that the required client commands are available before proceeding.
     Assert-ClientCommand -Name 'Get-AzWebApp', 'Set-AzContext'
+    # Resolve the client configuration using the provided configuration path and any explicitly supplied parameters.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         subscriptionId = $SubscriptionId; tenantId = $TenantId
         resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
     }
+    # Identify any missing deployment values that are required for the Function App.
     $missingDeploymentValues = @(
         foreach ($entry in @(
                 @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
@@ -3345,13 +3566,16 @@ function Get-AutoPilotTagPolicyManager {
             }
         }
     )
+    # Throw an error if any required deployment values are missing.
     if ($missingDeploymentValues.Count -gt 0) {
         $configuredFunctionUrl = [string] $configuration['functionUrl']
         $configuredTenantId = Get-ConfigurationValue `
             $configuration tenantId 'TenantId'
+        # Throw an error if the Function App URL is not configured.
         if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
             throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
         }
+        # Resolve the deployment details for the Function App using the configured URL.
         $deployment = Resolve-ClientFunctionAppFromUrl `
             -FunctionUrl $configuredFunctionUrl `
             -TenantId $configuredTenantId `
@@ -3359,11 +3583,13 @@ function Get-AutoPilotTagPolicyManager {
         $configuration['subscriptionId'] = $deployment.SubscriptionId
         $configuration['resourceGroupName'] = $deployment.ResourceGroupName
         $configuration['functionAppName'] = $deployment.FunctionAppName
+        # Save the resolved deployment details back to the configuration.
         Save-ClientDeploymentConfiguration `
             -Configuration $configuration `
             -Deployment $deployment
     }
-
+    # Retrieve the resolved deployment details from the configuration for further use.
+    # Get the subscription ID, tenant ID, resource group name, and function app name from the configuration.
     $resolvedSubscriptionId = Get-ConfigurationValue `
         $configuration subscriptionId 'SubscriptionId'
     $resolvedTenantId = Get-ConfigurationValue `
@@ -3373,27 +3599,31 @@ function Get-AutoPilotTagPolicyManager {
     $resolvedFunctionName = Get-ConfigurationValue `
         $configuration functionAppName 'FunctionAppName'
 
+    # Acquire an access token for the Azure management API using the resolved tenant ID and subscription ID.
     [void](Get-ClientAccessToken `
         $resolvedTenantId `
         'https://management.azure.com/' `
         $resolvedSubscriptionId)
+    # Set the Azure context to the resolved tenant ID and subscription ID.
     Set-AzContext `
         -Tenant $resolvedTenantId `
         -Subscription $resolvedSubscriptionId `
         -WhatIf:$false | Out-Null
+    # Retrieve the Function App using the resolved resource group and function app name.
     $functionApp = Get-AzWebApp `
         -ResourceGroupName $resolvedResourceGroup `
         -Name $resolvedFunctionName
     if (-not $functionApp) {
         throw "Function App '$resolvedFunctionName' was not found."
     }
-
+    # Retrieve the existing manager authorization policy from the Function App's app settings.
     $managerPolicySetting = @($functionApp.SiteConfig.AppSettings |
         Where-Object Name -eq 'MANAGER_AUTHORIZATION_POLICY' |
         Select-Object -First 1)
     if ($managerPolicySetting.Count -eq 0) {
         throw "Function App '$resolvedFunctionName' does not contain MANAGER_AUTHORIZATION_POLICY."
     }
+    # Parse the manager authorization policy JSON and extract the installer and additional principal IDs.
     try {
         $managerPolicy = $managerPolicySetting[0].Value | ConvertFrom-Json
         $installerId = ([guid] $managerPolicy.installerPrincipalId).ToString()
@@ -3498,19 +3728,24 @@ function Update-AutoPilotTagPolicyManager {
         [string] $FunctionAppName,
         [string] $ConfigPath
     )
-
+    # Convert the provided principal IDs to strings and ensure at least one ID is specified for addition or removal.
     Assert-ClientCommand -Name 'Get-AzWebApp', 'Get-AzRoleAssignment', 'Set-AzContext'
+    # Ensure that the required client commands are available before proceeding.
     $addIds = @($AddPrincipalId | Where-Object { $null -ne $_ } |
         ForEach-Object { $_.ToString() })
+    # Convert the principal IDs to strings for consistent processing.
     $removeIds = @($RemovePrincipalId | Where-Object { $null -ne $_ } |
         ForEach-Object { $_.ToString() })
+    # Ensure that at least one principal ID is specified for addition or removal.
     if ($addIds.Count -eq 0 -and $removeIds.Count -eq 0) {
         throw 'Specify at least one principal ID to add or remove.'
     }
+    # Resolve the client configuration using the provided configuration path and deployment details.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         subscriptionId = $SubscriptionId; tenantId = $TenantId
         resourceGroupName = $ResourceGroupName; functionAppName = $FunctionAppName
     }
+    # Check for any missing deployment values in the resolved configuration.
     $missingDeploymentValues = @(
         foreach ($entry in @(
                 @{ Name = 'SubscriptionId'; Key = 'subscriptionId' }
@@ -3524,33 +3759,43 @@ function Update-AutoPilotTagPolicyManager {
         }
     )
     if ($missingDeploymentValues.Count -gt 0) {
+        # Retrieve the configured function URL and tenant ID from the resolved configuration.
         $configuredFunctionUrl = [string] $configuration['functionUrl']
         $configuredTenantId = Get-ConfigurationValue `
             $configuration tenantId 'TenantId'
+        # If the function URL is missing, throw an error indicating the required deployment details are missing.
         if ([string]::IsNullOrWhiteSpace($configuredFunctionUrl)) {
             throw "Azure deployment details required by manager-policy commands are missing: $($missingDeploymentValues -join ', '). Pass -SubscriptionId, -ResourceGroupName, and -FunctionAppName explicitly."
         }
         Write-Verbose "Discovering Azure Function App deployment details for '$configuredFunctionUrl'."
+        # Resolve the client function app deployment details from the function URL.
         $deployment = Resolve-ClientFunctionAppFromUrl `
             -FunctionUrl $configuredFunctionUrl `
             -TenantId $configuredTenantId `
             -SubscriptionId ([string] $configuration['subscriptionId'])
+        # Update the configuration with the resolved deployment details.
         $configuration['subscriptionId'] = $deployment.SubscriptionId
         $configuration['resourceGroupName'] = $deployment.ResourceGroupName
         $configuration['functionAppName'] = $deployment.FunctionAppName
+        # Save the updated client deployment configuration.
         Save-ClientDeploymentConfiguration `
             -Configuration $configuration `
             -Deployment $deployment
     }
+    # Retrieve the resolved deployment details from the configuration for subsequent operations.
     $resolvedSubscriptionId = Get-ConfigurationValue $configuration subscriptionId 'SubscriptionId'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $resolvedResourceGroup = Get-ConfigurationValue $configuration resourceGroupName 'ResourceGroupName'
     $resolvedFunctionName = Get-ConfigurationValue $configuration functionAppName 'FunctionAppName'
 
+    # Acquire an access token for the Azure management API using the resolved tenant and subscription.
     [void](Get-ClientAccessToken $resolvedTenantId 'https://management.azure.com/' $resolvedSubscriptionId)
+    # Set the Azure context to the resolved tenant and subscription.
     Set-AzContext -Tenant $resolvedTenantId -Subscription $resolvedSubscriptionId -WhatIf:$false | Out-Null
+    # Retrieve the function app instance using the resolved resource group and function app name.
     $functionApp = Get-AzWebApp -ResourceGroupName $resolvedResourceGroup -Name $resolvedFunctionName
     if (-not $functionApp) { throw "Function App '$resolvedFunctionName' was not found." }
+    # Acquire an access token for the Azure management API to interact with the function app.
 
     $managementTokenResult = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/'
     $plainToken = if ($managementTokenResult.Token -is [Security.SecureString]) {
@@ -3565,17 +3810,22 @@ function Update-AutoPilotTagPolicyManager {
 
     $coreModulePath = Get-CoreModulePath
     Import-Module $coreModulePath -Force
+    # Import the core module to access shared functions and utilities.
     if (-not (Test-TagManagerPolicyAdministratorRole $assignments $functionApp.Id)) {
         throw "Only an Owner or Contributor of Function App '$resolvedFunctionName' may change its Group Tag managers."
     }
 
+    # Retrieve the current application settings from the function app.
     $appSettings = @{}
+    # Initialize an empty hashtable to store the application settings.
     foreach ($setting in @($functionApp.SiteConfig.AppSettings)) {
         $appSettings[[string] $setting.Name] = [string] $setting.Value
     }
+    # Ensure that the MANAGER_AUTHORIZATION_POLICY setting exists in the application settings.
     if (-not $appSettings.ContainsKey('MANAGER_AUTHORIZATION_POLICY')) {
         throw "Function App '$resolvedFunctionName' does not contain MANAGER_AUTHORIZATION_POLICY."
     }
+    # Attempt to parse the existing MANAGER_AUTHORIZATION_POLICY from the application settings.
     try {
         $currentPolicy = $appSettings.MANAGER_AUTHORIZATION_POLICY | ConvertFrom-Json
         $installerId = ([guid] $currentPolicy.installerPrincipalId).ToString()
@@ -3589,11 +3839,13 @@ function Update-AutoPilotTagPolicyManager {
     $updatedIds = @(@($additionalIds) + $addIds | Where-Object {
         $_ -notin $removeIds -and $_ -ne $installerId
     } | Sort-Object -Unique)
+    # Construct the updated policy object with the installer and additional principal IDs.
     $updatedPolicy = [ordered]@{
         installerPrincipalId = $installerId
         additionalPrincipalIds = $updatedIds
         allowIntuneRoleAdministrators = [bool] $currentPolicy.allowIntuneRoleAdministrators
     }
+    # If the user confirms the action, proceed to update the policy on the function app.
     if ($PSCmdlet.ShouldProcess("$resolvedResourceGroup/$resolvedFunctionName", 'Update Group Tag managers')) {
         $audience = [string] $appSettings['API_AUDIENCE']
         if ($audience -notmatch '^api://') { throw 'Function API_AUDIENCE is required for audited manager changes.' }
@@ -3607,6 +3859,7 @@ function Update-AutoPilotTagPolicyManager {
             } -Depth 8 -Compress) -ErrorAction Stop
         $updatedPolicy = $response.policy
     }
+    # Return the updated policy object along with the function app name.
     [pscustomobject]@{ FunctionAppName = $resolvedFunctionName; ManagerPolicy = $updatedPolicy }
 }
 
@@ -3672,7 +3925,9 @@ function Add-AutoPilotTagPolicyManager {
         [guid] $SubscriptionId, [guid] $TenantId,
         [string] $ResourceGroupName, [string] $FunctionAppName, [string] $ConfigPath
     )
+    # Prepare the parameters for the Update-AutoPilotTagPolicyManager call, including any explicitly bound optional connection parameters.
     $parameters = @{ AddPrincipalId = $PrincipalId; Confirm = $false }
+    # Iterate over the optional connection parameters and add any that were explicitly bound to the parameters hashtable.
     foreach ($name in @(
             'SubscriptionId', 'TenantId', 'ResourceGroupName',
             'FunctionAppName', 'ConfigPath'
@@ -3681,9 +3936,11 @@ function Add-AutoPilotTagPolicyManager {
             $parameters[$name] = $PSBoundParameters[$name]
         }
     }
+    # If the WhatIf preference is set, include it in the parameters to preview the changes.
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
+    # Call the Update-AutoPilotTagPolicyManager function with the prepared parameters.
     Update-AutoPilotTagPolicyManager @parameters
 }
 
@@ -3751,7 +4008,9 @@ function Remove-AutoPilotTagPolicyManager {
         [guid] $SubscriptionId, [guid] $TenantId,
         [string] $ResourceGroupName, [string] $FunctionAppName, [string] $ConfigPath
     )
+    # Prepare the parameters for the Update-AutoPilotTagPolicyManager call, including any explicitly bound optional connection parameters.
     $parameters = @{ RemovePrincipalId = $PrincipalId; Confirm = $false }
+    # Iterate over the optional connection parameters and add any that were explicitly bound to the parameters hashtable.
     foreach ($name in @(
             'SubscriptionId', 'TenantId', 'ResourceGroupName',
             'FunctionAppName', 'ConfigPath'
@@ -3760,9 +4019,11 @@ function Remove-AutoPilotTagPolicyManager {
             $parameters[$name] = $PSBoundParameters[$name]
         }
     }
+    # If the WhatIf preference is set, include it in the parameters to preview the changes.
     if ($WhatIfPreference) {
         $parameters.WhatIf = $true
     }
+    # Call the Update-AutoPilotTagPolicyManager function with the prepared parameters.
     Update-AutoPilotTagPolicyManager @parameters
 }
 
@@ -3790,15 +4051,20 @@ function Get-ClientConfigurationBackupContext {
         [string] $TenantId,
         [string] $ConfigPath
     )
+    # Resolve the client configuration and prepare the backup context for the AutoPilot configuration export.
     $configuration = Resolve-ClientConfiguration $ConfigPath @{
         managementUrl = $ManagementUrl; apiApplicationIdUri = $ApiApplicationIdUri; tenantId = $TenantId
     }
+    # Extract the management URL, API audience, and tenant ID from the resolved configuration.
     $url = if ($ManagementUrl) { $ManagementUrl } else {
         Get-ConfigurationValue $configuration managementUrl 'ManagementUrl'
     }
+    # Convert the management URL to a URI object for validation and further processing.
     $audience = Get-ConfigurationValue $configuration apiApplicationIdUri 'ApiApplicationIdUri'
     $resolvedTenantId = Get-ConfigurationValue $configuration tenantId 'TenantId'
     $uri = [uri] $url
+    # Validate that the URI is absolute, uses HTTPS, and does not contain user info, query, or fragment components.
+    # Also ensure the path matches the expected API structure for site, UI, or management endpoints.
     if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or
         $uri.AbsolutePath -notmatch '^/(?:api/(?:ui(?:/.*)?|management(?:/(?:tag-policy|policy-managers))?))?/?$') {
         throw 'ManagementUrl must be an HTTPS site, UI, or supported management endpoint without query parameters.'
@@ -3852,7 +4118,9 @@ function Export-AutoPilotConfiguration {
         [string] $TenantId,
         [string] $ConfigPath
     )
+    # Resolve the destination path for the backup JSON file and check for existing files if -Force is not specified.
     $destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    # Ensure the directory for the destination path exists.
     if (-not $Force -and [IO.File]::Exists($destination)) { throw "Backup file already exists: $destination. Use -Force to replace it." }
     if ($PSCmdlet.ShouldProcess($destination, 'Export rules and policy managers as JSON')) {
         $context = Get-ClientConfigurationBackupContext -ManagementUrl $ManagementUrl `
@@ -3914,13 +4182,17 @@ function Restore-AutoPilotConfiguration {
         [string] $TenantId,
         [string] $ConfigPath
     )
+    # Read the backup JSON file and validate its structure before proceeding with the restore operation.
     $backup = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    # Validate that the backup content is a hashtable with the expected format, schema version, rules array, and manager policy dictionary.
     if ($backup -isnot [Collections.IDictionary] -or
         $backup['format'] -cne 'autopilot-importer-configuration' -or $backup['schemaVersion'] -ne 1 -or
         $backup['rules'] -isnot [array] -or $backup['managerPolicy'] -isnot [Collections.IDictionary]) {
         throw 'The file is not a supported configuration backup.'
     }
+    # Determine the target for the restore operation, using the management URL if provided, or a default description otherwise.
     $target = if ($ManagementUrl) { $ManagementUrl } else { 'configured Function App' }
+    # Prompt for confirmation and proceed with the restore operation if approved.
     if ($PSCmdlet.ShouldProcess($target, 'Replace all rules and additional policy managers from backup')) {
         $context = Get-ClientConfigurationBackupContext -ManagementUrl $ManagementUrl `
             -ApiApplicationIdUri $ApiApplicationIdUri -TenantId $TenantId -ConfigPath $ConfigPath
@@ -3930,14 +4202,17 @@ function Restore-AutoPilotConfiguration {
             $current['expectedPolicy'] -isnot [string]) {
             throw 'The target did not return configuration concurrency values.'
         }
+        # Prepare the request body for the restore operation, including the backup content and the expected concurrency values.
         $body = ConvertTo-Json -InputObject @{
             backup = $backup
             expectedRules = @($current['expectedRules'])
             expectedPolicy = $current['expectedPolicy']
         } -Depth 30 -Compress
+        # Invoke the REST method to perform the restore operation and capture the result.
         $result = Invoke-RestMethod @context -Method Put -ContentType 'application/json; charset=utf-8' `
             -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
             ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        # Validate the result of the restore operation to ensure it was successful and all rules and managers were applied.
         if ($result -isnot [Collections.IDictionary] -or $result['restored'] -ne $true -or
             $result['rulesState'] -ne 'applied' -or $result['managersState'] -ne 'applied') {
             throw 'The target did not confirm a complete restore. Reload configuration and management history before retrying.'
