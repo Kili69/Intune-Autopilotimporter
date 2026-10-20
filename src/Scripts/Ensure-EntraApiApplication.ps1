@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -101,13 +101,15 @@ function Get-GraphCollectionItems {
     param(
         [object] $Response
     )
-
+    # Return an empty array if the response is null.
     if ($null -eq $Response) {
         return @()
     }
+    # Return the 'value' property if it exists in the response dictionary.
     if ($Response -is [System.Collections.IDictionary] -and $Response.Contains('value')) {
         return @($Response['value'])
     }
+    # Return the 'value' property if it exists as a PSObject property.
     if ($Response.PSObject.Properties.Name -contains 'value') {
         return @($Response.value)
     }
@@ -121,13 +123,15 @@ $graphConnectParameters = @{
     Scopes    = @('Application.ReadWrite.All', 'User.Read')
     NoWelcome = $true
 }
+# Prompt for Graph sign-in if forced.
 if ($ForceGraphSignIn) {
     Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
     $graphConnectParameters.UseDeviceCode = $true
     Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
 }
+# Connect to Microsoft Graph with the prepared parameters.
 Connect-MgGraph @graphConnectParameters
-
+# Retrieve information about the currently signed-in user.
 $installingUser = Invoke-MgGraphRequest `
     -Method GET `
     -Uri 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
@@ -142,7 +146,7 @@ if ([string]::IsNullOrWhiteSpace($ClientId)) {
         -Method GET `
         -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,groupMembershipClaims,api,appRoles"
     $applications = @(Get-GraphCollectionItems -Response $response)
-
+    # Throw an error if multiple applications with the same display name are found.
     if ($applications.Count -gt 1) {
         throw "More than one Entra application named '$DisplayName' exists. Pass -EntraClientId explicitly."
     }
@@ -150,12 +154,15 @@ if ([string]::IsNullOrWhiteSpace($ClientId)) {
     $application = $applications | Select-Object -First 1
 }
 else {
+    # Validate that the provided Client ID is a GUID.
     $parsedClientId = [guid]::Empty
+    # Attempt to parse the Client ID as a GUID.
     if (-not [guid]::TryParse($ClientId, [ref] $parsedClientId)) {
         throw 'Entra API application Client ID must be a GUID.'
     }
-
+    # If parsing succeeds, $parsedClientId contains the valid GUID.
     $filter = [uri]::EscapeDataString("appId eq '$ClientId'")
+    # Prepare the filter for querying the application by its App ID.
     $response = Invoke-MgGraphRequest `
         -Method GET `
         -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,identifierUris,groupMembershipClaims,api,appRoles"
@@ -165,11 +172,13 @@ else {
     }
 }
 
+# If no application was found, prompt to create a new one.
 if (-not $application) {
+    # Confirm with the user before creating a new Entra API application.
     if (-not $PSCmdlet.ShouldProcess($DisplayName, 'Create Entra API application')) {
         return
     }
-
+    # Create the new Entra API application using Microsoft Graph.
     $application = Invoke-MgGraphRequest `
         -Method POST `
         -Uri 'https://graph.microsoft.com/v1.0/applications' `
@@ -177,6 +186,7 @@ if (-not $application) {
             displayName    = $DisplayName
             signInAudience = 'AzureADMyOrg'
         }
+    # Convert the response to a usable object if necessary.
     Write-Host "Created Entra application '$DisplayName' ($($application.appId))."
 }
 else {
@@ -194,13 +204,15 @@ $applicationIdUri = "api://$($application.appId)"
 # Retain every scope, preauthorized client, and identifier URI not managed here.
 $otherScopes = @($application.api.oauth2PermissionScopes | Where-Object value -ne $scopeValue |
     ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable })
+# Convert the pre-existing scopes to hashtables to retain them during the update.
 $otherPreAuthorizedApplications = @(
     $application.api.preAuthorizedApplications |
         Where-Object appId -ne $azurePowerShellClientId |
         ForEach-Object { $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable }
 )
+# Convert the pre-existing identifier URIs to strings to retain them during the update.
 $identifierUris = @($application.identifierUris | ForEach-Object { [string] $_ })
-
+# Prepare the body for the PATCH request to update the application.
 $updateBody = @{
     identifierUris = @($identifierUris + $applicationIdUri | Select-Object -Unique)
     groupMembershipClaims = 'SecurityGroup'
@@ -220,20 +232,23 @@ $updateBody = @{
         )
     }
 }
-
+# Determine if the scope or API configuration needs to be updated.
 $scopeNeedsUpdate = $null -eq $scope -or
     -not $scope.isEnabled -or
     $scope.type -ne 'Admin'
+# Determine if the API configuration needs to be updated based on the current application state.
 $apiConfigurationNeedsUpdate =
     $applicationIdUri -notin $identifierUris -or
     $application.groupMembershipClaims -ne 'SecurityGroup' -or
     $application.api.requestedAccessTokenVersion -ne 2 -or
     $scopeNeedsUpdate
-
+# Update the application if the API configuration needs to be changed.
 if ($apiConfigurationNeedsUpdate -and
     $PSCmdlet.ShouldProcess($applicationIdUri, 'Configure API scope')) {
+    Write-Host "Updating Entra application API configuration..."
     $updateJson = $updateBody | ConvertTo-Json -Depth 20 -Compress
     try {
+        # Send the PATCH request to update the Entra application with the new API configuration.
         Invoke-MgGraphRequest `
             -Method PATCH `
             -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" `
@@ -250,17 +265,20 @@ if ($apiConfigurationNeedsUpdate -and
 elseif (-not $apiConfigurationNeedsUpdate) {
     Write-Host "Entra application API configuration is already current."
 }
-
+# Determine if Azure PowerShell preauthorization needs to be updated for the application.
 # Azure PowerShell is the public client used by Get-AzAccessToken in the shipped
 # PowerShell tools. Preauthorization avoids an additional interactive consent
 # prompt while still limiting the client to the DeviceHash.Import scope.
 $existingPreAuthorization = @($application.api.preAuthorizedApplications |
     Where-Object appId -eq $azurePowerShellClientId) |
     Select-Object -First 1
+# Determine if the existing preauthorization includes the required scope for Azure PowerShell.
 $preAuthorizationNeedsUpdate = $null -eq $existingPreAuthorization -or
     $scopeId -notin @($existingPreAuthorization.delegatedPermissionIds)
+# Update the preauthorization if necessary.
 if ($preAuthorizationNeedsUpdate -and
     $PSCmdlet.ShouldProcess($applicationIdUri, 'Preauthorize Azure PowerShell')) {
+    # Prepare the body for the PATCH request to update the preauthorization for Azure PowerShell.
     $preAuthorizationBody = @{
         api = @{
             requestedAccessTokenVersion = 2
@@ -273,6 +291,7 @@ if ($preAuthorizationNeedsUpdate -and
             )
         }
     } | ConvertTo-Json -Depth 20 -Compress
+    # Send the PATCH request to update the preauthorization for Azure PowerShell.
     try {
         Invoke-MgGraphRequest `
             -Method PATCH `
@@ -293,6 +312,7 @@ elseif (-not $preAuthorizationNeedsUpdate) {
 
 # The app registration defines the API. Its tenant-local service principal is
 # the enterprise application evaluated when callers request and present tokens.
+# Retrieve the service principal for the application to manage its configuration.
 $servicePrincipalFilter = [uri]::EscapeDataString("appId eq '$($application.appId)'")
 $servicePrincipalResponse = Invoke-MgGraphRequest `
     -Method GET `
@@ -300,6 +320,7 @@ $servicePrincipalResponse = Invoke-MgGraphRequest `
 $servicePrincipal = @(Get-GraphCollectionItems -Response $servicePrincipalResponse) |
     Select-Object -First 1
 
+# Create the service principal if it does not exist.
 if (-not $servicePrincipal -and $PSCmdlet.ShouldProcess($DisplayName, 'Create enterprise application')) {
     $servicePrincipal = Invoke-MgGraphRequest `
         -Method POST `
@@ -307,8 +328,7 @@ if (-not $servicePrincipal -and $PSCmdlet.ShouldProcess($DisplayName, 'Create en
         -Body @{ appId = [string] $application.appId }
 }
 
-# Authorization is enforced by Easy Auth and the Function endpoints. Requiring
-# an enterprise-app assignment here would add a second, unintended access gate.
+# Disable app role assignment requirement for the service principal to allow endpoint-level authorization.
 if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
     $PSCmdlet.ShouldProcess($DisplayName, 'Allow endpoint-level authorization')) {
     Invoke-MgGraphRequest `
@@ -316,7 +336,7 @@ if ($servicePrincipal -and $servicePrincipal.appRoleAssignmentRequired -and
         -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($servicePrincipal.id)" `
         -Body @{ appRoleAssignmentRequired = $false } | Out-Null
 }
-
+# Output a summary of the application and service principal configuration.
 [pscustomobject]@{
     DisplayName              = [string] $application.displayName
     ClientId                 = [string] $application.appId

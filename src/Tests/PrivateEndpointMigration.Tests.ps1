@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -54,6 +54,16 @@ Describe 'Private endpoint migration safety' {
         $deleteIndex = $scriptText.IndexOf('-Method DELETE')
         $gateIndex | Should -BeGreaterThan -1
         $deleteIndex | Should -BeGreaterThan $gateIndex
+    }
+
+    It 'does not write a backup before validation and confirmation' {
+        $scriptText = Get-Content -LiteralPath $migrationScriptPath -Raw
+        $gateIndex = $scriptText.IndexOf('$PSCmdlet.ShouldProcess')
+        $backupWriteIndex = $scriptText.IndexOf('[IO.File]::WriteAllText')
+        $gateIndex | Should -BeGreaterThan -1
+        $backupWriteIndex | Should -BeGreaterThan $gateIndex
+        $scriptText.Substring(0, $gateIndex) |
+            Should -Not -Match '\b(?:Set-Content|Out-File|Add-Content)\b'
     }
 
     It 'preserves IDs, policy settings and Storage identity from the old app settings' {

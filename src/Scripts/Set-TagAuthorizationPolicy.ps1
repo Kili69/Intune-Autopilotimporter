@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -119,6 +119,7 @@ $moduleManifest = @(
         -LiteralPath (Join-Path $PSScriptRoot '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1') `
         -ErrorAction SilentlyContinue
 ) | Select-Object -First 1
+# Ensure that the AutopilotImport.Client module is located and imported before proceeding.
 if (-not $moduleManifest) {
     throw 'AutopilotImport.Client is not installed beside this script.'
 }
@@ -127,11 +128,13 @@ Import-Module $moduleManifest.FullName -Force
 # Forward only the connection parameters the caller supplied. Unbound values
 # stay absent, so the module resolves them from the client configuration file.
 $parameters = @{}
+# Collect only the connection parameters that the caller explicitly supplied.
 foreach ($name in @('ManagementUrl', 'ApiApplicationIdUri', 'TenantId', 'ConfigPath')) {
     if ($PSBoundParameters.ContainsKey($name)) {
         $parameters[$name] = $PSBoundParameters[$name]
     }
 }
+# Execute the appropriate cmdlet based on the specified parameter set.
 if ($List) {
     AutopilotImport.Client\Get-AutoPilotTagPolicy @parameters
 }

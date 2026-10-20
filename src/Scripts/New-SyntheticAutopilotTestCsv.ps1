@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -35,7 +35,7 @@ param(
     [ValidateRange(1, 10000)]
     [int] $Count = 100
 )
-
+# Resolve the output path and ensure the directory exists.
 $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath)
 [void] (New-Item -Path $resolvedOutputPath -ItemType Directory -Force)
 

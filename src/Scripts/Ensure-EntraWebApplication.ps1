@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -123,12 +123,14 @@ function Get-GraphItems {
     This helper gives the discovery queries one consistent collection shape.
     #>
     param([object] $Response)
-
+    # Return an empty array if the response is null.
     if ($null -eq $Response) { return @() }
+    # Return the 'value' property if it exists in the response dictionary.
     if ($Response -is [System.Collections.IDictionary] -and
         $Response.Contains('value')) {
         return @($Response['value'])
     }
+    # Return the 'value' property if it exists as a PSObject property.
     if ($Response.PSObject.Properties.Name -contains 'value') {
         return @($Response.value)
     }
@@ -169,8 +171,9 @@ function Merge-WebRedirectUri {
         [AllowNull()]
         [object[]] $AdditionalRedirectUri
     )
-
+    # Combine and normalize all redirect URIs, removing duplicates and empty entries.
     $redirectUris = @(
+        # Iterate over all provided redirect URIs and normalize them.
         foreach ($uri in @(
             @($ExistingRedirectUri)
             @($PrimaryRedirectUri)
@@ -182,8 +185,9 @@ function Merge-WebRedirectUri {
             }
         }
     ) | Select-Object -Unique
-
+    # Derive silent redirect URIs for each frontend entry point.
     $silentRedirectUris = @(
+        # Iterate over all normalized redirect URIs to generate corresponding silent redirect URIs.
         foreach ($uri in $redirectUris) {
             $parsedUri = $null
             # Derive the silent redirect only from frontend entry points. Any
@@ -232,19 +236,29 @@ function ConvertTo-ValidPermissionIds {
         [string[]] $ValidPermissionIds
     )
 
+    # Initialize a hash set to store valid permission IDs for quick lookup.
     $validIds = [Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase
     )
+    # Populate the hash set with all valid permission IDs.
     foreach ($validPermissionId in $ValidPermissionIds) {
+        # Attempt to parse each valid permission ID as a GUID before adding it to the hash set.
         $parsedId = [guid]::Empty
+        # Skip empty or null permission IDs.
+        if ([string]::IsNullOrWhiteSpace($validPermissionId)) {
+            continue
+        }
         if ([guid]::TryParse($validPermissionId, [ref] $parsedId)) {
             [void] $validIds.Add($parsedId.ToString())
         }
     }
-
+    # Initialize a list to store the filtered and validated permission IDs.
     $result = [Collections.Generic.List[string]]::new()
+    # Filter the provided permission IDs, keeping only those that are valid and unique.
     foreach ($permissionId in @($PermissionIds)) {
+        # Skip empty or null permission IDs before attempting to parse them.
         $parsedId = [guid]::Empty
+        # Attempt to parse the permission ID as a GUID.
         if ([guid]::TryParse([string] $permissionId, [ref] $parsedId) -and
             $validIds.Contains($parsedId.ToString()) -and
             -not $result.Contains($parsedId.ToString())) {
@@ -261,10 +275,12 @@ $connectParameters = @{
     Scopes    = @('Application.ReadWrite.All', 'User.Read')
     NoWelcome = $true
 }
+# Connect to Microsoft Graph using delegated permissions for the current administrator.
 if ($ForceGraphSignIn) {
     Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
     $connectParameters.UseDeviceCode = $true
 }
+# Establish the connection to Microsoft Graph with the specified parameters.
 Connect-MgGraph @connectParameters
 
 # Prefer a stable Client ID when supplied. Display-name discovery supports the
@@ -274,22 +290,26 @@ if ($ClientId -ne [guid]::Empty) {
     $filter = [uri]::EscapeDataString("appId eq '$ClientId'")
 }
 else {
+    # Use display name to discover the application if a specific Client ID is not provided.
     $escapedName = $DisplayName.Replace("'", "''")
     $filter = [uri]::EscapeDataString("displayName eq '$escapedName'")
 }
+# Retrieve the application from Microsoft Graph based on the constructed filter.
 $response = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,appId,displayName,signInAudience,spa,requiredResourceAccess"
+# Parse the response to extract the list of applications.
 $applications = @(Get-GraphItems -Response $response)
 if ($applications.Count -gt 1) {
     throw "More than one Entra application named '$DisplayName' exists. Pass -WebClientId explicitly."
 }
 $application = $applications | Select-Object -First 1
-
+# Select the first application from the list, if any.
 if (-not $application) {
     if (-not $PSCmdlet.ShouldProcess($DisplayName, 'Create Entra web application')) {
         return
     }
+    # Create a new application registration if it does not exist.
     $application = Invoke-MgGraphRequest `
         -Method POST `
         -Uri 'https://graph.microsoft.com/v1.0/applications' `
@@ -298,7 +318,7 @@ if (-not $application) {
             signInAudience = 'AzureADMyOrg'
         }
 }
-
+# Determine the existing redirect URIs for the SPA platform, if any.
 # A new registration has no spa property at all, so treat a missing or empty
 # platform configuration as an empty redirect URI list.
 $existingRedirectUris = if ($application.PSObject.Properties['spa'] -and
@@ -308,28 +328,34 @@ $existingRedirectUris = if ($application.PSObject.Properties['spa'] -and
 else {
     @()
 }
+# Merge the existing redirect URIs with the primary and additional redirect URIs.
 $redirectUris = @(Merge-WebRedirectUri `
     -ExistingRedirectUri $existingRedirectUris `
     -PrimaryRedirectUri $RedirectUri `
     -AdditionalRedirectUri $AdditionalRedirectUri)
+# The resulting $redirectUris array contains all redirect URIs that should be configured for the SPA platform.
 $requiredResourceAccess = if ($application.PSObject.Properties['requiredResourceAccess']) {
-    @($application.requiredResourceAccess)
-}
-else {
-    @()
-}
+        @($application.requiredResourceAccess)
+    }
+    else {
+        # Initialize the required resource access list as empty if it does not exist.
+        @()
+    }
 # Microsoft Graph replaces nested collections during PATCH operations. Retain
 # every API permission that targets a resource other than the import API.
 $armResourceAppId = '797f4846-ba00-4fd7-ba43-dac1f8f63013'
 $armScopeId = '41094075-9dad-400e-a0bd-54e686782033'
+# Define the resource and scope IDs for the ARM API.
 $otherResourceAccess = @($requiredResourceAccess | Where-Object {
     [string] $_.resourceAppId -notin @($ApiClientId.ToString(), $armResourceAppId)
 } | ForEach-Object {
     $_ | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
 })
+# Retain all existing API permissions that do not target the import API.
 $existingApiResourceAccess = @($requiredResourceAccess | Where-Object {
     [string] $_.resourceAppId -eq $ApiClientId.ToString()
 } | Select-Object -First 1)
+# Extract the existing API permissions for the import API, if any.
 $existingApiAccess = if ($existingApiResourceAccess.Count -gt 0) {
     @($existingApiResourceAccess[0].resourceAccess)
 }
@@ -343,6 +369,8 @@ $apiResourceAccess = @($existingApiAccess | Where-Object {
 } | ForEach-Object {
     @{ id = [string] $_.id; type = [string] $_.type }
 }) + @(@{ id = $ApiScopeId.ToString(); type = 'Scope' })
+# Rebuild the ARM API entry so that the DeviceHash.Import scope is requested
+# exactly once while other permissions on the same API are preserved.
 $armResourceAccess = @($requiredResourceAccess | Where-Object {
     [string] $_.resourceAppId -eq $armResourceAppId
 } | ForEach-Object { $_.resourceAccess } | Where-Object {
@@ -368,6 +396,7 @@ $updateBody = @{
         }
     )
 } | ConvertTo-Json -Depth 20 -Compress
+# Update the SPA application's redirect URIs and required API permissions.
 if ($PSCmdlet.ShouldProcess($application.displayName, 'Configure SPA redirect and API permission')) {
     Invoke-MgGraphRequest `
         -Method PATCH `
@@ -384,6 +413,7 @@ $servicePrincipalResponse = Invoke-MgGraphRequest `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=$servicePrincipalFilter&`$select=id,appId"
 $servicePrincipal = @(Get-GraphItems -Response $servicePrincipalResponse) |
     Select-Object -First 1
+# If the service principal does not exist, create it to represent the SPA in the tenant.
 if (-not $servicePrincipal -and
     $PSCmdlet.ShouldProcess($application.displayName, 'Create enterprise application')) {
     $servicePrincipal = Invoke-MgGraphRequest `
@@ -401,6 +431,7 @@ $apiScopeIdString = $ApiScopeId.ToString()
 $apiScope = @($apiApplication.api.oauth2PermissionScopes | Where-Object {
     [string] $_.id -eq $apiScopeIdString -and $_.isEnabled
 } | Select-Object -First 1)
+# Verify that the requested delegated permission scope exists and is enabled on the API application.
 if ($apiScope.Count -eq 0) {
     throw "Delegated permission scope '$apiScopeIdString' is not enabled on API application '$ApiApplicationObjectId'."
 }
@@ -447,6 +478,7 @@ $preAuthorizationBody = @{
         )
     }
 } | ConvertTo-Json -Depth 20 -Compress
+# Send the PATCH request to update the API application's preauthorized clients with the SPA's delegated permissions.
 if ($PSCmdlet.ShouldProcess($apiApplication.id, 'Preauthorize web application for API scope')) {
     Invoke-MgGraphRequest `
         -Method PATCH `
@@ -454,7 +486,7 @@ if ($PSCmdlet.ShouldProcess($apiApplication.id, 'Preauthorize web application fo
         -Body $preAuthorizationBody `
         -ContentType 'application/json' | Out-Null
 }
-
+# Return a summary object containing key details about the SPA and its API scope.
 [pscustomobject]@{
     DisplayName              = [string] $application.displayName
     ClientId                 = [string] $application.appId

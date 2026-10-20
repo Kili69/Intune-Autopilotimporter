@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261020.14] - 2026-10-20
+## [1.4.20261020.15] - 2026-10-20
 
 ### Added
 
@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Document private-endpoint migration in a dedicated operator How To linked from the README, with implementation and recovery details in the developer guide. Ship both guides in installation packages and clarify that running the migration requires a full repository checkout.
+- Expand script documentation and the VS Code spelling dictionary, show Entra API configuration progress, and explicitly skip blank valid-permission IDs. Keep migration backup writes after validation and confirmation and cover this with a regression test; rebuild versioned frontend and installation artifacts.
 
 ### Fixed
 

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -26,14 +26,33 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Ensure that the required environment variable and API headers are set up correctly.
 if (-not $env:GH_TOKEN) { throw 'GH_TOKEN is required for development-branch synchronization.' }
 $api = "https://api.github.com/repos/$Repository"
+# Set up the necessary headers for GitHub API requests.
 $headers = @{
     Authorization = "Bearer $env:GH_TOKEN"
     Accept = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
 }
 function Invoke-SyncApi {
+    <#
+    .SYNOPSIS
+    Invokes a GitHub API request for the synchronization process.
+
+    .DESCRIPTION
+    Constructs and sends an HTTP request to the GitHub API using the specified path, method, and body.
+    Handles JSON serialization and includes the necessary authentication headers.
+
+    .PARAMETER Path
+    The relative path of the GitHub API endpoint.
+
+    .PARAMETER Method
+    The HTTP method to use for the request. Defaults to 'GET'.
+
+    .PARAMETER Body
+    The request body for POST or other methods that require it.
+    #>
     param([string] $Path, [string] $Method = 'GET', [object] $Body)
     $parameters = @{ Uri = "$api/$Path"; Method = $Method; Headers = $headers; ErrorAction = 'Stop' }
     if ($null -ne $Body) {
@@ -43,7 +62,18 @@ function Invoke-SyncApi {
     Invoke-RestMethod @parameters
 }
 function Get-SyncPages {
+    <#
+    .SYNOPSIS
+    Retrieves all paginated results from a GitHub API endpoint.
+
+    .DESCRIPTION
+    Iterates through paginated responses from the specified GitHub API path, collecting all items.
+
+    .PARAMETER Path
+    The relative path of the GitHub API endpoint.
+    #>
     param([string] $Path)
+    # Initialize the page counter and begin iterating through paginated results.
     for ($page = 1; ; $page++) {
         $separator = if ($Path.Contains('?')) { '&' } else { '?' }
         $response = Invoke-SyncApi "$Path${separator}per_page=100&page=$page"
@@ -52,24 +82,34 @@ function Get-SyncPages {
         if ($items.Count -lt 100) { break }
     }
 }
-
+# Retrieve the SHA of the dev branch to use as the source for synchronization.
 $devSha = [string] (Invoke-SyncApi 'git/ref/heads/dev').object.sha
+# Validate that the retrieved dev SHA is in the correct format.
 if ($devSha -notmatch '^[0-9a-f]{40}$') { throw 'GitHub returned an invalid dev commit.' }
+# Retrieve the list of target branches to synchronize with dev, excluding main, dev, and existing sync branches.
 $targets = @(Get-SyncPages 'branches' | Where-Object {
     $_.name -notin @('main', 'dev') -and $_.name -notlike 'sync/dev/*' -and
     $_.name -notlike 'sync/dev-to-*'
 })
+# Initialize a list to track any synchronization failures.
 $failures = [Collections.Generic.List[string]]::new()
 foreach ($target in $targets) {
     try {
+        # Extract the SHA of the target branch and validate its format.
         $targetSha = [string] $target.commit.sha
+        # Ensure that the target SHA is a valid 40-character hexadecimal string.
         if ($targetSha -notmatch '^[0-9a-f]{40}$') { throw 'GitHub returned an invalid target commit.' }
+        # Compare the dev and target branches to determine if synchronization is necessary.
         $comparison = Invoke-SyncApi "compare/$devSha...$targetSha"
+        # The comparison object contains the status of the dev branch relative to the target branch.
+        # If the dev branch is ahead or identical to the target, no synchronization is needed.
         if ($comparison.status -in @('ahead', 'identical')) {
             Write-Verbose "$($target.name) already includes dev $devSha."
             continue
         }
+        # If the dev branch is behind or has diverged from the target, synchronization is required.
         if ($comparison.status -notin @('behind', 'diverged')) { throw 'Unexpected GitHub comparison result.' }
+        # Generate a unique sync branch name based on the target branch and dev SHA.
         $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
             [Text.Encoding]::UTF8.GetBytes([string] $target.name))).ToLowerInvariant().Substring(0, 16)
         $syncBranch = "sync/dev/$hash/$devSha"
@@ -79,6 +119,7 @@ foreach ($target in $targets) {
             if ([int] $_.Exception.Response.StatusCode -ne 404) { throw }
             $null = Invoke-SyncApi 'git/refs' POST @{ ref = "refs/heads/$syncBranch"; sha = $devSha }
         }
+        # Encode the target and head branch names for use in the GitHub API query.
         $encodedTarget = [uri]::EscapeDataString([string] $target.name)
         $encodedHead = [uri]::EscapeDataString("$($Repository.Split('/')[0]):$syncBranch")
         $existing = @(Get-SyncPages "pulls?state=all&base=$encodedTarget&head=$encodedHead")
@@ -86,6 +127,7 @@ foreach ($target in $targets) {
             $existing | ForEach-Object { $_.html_url }
             continue
         }
+        # If no existing pull request is found, create a new one for the sync branch.
         $pr = Invoke-SyncApi 'pulls' POST @{
             base = [string] $target.name
             head = $syncBranch
@@ -94,6 +136,7 @@ foreach ($target in $targets) {
         }
         $pr.html_url
     } catch {
+        # Record the failure and continue with the next target branch.
         $failures.Add([string] $target.name)
         Write-Error "Cannot synchronize '$($target.name)': $($_.Exception.Message)" -ErrorAction Continue
     }

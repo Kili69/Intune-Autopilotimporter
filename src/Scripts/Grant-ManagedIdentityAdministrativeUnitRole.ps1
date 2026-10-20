@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261020.14
+# Project-Version: 1.4.20261020.15
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -88,25 +88,30 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Clean and prepare the list of administrative unit names, removing any empty or whitespace-only entries and ensuring uniqueness.
 $names = @($AdministrativeUnitName |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     ForEach-Object { $_.Trim() } |
     Sort-Object -Unique)
+# If no valid administrative unit names are provided, output a message and exit.
 if ($names.Count -eq 0) {
     Write-Output 'No administrative units are referenced; no scoped role is required.'
     return
 }
-
+# Handle the Microsoft Graph sign-in process, optionally forcing a device-code sign-in.
 if ($ForceGraphSignIn) {
     Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
 }
+# Prepare the parameters for connecting to Microsoft Graph.
 $connectParameters = @{
     Scopes    = @('AdministrativeUnit.Read.All', 'RoleManagement.ReadWrite.Directory')
     NoWelcome = $true
 }
+# Connect to Microsoft Graph using the prepared parameters.
 if ($TenantId -ne [guid]::Empty) {
     $connectParameters.TenantId = $TenantId
 }
+# If a tenant ID is specified, include it in the connection parameters.
 if ($ForceGraphSignIn) {
     $connectParameters.UseDeviceCode = $true
     Write-Host "Sign in with a Privileged Role Administrator for tenant '$TenantId'."
@@ -115,9 +120,23 @@ Connect-MgGraph @connectParameters
 $graphContext = Get-MgContext
 
 function Invoke-RoleManagementRequest {
-    param([string] $Method, [string] $Uri, [hashtable] $Body)
+    <#
+    .SYNOPSIS
+    Invokes a Microsoft Graph request with error handling for role management operations.
 
+    .PARAMETER Method
+    The HTTP method to use for the request (e.g., GET, POST, PATCH, DELETE).
+
+    .PARAMETER Uri
+    The URI of the Microsoft Graph endpoint to call.
+
+    .PARAMETER Body
+    The request body as a hashtable, which will be converted to JSON.
+    #>
+    param([string] $Method, [string] $Uri, [hashtable] $Body)
+    # Initialize the parameters for the Microsoft Graph request.
     $parameters = @{ Method = $Method; Uri = $Uri }
+    # If a request body is provided, convert it to JSON and set the content type.
     if ($Body) {
         $parameters.Body = $Body | ConvertTo-Json -Depth 5 -Compress
         $parameters.ContentType = 'application/json'
@@ -132,31 +151,37 @@ function Invoke-RoleManagementRequest {
         throw
     }
 }
-
+# Define the required actions for the custom role.
 $requiredActions = @(
     'microsoft.directory/devices/standard/read'
     'microsoft.directory/devices/extensionAttributeSet1/update'
     'microsoft.directory/devices/extensionAttributeSet2/update'
     'microsoft.directory/devices/extensionAttributeSet3/update'
 )
+# Define the role definition for the custom role based on the required actions.
 $roleDefinition = @{
     displayName     = $RoleDisplayName
     description     = 'Allows the Autopilot Import Function managed identity to update device extension attributes in restricted management administrative units.'
     isEnabled       = $true
     rolePermissions = @(@{ allowedResourceActions = $requiredActions })
 }
+# Check if a custom role with the specified display name already exists.
 $roleFilter = [uri]::EscapeDataString("displayName eq '$($RoleDisplayName.Replace("'", "''"))'")
+# Retrieve the list of existing custom roles that match the specified display name.
 $roles = @((Invoke-RoleManagementRequest `
             -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=$roleFilter")['value'] |
         Where-Object { -not $_.isBuiltIn })
+# Ensure that the custom role name is unique.
 if ($roles.Count -gt 1) {
     throw "Custom role name '$RoleDisplayName' is not unique."
 }
+# Create the custom role if it does not already exist.
 if ($roles.Count -eq 0) {
     if (-not $PSCmdlet.ShouldProcess($RoleDisplayName, 'Create custom Entra role for device extension attributes')) {
         return
     }
+    # Invoke the request to create the custom role.
     $role = Invoke-RoleManagementRequest `
         -Method POST `
         -Uri 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions' `
@@ -164,10 +189,15 @@ if ($roles.Count -eq 0) {
     Write-Output "Created custom role '$RoleDisplayName'."
 }
 else {
+    # Update the custom role if it already exists and its permissions differ from the required actions.
     $role = $roles[0]
+    # Extract the current allowed resource actions from the existing role.
     $currentActions = @($role.rolePermissions | ForEach-Object { $_.allowedResourceActions } | Sort-Object -Unique)
+    # Compare the current actions with the required actions to determine if an update is needed.
     if (Compare-Object $currentActions ($requiredActions | Sort-Object -Unique)) {
+        # If the current actions differ from the required actions, an update is needed.
         if ($PSCmdlet.ShouldProcess($RoleDisplayName, 'Update custom Entra role permissions')) {
+            # Invoke the request to update the custom role with the new permissions.
             Invoke-RoleManagementRequest `
                 -Method PATCH `
                 -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($role.id)" `
@@ -176,42 +206,54 @@ else {
         }
     }
 }
+# Assign the custom role to the managed identity for the specified administrative units.
 $RoleDefinitionId = [string] $role.id
-
+# Prepare the filter to check for existing role assignments for the managed identity and the custom role.
 $assignmentFilter = [uri]::EscapeDataString(
     "principalId eq '$ManagedIdentityObjectId' and roleDefinitionId eq '$RoleDefinitionId'")
+# Retrieve the existing role assignments for the managed identity and the custom role.
 $existingScopes = @((Invoke-RoleManagementRequest `
             -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=$assignmentFilter&`$select=id,directoryScopeId")['value'] |
         ForEach-Object { [string] $_.directoryScopeId })
-
+# Iterate over the specified administrative unit names and assign the custom role if necessary.
 foreach ($name in $names) {
+    # Prepare the filter to retrieve the administrative unit by its display name.
     $unitFilter = [uri]::EscapeDataString("displayName eq '$($name.Replace("'", "''"))'")
+    # Retrieve the administrative unit(s) that match the specified display name.
     $units = @((Invoke-MgGraphRequest `
                 -Method GET `
                 -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=$unitFilter&`$select=id,displayName,isMemberManagementRestricted")['value'] |
             Where-Object { [string]::Equals([string] $_.displayName, $name, [StringComparison]::OrdinalIgnoreCase) })
+    # Check if the administrative unit was found and handle accordingly.
     if ($units.Count -eq 0) {
         Write-Warning "Administrative unit '$name' was not found; no scoped role was assigned."
         continue
     }
+    # Check if the administrative unit name is unique.
     if ($units.Count -gt 1) {
         Write-Warning "Administrative unit name '$name' is not unique; no scoped role was assigned."
         continue
     }
+    # Retrieve the first (and only) administrative unit from the list.
     $unit = $units[0]
+    # Check if the administrative unit is restricted for member management.
     if (-not $unit.isMemberManagementRestricted) {
         Write-Output "Administrative unit '$name' is not restricted; no scoped role is required."
         continue
     }
+    # Prepare the scope for the administrative unit.
     $scope = "/administrativeUnits/$($unit.id)"
+    # Check if the scoped role for this administrative unit is already assigned.
     if ($existingScopes -contains $scope) {
         Write-Output "Scoped role for restricted administrative unit '$name' is already assigned."
         continue
     }
+    # Confirm the action with the user before proceeding.
     if (-not $PSCmdlet.ShouldProcess($name, "Assign '$RoleDisplayName' scoped to restricted administrative unit")) {
         continue
     }
+    # Assign the scoped role to the managed identity for the administrative unit.
     Invoke-RoleManagementRequest `
         -Method POST `
         -Uri 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments' `
