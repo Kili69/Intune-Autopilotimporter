@@ -141,6 +141,7 @@ td { padding: 14px 12px; border-bottom: 1px solid #edf1f6; color: #43516b; max-w
 .status-error { color: #9a2835; background: #fdebed; }
 .status-processing { color: #174ea6; background: #e3eefc; }
 .operation-id { font-size: .82em; overflow-wrap: anywhere; }
+.status-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .trace-dialog {
   width: min(680px, calc(100% - 32px)); max-height: min(760px, calc(100vh - 48px));
   border: 0; border-radius: 20px; padding: 28px; color: #14213d;

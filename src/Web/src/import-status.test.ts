@@ -67,14 +67,14 @@ describe('Live operation progress', () => {
   it('reports queued tag changes as pending', () => {
     expect(getOperationProgress({
       operationType: 'tagChange', processingStage: 'queued', requestReceivedAtUtc: at(0), queuedAtUtc: at(0),
-    }, 'en')).toEqual({ state: 'pending', detail: 'Entra configuration queued · Waiting for background processing to start' });
+    }, 'en')).toEqual({ state: 'pending', detail: 'Entra configuration queued · Waiting for background processing to start', changedAt: at(0) });
   });
   it('reports the newest recorded worker step while processing', () => {
     expect(getOperationProgress({
       operationType: 'tagChange', processingStage: 'processing', requestReceivedAtUtc: at(0), queuedAtUtc: at(0),
       processingStartedAtUtc: at(17), autopilotGroupTagUpdatedAtUtc: at(18), entraDeviceResolvedAtUtc: at(19),
       extensionAttributeUpdatedAtUtc: at(20),
-    }, 'de')).toEqual({ state: 'processing', detail: 'Extension Attributes gesetzt · Entra-Konfiguration wird angewendet' });
+    }, 'de')).toEqual({ state: 'processing', detail: 'Extension Attributes gesetzt · Entra-Konfiguration wird angewendet', changedAt: at(20) });
   });
   it('does not show the Graph import status as progress of a pending import', () => {
     expect(getOperationProgress({ operationType: 'import', status: 'pending' }, 'de'))
@@ -82,7 +82,7 @@ describe('Live operation progress', () => {
     expect(getOperationProgress({
       operationType: 'import', status: 'complete', processingStage: 'processing', processingStartedAtUtc: at(30),
       processingAttempt: 3,
-    }, 'en')).toEqual({ state: 'processing', detail: 'Background processing started · Waiting for the Entra device (attempt 3)' });
+    }, 'en')).toEqual({ state: 'processing', detail: 'Background processing started · Waiting for the Entra device (attempt 3)', changedAt: at(30) });
   });
 });
 

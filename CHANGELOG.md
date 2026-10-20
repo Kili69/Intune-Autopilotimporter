@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261020.1] - 2026-10-20
+
+### Added
+
+- The web processing status shows a **Changed at** column with the time of each row's latest status or step change (full date as tooltip).
+
 ## [1.4.20261019.7] - 2026-10-19
 
 ### Fixed

@@ -2,6 +2,10 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261020.1` - 2026-10-20
+
+- Add a **Changed at** column to the web processing status. It shows when each row's status or step last changed, using the worker's recorded step, completion or failure time where available and otherwise the browser time of the change; the full date appears as a tooltip and the time never moves backwards. Rebuild the versioned frontend and installation artifacts.
+
 ## `1.4.20261019.7` - 2026-10-19
 
 - Fix silent re-tagging failures for devices in restricted management administrative units: the queue worker now stops on Graph HTTP errors, audits the failed step, Graph error, status code and attempt with a remediation hint, and no longer records attribute, group or completion success after a failure. Import history, tag-change and import status (`workflowStatus: error`), the web trace/timeline and `Get-AutoPilotImportHistory` expose the failure until a later retry completes.

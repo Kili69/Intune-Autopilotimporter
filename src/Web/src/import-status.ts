@@ -167,7 +167,7 @@ export function getHistoryStatus(record: ImportStatus): 'pending' | 'complete' |
 export function getOperationProgress(
   record: ImportTimelineRecord & { processingStage?: string | null; status?: string },
   language: 'de' | 'en',
-): { state: 'pending' | 'processing'; detail?: string } {
+): { state: 'pending' | 'processing'; detail?: string; changedAt?: string } {
   const text = (german: string, english: string): string => language === 'de' ? german : english;
   const state = record.processingStage === 'processing' || record.processingStartedAtUtc ? 'processing' : 'pending';
   const graphStatus = record.status?.toLowerCase();
@@ -186,8 +186,12 @@ export function getOperationProgress(
     waiting += ` (${text('Versuch', 'attempt')} ${record.processingAttempt})`;
   }
   const steps = getImportTimeline(record, language);
-  const last = steps[steps.length - 1]?.title;
-  return { state, detail: last ? `${last} · ${waiting}` : waiting };
+  const last = steps[steps.length - 1];
+  return {
+    state,
+    detail: last ? `${last.title} · ${waiting}` : waiting,
+    ...(last ? { changedAt: last.timestamp } : {}),
+  };
 }
 
 // Finished operations leave the live status list once Import History lists

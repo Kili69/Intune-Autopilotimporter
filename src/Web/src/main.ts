@@ -44,6 +44,7 @@ interface ImportResult {
   deviceId?: string;
   previousGroupTag?: string;
   groupTag?: string;
+  changedAt?: string;
 }
 
 interface ExistingAutopilotDevice {
@@ -90,7 +91,7 @@ const translations = {
     register: 'Geräte in Microsoft Intune registrieren',
     csvHelp: 'Die Datei verbleibt im Browser und wird vor dem Import validiert.', csvSelect: 'CSV auswählen oder hier ablegen', csvRequirements: 'Device Serial Number und Hardware Hash erforderlich',
     tagHelp: 'Es werden nur Tags angezeigt, die für Ihre Entra-Gruppen freigegeben sind.', authorizedTag: 'Autorisierter Tag', loadingTags: 'Tags werden geladen …', startImport: 'Import starten',
-    importStatus: 'Verarbeitungsstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', operationId: 'Vorgangs-ID', status: 'Status', details: 'Details',
+    importStatus: 'Verarbeitungsstatus', devicesZero: '0 Geräte', serialNumber: 'Seriennummer', operationId: 'Vorgangs-ID', status: 'Status', statusChangedAt: 'Geändert um', details: 'Details',
     historyTitle: 'Importverlauf', historyScopeSelf: 'Nur eigene Imports', historyScopeAll: 'Alle sichtbaren Imports', requestedBy: 'Angefordert von',
     footer: 'Intune Autopilot Import · Geschützt durch Microsoft Entra ID', author: 'Autor: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Bereit', statusSending: 'Wird gesendet', statusPending: 'Ausstehend', statusProcessing: 'In Bearbeitung', statusComplete: 'Abgeschlossen', statusError: 'Fehler',
     signInRequired: 'Anmeldung erforderlich.', selectTag: 'Tag auswählen', noTags: 'Keine Tags zugewiesen', noTagsForAccount: 'Für Ihr Konto ist kein Group Tag freigegeben.',
@@ -115,7 +116,7 @@ const translations = {
     register: 'Register devices in Microsoft Intune',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
     tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
-    importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', details: 'Details',
+    importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', statusChangedAt: 'Changed at', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusProcessing: 'Processing', statusComplete: 'Complete', statusError: 'Error',
     signInRequired: 'Sign-in required.', selectTag: 'Select a tag', noTags: 'No tags assigned', noTagsForAccount: 'No Group Tag is authorized for your account.',
@@ -285,7 +286,7 @@ app.innerHTML = `
           <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('details')}</th></tr></thead>
+              <thead><tr><th>${t('serialNumber')}</th><th>${t('operationId')}</th><th>${t('status')}</th><th>${t('statusChangedAt')}</th><th>${t('details')}</th></tr></thead>
               <tbody id="results-body"></tbody>
             </table>
           </div>
@@ -483,6 +484,12 @@ function updateResults(): void {
     badge.textContent = t(statusKeys[result.status]);
     statusCell.append(badge);
     row.append(statusCell);
+    result.changedAt ??= new Date().toISOString();
+    const changedCell = document.createElement('td');
+    changedCell.className = 'status-time';
+    changedCell.textContent = formatStatusTime(result.changedAt);
+    changedCell.title = formatHistoryDate(result.changedAt);
+    row.append(changedCell);
     const detailCell = document.createElement('td');
     detailCell.textContent = result.detail ?? '—';
     row.append(detailCell);
@@ -506,6 +513,22 @@ function pruneResultsInHistory(): void {
   if (remaining.length === results.length) return;
   results = remaining;
   updateResults();
+}
+
+function formatStatusTime(value: string): string {
+  return new Intl.DateTimeFormat(language === 'de' ? 'de-DE' : 'en-US', { timeStyle: 'medium' })
+    .format(new Date(value));
+}
+
+// Records when a live status row last changed. Server step timestamps are
+// preferred; they never move the displayed time backwards.
+function setResultState(item: ImportResult, status: ImportResult['status'], detail: string | undefined, at?: string): void {
+  if (item.status === status && item.detail === detail && item.changedAt) return;
+  const now = new Date().toISOString();
+  const candidate = at && !Number.isNaN(Date.parse(at)) ? at : now;
+  item.changedAt = item.changedAt && Date.parse(candidate) < Date.parse(item.changedAt) ? item.changedAt : candidate;
+  item.status = status;
+  item.detail = detail;
 }
 
 function formatHistoryDate(value?: string): string {
@@ -1008,20 +1031,18 @@ async function pollResults(): Promise<void> {
         processingError?: string | null;
       }>(statusUrl);
       if (status.workflowStatus === 'complete') {
-        item.status = 'complete';
-        item.detail = t('completedDetail');
+        setResultState(item, 'complete', t('completedDetail'), status.processingCompletedAtUtc);
         newlyFinished = true;
       } else if (status.workflowStatus === 'error') {
-        item.status = 'error';
-        item.detail = getImportError(status, language) ?? status.processingError ?? status.status;
+        setResultState(item, 'error', getImportError(status, language) ?? status.processingError ?? status.status,
+          status.processingFailedAtUtc ?? status.processingErrorAtUtc ?? undefined);
         newlyFinished = true;
       } else {
         const progress = getOperationProgress({ ...status, operationType: item.operationType }, language);
-        item.status = progress.state;
-        item.detail = progress.detail;
+        setResultState(item, progress.state, progress.detail, progress.changedAt);
       }
     } catch (error) {
-      item.detail = error instanceof Error ? error.message : t('statusFailed');
+      setResultState(item, item.status, error instanceof Error ? error.message : t('statusFailed'));
     }
   }));
   updateResults();

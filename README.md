@@ -123,7 +123,9 @@ While a device is pending, **Details** shows the latest recorded step and what
 the operation is waiting for, for example the Autopilot import of the device
 hash, the start of background processing, or the Entra device (with the retry
 attempt). The Graph import state alone is not shown, because Autopilot reports
-`complete` before the Entra configuration has run.
+`complete` before the Entra configuration has run. **Changed at** shows when
+the row's status or step last changed; it uses the recorded worker step time
+where available, and hovering shows the full date.
 
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The
