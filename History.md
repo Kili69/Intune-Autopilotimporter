@@ -2,7 +2,7 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261020.12` - 2026-10-20
+## `1.4.20261020.13` - 2026-10-20
 
 - Add a **Changed at** column to the web processing status. It shows when each row's status or step last changed, using the worker's recorded step, completion or failure time where available and otherwise the browser time of the change; the full date appears as a tooltip and the time never moves backwards.
 - Show an information notice when re-tagging skips selected devices that already use the target Group Tag (for example because the policy name hides the tag value), listing their serial numbers, instead of silently processing only the remaining devices.
@@ -11,6 +11,7 @@ This file describes the development of the project by released or recorded proje
 - Forward forced device-code Graph sign-in to the managed-identity permission grant during installation. Also allow a short-lived, in-memory Graph access token for unattended permission grants when embedded terminals cannot display device-code prompts; never write the token to the migration backup.
 - Return the preserved manager authorization policy in the installer result when resuming from a migration backup, instead of failing after successful code publication.
 - Preserve optional in-memory Graph authentication when the installer delegates to the regular updater and back; reject conflicting device-code and token choices before making changes.
+- Preserve the deployed Flex VNet address space on regular updates, including custom migration ranges, instead of reverting to the installation default.
 
 ## `1.4.20261019.7` - 2026-10-19
 

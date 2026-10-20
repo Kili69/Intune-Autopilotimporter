@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.12
+# Project-Version: 1.4.20261020.13
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -305,5 +305,15 @@ Describe 'Private endpoint migration safety' {
         $installerText | Should -Match 'GraphAccessToken\s*=\s*\$GraphAccessToken'
         $updaterText | Should -Match '\[securestring\] \$GraphAccessToken'
         $updaterText | Should -Match 'GraphAccessToken\s*=\s*\$GraphAccessToken'
+    }
+
+    It 'preserves the live Flex VNet range during regular updates' {
+        $updaterText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Installer\Update-AutopilotImport.ps1'
+        ) -Raw
+        $updaterText | Should -Match 'if \(\$site\.properties\.reserved -eq \$true\)'
+        $updaterText | Should -Match 'virtualNetworks/vnet-\$FunctionAppName'
+        $updaterText | Should -Match '\$prefixes\.Count -ne 1'
+        $updaterText | Should -Match 'VirtualNetworkAddressPrefix = if \(\$virtualNetworkAddressPrefix\)'
     }
 }

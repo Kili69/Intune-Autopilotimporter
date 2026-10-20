@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.12
+# Project-Version: 1.4.20261020.13
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -1296,6 +1296,23 @@ $site = $siteResponse.Content | ConvertFrom-Json
 if (-not $site.id) {
     throw "Function App '$FunctionAppName' was not found."
 }
+$virtualNetworkAddressPrefix = $null
+if ($site.properties.reserved -eq $true) {
+    $vnetId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/vnet-$FunctionAppName"
+    $vnetResponse = Invoke-AzRestMethod `
+        -Method GET `
+        -Path "${vnetId}?api-version=2024-05-01"
+    if ($vnetResponse.StatusCode -ne 200) {
+        throw "Existing Flex virtual network lookup failed with HTTP $($vnetResponse.StatusCode)."
+    }
+    $vnet = $vnetResponse.Content | ConvertFrom-Json -ErrorAction Stop
+    $prefixes = @($vnet.properties.addressSpace.addressPrefixes)
+    if ($prefixes.Count -ne 1 -or
+        $prefixes[0] -notmatch '^(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.\d{1,3}\.0/24$') {
+        throw "Existing Flex virtual network '$vnetId' has an unsupported address space."
+    }
+    $virtualNetworkAddressPrefix = [string] $prefixes[0]
+}
 $previousApplicationInsightsWorkspaceResourceId = `
     Get-UpdateApplicationInsightsWorkspaceResourceId `
         -SubscriptionId $SubscriptionId `
@@ -1389,6 +1406,9 @@ Write-Host "  Tenant        : $TenantId"
 Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
+if ($virtualNetworkAddressPrefix) {
+    Write-Host "  Flex VNet     : $virtualNetworkAddressPrefix (preserved)"
+}
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
 Write-Host '  Rules        : unchanged; read only to detect restricted administrative units'
@@ -1415,6 +1435,7 @@ $installerParameters = @{
     InstallMissingModules       = $InstallMissingModules
     ForceGraphSignIn            = $ForceGraphSignIn
     GraphAccessToken            = $GraphAccessToken
+    VirtualNetworkAddressPrefix = if ($virtualNetworkAddressPrefix) { $virtualNetworkAddressPrefix } else { '172.16.0.0/24' }
     SkipExistingDeploymentDetection = $true
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission
