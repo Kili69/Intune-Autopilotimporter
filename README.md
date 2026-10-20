@@ -1252,7 +1252,11 @@ the new Flex app has been created, rerun the migration script with the original
 `-BackupPath`; it resumes the existing Flex deployment without deleting its
 app or plan. In a terminal where WAM cannot open a browser, add
 `-ForceGraphSignIn` to grant the new identity's Graph permissions with
-device-code sign-in.
+device-code sign-in. If that terminal cannot display a device-code prompt,
+pass a short-lived Microsoft Graph delegated token with
+`Application.Read.All` and `AppRoleAssignment.ReadWrite.All` as a
+`SecureString` via `-GraphAccessToken`. The token remains in memory and is not
+written to the migration backup.
 This migration causes downtime and is staged rather than transactional. The
 custom-domain binding and certificate must be recreated
 afterwards; see the script help and [Developer Guide](DEVELOPER.md#legacy-consumption-to-private-flex-migration).

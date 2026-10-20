@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.9
+# Project-Version: 1.4.20261020.10
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -270,5 +270,20 @@ Describe 'Private endpoint migration safety' {
             Should -Match 'ForceGraphSignIn\s*=\s*\$ForceGraphSignIn'
         $installerText |
             Should -Match '(?s)& \$grantScriptPath\s*`?\s*-ManagedIdentityObjectId \$managedIdentityObjectId\s*`?\s*-TenantId \$TenantId\s*`?\s*-ForceGraphSignIn:\$ForceGraphSignIn'
+    }
+
+    It 'passes an in-memory Graph token without writing it into the migration backup' {
+        $installerText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        ) -Raw
+        $grantText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Scripts\Grant-ManagedIdentityGraphPermission.ps1'
+        ) -Raw
+        $migrationAst.Extent.Text | Should -Match '\[securestring\] \$GraphAccessToken'
+        $migrationAst.Extent.Text | Should -Match 'GraphAccessToken\s*=\s*\$GraphAccessToken'
+        $migrationAst.Extent.Text | Should -Not -Match 'sourceManagedIdentityObjectId\s*=\s*.+GraphAccessToken'
+        $installerText | Should -Match '-GraphAccessToken \$GraphAccessToken'
+        $grantText | Should -Match '\$connectParameters\.AccessToken = \$GraphAccessToken'
+        $grantText | Should -Match "different tenant than"
     }
 }

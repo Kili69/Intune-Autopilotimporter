@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.9
+# Project-Version: 1.4.20261020.10
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -250,6 +250,8 @@ param(
     [switch] $InstallMissingModules,
 
     [switch] $ForceGraphSignIn,
+
+    [securestring] $GraphAccessToken,
 
     [switch] $SkipExistingDeploymentDetection,
 
@@ -2197,7 +2199,8 @@ if (-not $SkipGraphPermission) {
     & $grantScriptPath `
         -ManagedIdentityObjectId $managedIdentityObjectId `
         -TenantId $TenantId `
-        -ForceGraphSignIn:$ForceGraphSignIn
+        -ForceGraphSignIn:$ForceGraphSignIn `
+        -GraphAccessToken $GraphAccessToken
 }
 
 if (-not $SkipPublish) {

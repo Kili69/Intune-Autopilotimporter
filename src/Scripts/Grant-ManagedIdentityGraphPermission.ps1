@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.4.20261020.9
+# Project-Version: 1.4.20261020.10
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -56,8 +56,14 @@ param(
 
     [guid] $TenantId,
 
-    [switch] $ForceGraphSignIn
+    [switch] $ForceGraphSignIn,
+
+    [securestring] $GraphAccessToken
 )
+
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
 $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 # Application permissions required by the Function App at runtime. The managed
@@ -87,20 +93,26 @@ if ($ForceGraphSignIn) {
     Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
 }
 
-$connectParameters = @{
-    Scopes    = @('Application.Read.All', 'AppRoleAssignment.ReadWrite.All')
-    NoWelcome = $true
+$connectParameters = @{ NoWelcome = $true }
+if ($GraphAccessToken) {
+    $connectParameters.AccessToken = $GraphAccessToken
 }
-if ($TenantId -ne [guid]::Empty) {
-    $connectParameters.TenantId = $TenantId
-}
-if ($ForceGraphSignIn) {
-    $connectParameters.UseDeviceCode = $true
-    Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+else {
+    $connectParameters.Scopes = @('Application.Read.All', 'AppRoleAssignment.ReadWrite.All')
+    if ($TenantId -ne [guid]::Empty) {
+        $connectParameters.TenantId = $TenantId
+    }
+    if ($ForceGraphSignIn) {
+        $connectParameters.UseDeviceCode = $true
+        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+    }
 }
 Connect-MgGraph @connectParameters
 
 $graphContext = Get-MgContext
+if ($TenantId -ne [guid]::Empty -and [string] $graphContext.TenantId -ne $TenantId.ToString()) {
+    throw "The Microsoft Graph token belongs to a different tenant than '$TenantId'."
+}
 Write-Host "Microsoft Graph account: $($graphContext.Account)"
 
 # Microsoft Graph exposes its application permissions as app roles on its own

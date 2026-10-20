@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Az.Accounts, Az.Resources, Az.Websites, Az.Storage
-# Project-Version: 1.4.20261020.9
+# Project-Version: 1.4.20261020.10
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -53,6 +53,11 @@ Installs missing prerequisites through the regular installer.
 .PARAMETER ForceGraphSignIn
 Uses explicit device-code sign-in for Graph role assignment.
 
+.PARAMETER GraphAccessToken
+Optional in-memory Microsoft Graph token with Application.Read.All and
+AppRoleAssignment.ReadWrite.All delegated permissions, used instead of
+interactive sign-in. Never persist the token in the migration backup.
+
 .PARAMETER AcceptCustomDomainCertificateReissue
 Confirms that the existing custom-domain binding/certificate will be removed
 and must be recreated manually after migration.
@@ -100,11 +105,16 @@ param(
 
     [switch] $ForceGraphSignIn,
 
+    [securestring] $GraphAccessToken,
+
     [switch] $AcceptCustomDomainCertificateReissue
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
 function Invoke-MigrationArmRequest {
     param(
@@ -688,6 +698,7 @@ $installerParameters = @{
     SkipEntraAppConfiguration = $true
     InstallMissingModules = $InstallMissingModules
     ForceGraphSignIn = $ForceGraphSignIn
+    GraphAccessToken = $GraphAccessToken
 }
 if ($customHostNames.Count -gt 0) {
     $installerParameters.AdditionalWebRedirectUri = @(
