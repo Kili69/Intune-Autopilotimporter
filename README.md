@@ -1250,7 +1250,9 @@ It removes only the old Function identity's three Storage data-role assignments
 before recreating those roles for the new identity. If deployment fails after
 the new Flex app has been created, rerun the migration script with the original
 `-BackupPath`; it resumes the existing Flex deployment without deleting its
-app or plan.
+app or plan. In a terminal where WAM cannot open a browser, add
+`-ForceGraphSignIn` to grant the new identity's Graph permissions with
+device-code sign-in.
 This migration causes downtime and is staged rather than transactional. The
 custom-domain binding and certificate must be recreated
 afterwards; see the script help and [Developer Guide](DEVELOPER.md#legacy-consumption-to-private-flex-migration).

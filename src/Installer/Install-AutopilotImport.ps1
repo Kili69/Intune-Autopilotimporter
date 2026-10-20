@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.8
+# Project-Version: 1.4.20261020.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -2196,7 +2196,8 @@ if (-not $SkipGraphPermission) {
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
     & $grantScriptPath `
         -ManagedIdentityObjectId $managedIdentityObjectId `
-        -TenantId $TenantId
+        -TenantId $TenantId `
+        -ForceGraphSignIn:$ForceGraphSignIn
 }
 
 if (-not $SkipPublish) {

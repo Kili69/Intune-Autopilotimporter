@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.8
+# Project-Version: 1.4.20261020.9
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -261,5 +261,14 @@ Describe 'Private endpoint migration safety' {
             Should -Match 'if \(-not \$resumeExistingFlex\)'
         $migrationAst.Extent.Text |
             Should -Match 'Remove obsolete Storage roles for the old identity and resume deployment without deleting the existing Flex app or plan'
+    }
+
+    It 'passes forced device-code sign-in through the migration and installer to Graph permissions' {
+        $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        $installerText = Get-Content -LiteralPath $installerPath -Raw
+        $migrationAst.Extent.Text |
+            Should -Match 'ForceGraphSignIn\s*=\s*\$ForceGraphSignIn'
+        $installerText |
+            Should -Match '(?s)& \$grantScriptPath\s*`?\s*-ManagedIdentityObjectId \$managedIdentityObjectId\s*`?\s*-TenantId \$TenantId\s*`?\s*-ForceGraphSignIn:\$ForceGraphSignIn'
     }
 }
