@@ -326,7 +326,7 @@ or policy scope.
 
 Devices with an empty current Group Tag or a tag different from the authorized
 target tag can be selected. Devices that already use the selected target tag
-are not submitted. The frontend processes up to three selected devices in
+are not submitted; a notice lists their serial numbers. The frontend processes up to three selected devices in
 parallel and refreshes running Group Tag changes every 5 seconds. While the
 queue worker processes a change, the result shows **Processing** with the most
 recent recorded step, such as the applied Group Tag or extension attributes.

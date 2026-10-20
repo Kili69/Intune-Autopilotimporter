@@ -109,6 +109,7 @@ select:disabled { color: #8b95a8; background: #f5f7fa; }
 .alert { margin: 0 0 24px; padding: 14px 17px; border-radius: 11px; line-height: 1.45; }
 .alert-error { color: #8c2330; background: #fff0f1; border: 1px solid #f6cbd0; }
 .alert-success { color: #116647; background: #eaf9f2; border: 1px solid #bce8d5; }
+.alert-info { color: #1d4f91; background: #eef5ff; border: 1px solid #c7dcfa; }
 .results-panel { margin-top: 24px; }
 .activity-section:not(.hidden) + .activity-section {
   margin-top: 30px; padding-top: 30px; border-top: 1px solid #e5eaf1;

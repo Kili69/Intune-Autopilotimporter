@@ -431,7 +431,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-language]').forEach((button)
   });
 });
 
-function showAlert(message: string, kind: 'error' | 'success' = 'error'): void {
+function showAlert(message: string, kind: 'error' | 'success' | 'info' = 'error'): void {
   alertBox.textContent = message;
   alertBox.className = `alert alert-${kind}`;
 }
@@ -1176,11 +1176,17 @@ importButton.addEventListener('click', async () => {
 });
 tagChangeButton.addEventListener('click', async () => {
   const groupTag = newTagSelect.value;
-  const selectedDevices = selectedExistingDevices().filter(
-    (device) => device.groupTag !== groupTag,
-  );
+  const selection = selectedExistingDevices();
+  const selectedDevices = selection.filter((device) => device.groupTag !== groupTag);
+  const unchangedDevices = selection.filter((device) => device.groupTag === groupTag);
   if (!groupTag || selectedDevices.length === 0) return;
   clearAlert();
+  if (unchangedDevices.length > 0) {
+    const serials = unchangedDevices.map((device) => device.serialNumber).join(', ');
+    showAlert(language === 'de'
+      ? `${unchangedDevices.length} ausgewählte(s) Gerät(e) hat/haben bereits das Tag ${groupTag} und wurde(n) übersprungen: ${serials}`
+      : `${unchangedDevices.length} selected device(s) already use the tag ${groupTag} and were skipped: ${serials}`, 'info');
+  }
   processing = true;
   updateImportButton();
   updateTagChangeButton();
