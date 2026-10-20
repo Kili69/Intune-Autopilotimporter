@@ -1246,6 +1246,11 @@ place, including the policy blob, processing queues and `importaudit` table;
 the installer then disables public Storage access and creates the private
 endpoints. Supply a private, non-overlapping `-VirtualNetworkAddressPrefix`;
 the script checks current subscription VNets before deleting the source app.
+It removes only the old Function identity's three Storage data-role assignments
+before recreating those roles for the new identity. If deployment fails after
+the new Flex app has been created, rerun the migration script with the original
+`-BackupPath`; it resumes the existing Flex deployment without deleting its
+app or plan.
 This migration causes downtime and is staged rather than transactional. The
 custom-domain binding and certificate must be recreated
 afterwards; see the script help and [Developer Guide](DEVELOPER.md#legacy-consumption-to-private-flex-migration).

@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Az.Accounts, Az.Resources, Az.Websites, Az.Storage
-# Project-Version: 1.4.20261020.7
+# Project-Version: 1.4.20261020.8
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -248,6 +248,107 @@ function Read-MigrationSettings {
     }
 }
 
+function Read-MigrationBackup {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][guid] $SubscriptionId,
+        [Parameter(Mandatory)][guid] $TenantId,
+        [Parameter(Mandatory)][string] $ResourceGroupName,
+        [Parameter(Mandatory)][string] $FunctionAppName
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Migration backup '$Path' was not found."
+    }
+    $backup = Get-Content -LiteralPath $Path -Raw |
+        ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    if ($backup.format -cne 'autopilot-import-private-endpoint-migration' -or
+        $backup.schemaVersion -ne 1 -or
+        $backup.subscriptionId -ne $SubscriptionId.ToString() -or
+        $backup.tenantId -ne $TenantId.ToString() -or
+        $backup.resourceGroupName -ne $ResourceGroupName -or
+        $backup.functionAppName -ne $FunctionAppName -or
+        $backup.configuration -isnot [System.Collections.IDictionary]) {
+        throw 'The supplied migration backup does not match this target or has an unsupported format.'
+    }
+    return $backup
+}
+
+function Get-MigrationSourceManagedIdentityId {
+    param(
+        [Parameter(Mandatory)][string] $StorageResourceId,
+        [string] $KnownPrincipalId
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($KnownPrincipalId)) {
+        $parsedId = [guid]::Empty
+        if (-not [guid]::TryParse($KnownPrincipalId, [ref] $parsedId)) {
+            throw "Invalid source managed identity object ID '$KnownPrincipalId'."
+        }
+        return $parsedId.ToString()
+    }
+
+    $requiredRoles = @(
+        'Storage Blob Data Owner'
+        'Storage Queue Data Contributor'
+        'Storage Table Data Contributor'
+    )
+    $assignments = @(Get-AzRoleAssignment -Scope $StorageResourceId -ErrorAction Stop |
+        Where-Object {
+            $_.ObjectType -eq 'ServicePrincipal' -and
+            $_.RoleDefinitionName -in $requiredRoles -and
+            ([string] $_.Scope).TrimEnd('/') -ieq $StorageResourceId.TrimEnd('/')
+        })
+    if ($assignments.Count -eq 0) { return $null }
+
+    $candidates = @($assignments | Group-Object ObjectId | Where-Object {
+        $assignedRoles = @($_.Group | ForEach-Object { [string] $_.RoleDefinitionName })
+        @($requiredRoles | Where-Object { $_ -notin $assignedRoles }).Count -eq 0
+    })
+    if ($candidates.Count -ne 1) {
+        throw 'Could not uniquely identify the old Function managed identity from its complete set of Storage roles. No role assignments were changed.'
+    }
+    return [string] $candidates[0].Name
+}
+
+function Remove-MigrationSourceStorageRoleAssignments {
+    param(
+        [Parameter(Mandatory)][string] $StorageResourceId,
+        [Parameter(Mandatory)][guid] $PrincipalId
+    )
+
+    $requiredRoles = @(
+        'Storage Blob Data Owner'
+        'Storage Queue Data Contributor'
+        'Storage Table Data Contributor'
+    )
+    $assignments = @(Get-AzRoleAssignment -Scope $StorageResourceId -ErrorAction Stop |
+        Where-Object {
+            [string] $_.ObjectId -ieq $PrincipalId.ToString() -and
+            $_.RoleDefinitionName -in $requiredRoles -and
+            ([string] $_.Scope).TrimEnd('/') -ieq $StorageResourceId.TrimEnd('/')
+        })
+    foreach ($assignment in $assignments) {
+        Remove-AzRoleAssignment `
+            -ObjectId $PrincipalId.ToString() `
+            -RoleDefinitionName $assignment.RoleDefinitionName `
+            -Scope $StorageResourceId `
+            -Confirm:$false `
+            -ErrorAction Stop |
+            Out-Null
+    }
+
+    $remainingAssignments = @(Get-AzRoleAssignment -Scope $StorageResourceId -ErrorAction Stop |
+        Where-Object {
+            [string] $_.ObjectId -ieq $PrincipalId.ToString() -and
+            $_.RoleDefinitionName -in $requiredRoles -and
+            ([string] $_.Scope).TrimEnd('/') -ieq $StorageResourceId.TrimEnd('/')
+        })
+    if ($remainingAssignments.Count -gt 0) {
+        throw "One or more obsolete Storage role assignments remain for managed identity '$PrincipalId'."
+    }
+}
+
 function Get-MigrationIPv4Range {
     param([Parameter(Mandatory)][string] $Cidr)
 
@@ -275,7 +376,11 @@ function Get-MigrationIPv4Range {
 }
 
 function Assert-MigrationNetworkPrefix {
-    param([Parameter(Mandatory)][string] $Cidr)
+    param(
+        [Parameter(Mandatory)][string] $Cidr,
+        [string] $ExistingTargetVNetName,
+        [string] $ExistingTargetVNetResourceGroup
+    )
 
     $candidate = Get-MigrationIPv4Range -Cidr $Cidr
     $baseAddress = [System.Net.IPAddress]::Parse(($Cidr -split '/')[0])
@@ -295,6 +400,11 @@ function Assert-MigrationNetworkPrefix {
     $existingVnets = Get-AzVirtualNetwork -ErrorAction Stop
     foreach ($vnet in $existingVnets) {
         foreach ($existingCidr in $vnet.AddressSpace.AddressPrefixes) {
+            if ($vnet.Name -eq $ExistingTargetVNetName -and
+                $vnet.ResourceGroupName -eq $ExistingTargetVNetResourceGroup -and
+                $existingCidr -eq $Cidr) {
+                continue
+            }
             $existingRange = Get-MigrationIPv4Range -Cidr ([string] $existingCidr)
             if ($null -ne $existingRange -and
                 $candidate.Start -le $existingRange.End -and
@@ -303,6 +413,17 @@ function Assert-MigrationNetworkPrefix {
             }
         }
     }
+}
+
+function Read-MigrationBackupForTarget {
+    param([Parameter(Mandatory)][string] $Path)
+
+    Read-MigrationBackup `
+        -Path $Path `
+        -SubscriptionId $SubscriptionId `
+        -TenantId $TenantId `
+        -ResourceGroupName $ResourceGroupName `
+        -FunctionAppName $FunctionAppName
 }
 
 $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
@@ -316,6 +437,8 @@ if (-not $context -or
 $site = $null
 $siteResponse = $null
 $backupJson = $null
+$resumeExistingFlex = $false
+$sourceManagedIdentityId = $null
 try {
     $siteResponse = Invoke-MigrationArmRequest -Method GET `
         -Path "${resourceId}?api-version=2024-11-01"
@@ -332,17 +455,7 @@ if ($null -eq $site) {
         -not (Test-Path -LiteralPath $BackupPath -PathType Leaf)) {
         throw 'The source Function App is absent. Supply the migration backup using -BackupPath to resume.'
     }
-    $backup = Get-Content -LiteralPath $BackupPath -Raw |
-        ConvertFrom-Json -AsHashtable -ErrorAction Stop
-    if ($backup.format -cne 'autopilot-import-private-endpoint-migration' -or
-        $backup.schemaVersion -ne 1 -or
-        $backup.subscriptionId -ne $SubscriptionId.ToString() -or
-        $backup.tenantId -ne $TenantId.ToString() -or
-        $backup.resourceGroupName -ne $ResourceGroupName -or
-        $backup.functionAppName -ne $FunctionAppName -or
-        $backup.configuration -isnot [System.Collections.IDictionary]) {
-        throw 'The supplied migration backup does not match this target or has an unsupported format.'
-    }
+    $backup = Read-MigrationBackupForTarget -Path $BackupPath
     $backupConfiguration = $backup.configuration
     $location = [string] $backup.location
     $customHostNames = @($backup.customHostNames)
@@ -354,67 +467,100 @@ if ($null -eq $site) {
 }
 else {
     $webApp = Get-AzWebApp -ResourceGroupName $ResourceGroupName -Name $FunctionAppName -ErrorAction Stop
-    if ([string] $webApp.State -ne 'Running' -or $webApp.Reserved -eq $true) {
-        throw "Expected a running Windows Function App, got state '$($webApp.State)' and Linux-reserved '$($webApp.Reserved)'."
+    if ([string] $webApp.State -ne 'Running') {
+        throw "Expected a running Function App, got state '$($webApp.State)'."
     }
-    $planResourceId = [string] $site.properties.serverFarmId
-    if ($planResourceId -notmatch '/providers/Microsoft\.Web/serverfarms/[^/]+$') {
-        throw 'The existing Function App has no valid hosting plan resource ID.'
-    }
-    $planResponse = Invoke-MigrationArmRequest -Method GET `
-        -Path "${planResourceId}?api-version=2024-11-01"
-    $plan = $planResponse.Content | ConvertFrom-Json -ErrorAction Stop
-    if ($plan.sku.name -ne 'Y1' -or $plan.properties.reserved -eq $true -or
-        $plan.kind -notmatch 'functionapp') {
-        throw "Expected a Windows Y1 Function Consumption plan; found SKU '$($plan.sku.name)'."
-    }
-    if ([int] $plan.properties.numberOfSites -gt 1) {
-        throw "Hosting plan '$($plan.name)' has more than one site. Refusing to delete a shared plan."
-    }
-    $slotsResponse = Invoke-MigrationArmRequest -Method GET `
-        -Path "$resourceId/slots?api-version=2024-11-01"
-    if (@(($slotsResponse.Content | ConvertFrom-Json -ErrorAction Stop).value).Count -gt 0) {
-        throw 'Deployment slots exist. Remove or migrate them separately before this operation.'
-    }
-    $location = [string] $site.location
-    $customHostNames = @(Get-MigrationCustomHostNames -ResourceId $resourceId)
-    $backupConfiguration = Read-MigrationSettings `
-        -SubscriptionId $SubscriptionId `
-        -ResourceGroupName $ResourceGroupName `
-        -FunctionAppName $FunctionAppName `
-        -TenantId $TenantId
-    if ([string]::IsNullOrWhiteSpace($VirtualNetworkAddressPrefix)) {
-        $VirtualNetworkAddressPrefix = '172.16.0.0/24'
-    }
-    $backupPath = if (-not [string]::IsNullOrWhiteSpace($BackupPath)) {
-        [IO.Path]::GetFullPath($BackupPath)
+    if ($webApp.Reserved -eq $true) {
+        if ([string]::IsNullOrWhiteSpace($BackupPath)) {
+            throw 'A Linux Flex Function App already exists. Supply its original migration backup using -BackupPath to resume safely.'
+        }
+        $backup = Read-MigrationBackupForTarget -Path $BackupPath
+        $backupConfiguration = $backup.configuration
+        $location = [string] $site.location
+        $customHostNames = @($backup.customHostNames)
+        $planResourceId = [string] $site.properties.serverFarmId
+        if ($planResourceId -notmatch '/providers/Microsoft\.Web/serverfarms/[^/]+$') {
+            throw 'The existing Flex Function App has no valid hosting plan resource ID.'
+        }
+        $planResponse = Invoke-MigrationArmRequest -Method GET `
+            -Path "${planResourceId}?api-version=2024-11-01"
+        $plan = $planResponse.Content | ConvertFrom-Json -ErrorAction Stop
+        if ($plan.sku.name -ne 'FC1' -or
+            $plan.kind -notmatch 'functionapp' -or
+            $plan.properties.reserved -ne $true) {
+            throw "The existing Linux app does not use a Flex Consumption plan (found SKU '$($plan.sku.name)')."
+        }
+        if (-not $PSBoundParameters.ContainsKey('VirtualNetworkAddressPrefix')) {
+            $VirtualNetworkAddressPrefix = [string] $backup.virtualNetworkAddressPrefix
+        }
+        $sourceManagedIdentityId = [string] $backup['sourceManagedIdentityObjectId']
+        $resumeExistingFlex = $true
+        $sourceWasPresent = $false
     }
     else {
-        Join-Path ([Environment]::GetFolderPath('MyDocuments')) `
-            "AutopilotImport\migration-$FunctionAppName-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+        $planResourceId = [string] $site.properties.serverFarmId
+        if ($planResourceId -notmatch '/providers/Microsoft\.Web/serverfarms/[^/]+$') {
+            throw 'The existing Function App has no valid hosting plan resource ID.'
+        }
+        $planResponse = Invoke-MigrationArmRequest -Method GET `
+            -Path "${planResourceId}?api-version=2024-11-01"
+        $plan = $planResponse.Content | ConvertFrom-Json -ErrorAction Stop
+        if ($plan.sku.name -ne 'Y1' -or $plan.properties.reserved -eq $true -or
+            $plan.kind -notmatch 'functionapp') {
+            throw "Expected a Windows Y1 Function Consumption plan; found SKU '$($plan.sku.name)'."
+        }
+        if ([int] $plan.properties.numberOfSites -gt 1) {
+            throw "Hosting plan '$($plan.name)' has more than one site. Refusing to delete a shared plan."
+        }
+        $slotsResponse = Invoke-MigrationArmRequest -Method GET `
+            -Path "$resourceId/slots?api-version=2024-11-01"
+        if (@(($slotsResponse.Content | ConvertFrom-Json -ErrorAction Stop).value).Count -gt 0) {
+            throw 'Deployment slots exist. Remove or migrate them separately before this operation.'
+        }
+        $location = [string] $site.location
+        $customHostNames = @(Get-MigrationCustomHostNames -ResourceId $resourceId)
+        $backupConfiguration = Read-MigrationSettings `
+            -SubscriptionId $SubscriptionId `
+            -ResourceGroupName $ResourceGroupName `
+            -FunctionAppName $FunctionAppName `
+            -TenantId $TenantId
+        if ($null -ne $site.identity) {
+            $sourceManagedIdentityId = [string] $site.identity.principalId
+        }
+        if ([string]::IsNullOrWhiteSpace($VirtualNetworkAddressPrefix)) {
+            $VirtualNetworkAddressPrefix = '172.16.0.0/24'
+        }
+        $backupPath = if (-not [string]::IsNullOrWhiteSpace($BackupPath)) {
+            [IO.Path]::GetFullPath($BackupPath)
+        }
+        else {
+            Join-Path ([Environment]::GetFolderPath('MyDocuments')) `
+                "AutopilotImport\migration-$FunctionAppName-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+        }
+        $backupDocument = [ordered]@{
+            format = 'autopilot-import-private-endpoint-migration'
+            schemaVersion = 1
+            createdAtUtc = [datetime]::UtcNow.ToString('o')
+            subscriptionId = $SubscriptionId.ToString()
+            tenantId = $TenantId.ToString()
+            resourceGroupName = $ResourceGroupName
+            functionAppName = $FunctionAppName
+            location = $location
+            planResourceId = $planResourceId
+            virtualNetworkAddressPrefix = $VirtualNetworkAddressPrefix
+            sourceManagedIdentityObjectId = $sourceManagedIdentityId
+            customHostNames = $customHostNames
+            configuration = $backupConfiguration
+            retainedResources = @(
+                $backupConfiguration.storageAccountName
+                'configuration/tag-authorization-policy.json'
+                'device-attribute-updates queue'
+                'importaudit table'
+            )
+        }
+        $backupJson = $backupDocument | ConvertTo-Json -Depth 12
+        $sourceWasPresent = $true
     }
-    $backupDocument = [ordered]@{
-        format = 'autopilot-import-private-endpoint-migration'
-        schemaVersion = 1
-        createdAtUtc = [datetime]::UtcNow.ToString('o')
-        subscriptionId = $SubscriptionId.ToString()
-        tenantId = $TenantId.ToString()
-        resourceGroupName = $ResourceGroupName
-        functionAppName = $FunctionAppName
-        location = $location
-        planResourceId = $planResourceId
-        virtualNetworkAddressPrefix = $VirtualNetworkAddressPrefix
-        customHostNames = $customHostNames
-        configuration = $backupConfiguration
-        retainedResources = @(
-            $backupConfiguration.storageAccountName
-            'configuration/tag-authorization-policy.json'
-            'device-attribute-updates queue'
-            'importaudit table'
-        )
-    }
-    $backupJson = $backupDocument | ConvertTo-Json -Depth 12
-    $sourceWasPresent = $true
 }
 
 $storage = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName `
@@ -425,7 +571,20 @@ if ([string] $storage.StorageAccountName -ne $backupConfiguration.storageAccount
 if ([string]::IsNullOrWhiteSpace($VirtualNetworkAddressPrefix)) {
     throw 'The migration backup does not specify a VNet address prefix. Supply -VirtualNetworkAddressPrefix.'
 }
-Assert-MigrationNetworkPrefix -Cidr $VirtualNetworkAddressPrefix
+Assert-MigrationNetworkPrefix `
+    -Cidr $VirtualNetworkAddressPrefix `
+    -ExistingTargetVNetName "vnet-$FunctionAppName" `
+    -ExistingTargetVNetResourceGroup $ResourceGroupName
+
+if ([string]::IsNullOrWhiteSpace($sourceManagedIdentityId)) {
+    $sourceManagedIdentityId = Get-MigrationSourceManagedIdentityId `
+        -StorageResourceId ([string] $storage.Id)
+}
+$parsedSourceManagedIdentityId = [guid]::Empty
+if (-not [string]::IsNullOrWhiteSpace($sourceManagedIdentityId) -and
+    -not [guid]::TryParse($sourceManagedIdentityId, [ref] $parsedSourceManagedIdentityId)) {
+    throw "Invalid source managed identity object ID '$sourceManagedIdentityId'."
+}
 
 if ($customHostNames.Count -gt 0 -and -not $AcceptCustomDomainCertificateReissue) {
     throw "Custom domains are bound ($($customHostNames -join ', ')). Re-run with -AcceptCustomDomainCertificateReissue after planning a manual Flex site-scoped certificate setup."
@@ -447,10 +606,13 @@ Write-Host "  Backup       : $BackupPath"
 Write-Host '  Downtime     : from Function App deletion until the Flex deployment and smoke test complete'
 
 $action = if ($sourceWasPresent) {
-    'Delete the Windows Function App and Y1 plan, then recreate as Linux Flex Consumption'
+    'Delete the Windows Function App and Y1 plan, remove its Storage roles, then recreate as Linux Flex Consumption'
+}
+elseif ($resumeExistingFlex) {
+    'Remove obsolete Storage roles for the old identity and resume deployment without deleting the existing Flex app or plan'
 }
 else {
-    'Delete any remaining Y1 plan, then resume Linux Flex Consumption deployment from backup'
+    'Remove obsolete Storage roles for the old identity, delete any remaining source plan, then resume Linux Flex deployment from backup'
 }
 if (-not $PSCmdlet.ShouldProcess("$ResourceGroupName/$FunctionAppName", $action)) {
     return
@@ -469,20 +631,29 @@ if ($sourceWasPresent) {
     Wait-MigrationResourceDeleted -ResourceId $resourceId -ApiVersion '2024-11-01'
 }
 
-try {
-    $planCheck = Invoke-MigrationArmRequest -Method GET `
-        -Path "${planResourceId}?api-version=2024-11-01"
-    if ($planCheck.StatusCode -eq 200) {
-        $deletePlan = Invoke-MigrationArmRequest -Method DELETE `
-            -Path "${planResourceId}?api-version=2024-11-01"
-        if ($deletePlan.StatusCode -ge 400) {
-            throw "Y1 plan deletion failed with HTTP $($deletePlan.StatusCode)."
-        }
-        Wait-MigrationResourceDeleted -ResourceId $planResourceId -ApiVersion '2024-11-01'
-    }
+if ($null -ne $parsedSourceManagedIdentityId -and
+    $parsedSourceManagedIdentityId -ne [guid]::Empty) {
+    Remove-MigrationSourceStorageRoleAssignments `
+        -StorageResourceId ([string] $storage.Id) `
+        -PrincipalId $parsedSourceManagedIdentityId
 }
-catch {
-    if ($_.Exception.Message -notmatch '(?i)\b404\b|ResourceNotFound') { throw }
+
+if (-not $resumeExistingFlex) {
+    try {
+        $planCheck = Invoke-MigrationArmRequest -Method GET `
+            -Path "${planResourceId}?api-version=2024-11-01"
+        if ($planCheck.StatusCode -eq 200) {
+            $deletePlan = Invoke-MigrationArmRequest -Method DELETE `
+                -Path "${planResourceId}?api-version=2024-11-01"
+            if ($deletePlan.StatusCode -ge 400) {
+                throw "Y1 plan deletion failed with HTTP $($deletePlan.StatusCode)."
+            }
+            Wait-MigrationResourceDeleted -ResourceId $planResourceId -ApiVersion '2024-11-01'
+        }
+    }
+    catch {
+        if ($_.Exception.Message -notmatch '(?i)\b404\b|ResourceNotFound') { throw }
+    }
 }
 
 $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'

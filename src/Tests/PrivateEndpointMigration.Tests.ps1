@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.7
+# Project-Version: 1.4.20261020.8
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -16,7 +16,9 @@ BeforeAll {
             'Invoke-MigrationArmRequest'
             'Read-MigrationSettings'
         'Get-MigrationIPv4Range'
-        'Assert-MigrationNetworkPrefix'
+            'Get-MigrationSourceManagedIdentityId'
+            'Remove-MigrationSourceStorageRoleAssignments'
+            'Assert-MigrationNetworkPrefix'
     )) {
         $functionAst = $migrationAst.FindAll({
                 param($node)
@@ -141,5 +143,123 @@ Describe 'Private endpoint migration safety' {
         { Assert-MigrationNetworkPrefix -Cidr '172.16.0.0/24' } |
             Should -Throw '*overlaps existing VNet*'
         Should -Invoke Get-AzVirtualNetwork -Times 2
+    }
+
+    It 'allows its existing target VNet during a partial Flex migration resume' {
+        Mock Get-AzVirtualNetwork {
+            @(
+                [pscustomobject]@{
+                    Name = 'vnet-func-test'
+                    ResourceGroupName = 'rg-test'
+                    AddressSpace = [pscustomobject]@{ AddressPrefixes = @('192.168.0.0/24') }
+                }
+            )
+        }
+
+        {
+            Assert-MigrationNetworkPrefix `
+                -Cidr '192.168.0.0/24' `
+                -ExistingTargetVNetName 'vnet-func-test' `
+                -ExistingTargetVNetResourceGroup 'rg-test'
+        } | Should -Not -Throw
+    }
+
+    It 'identifies the old Function identity only from its complete Storage role set' {
+        $principalId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        $scope = '/subscriptions/test/resourceGroups/rg-test/providers/Microsoft.Storage/storageAccounts/autopilot'
+        Mock Get-AzRoleAssignment {
+            @(
+                'Storage Blob Data Owner'
+                'Storage Queue Data Contributor'
+                'Storage Table Data Contributor'
+            ) | ForEach-Object {
+                [pscustomobject]@{
+                    ObjectId = $principalId
+                    ObjectType = 'ServicePrincipal'
+                    RoleDefinitionName = $_
+                    Scope = $scope
+                }
+            }
+        }
+
+        Get-MigrationSourceManagedIdentityId -StorageResourceId $scope |
+            Should -BeExactly $principalId
+
+        Mock Get-AzRoleAssignment {
+            @(
+                [pscustomobject]@{
+                    ObjectId = $principalId
+                    ObjectType = 'ServicePrincipal'
+                    RoleDefinitionName = 'Storage Blob Data Owner'
+                    Scope = $scope
+                }
+            )
+        }
+        {
+            Get-MigrationSourceManagedIdentityId -StorageResourceId $scope
+        } | Should -Throw '*complete set of Storage roles*'
+    }
+
+    It 'removes only the old identity roles at the retained Storage account scope' {
+        $principalId = [guid] 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        $scope = '/subscriptions/test/resourceGroups/rg-test/providers/Microsoft.Storage/storageAccounts/autopilot'
+        $roleNames = @(
+            'Storage Blob Data Owner'
+            'Storage Queue Data Contributor'
+            'Storage Table Data Contributor'
+        )
+        $script:roleQueryCount = 0
+        Mock Get-AzRoleAssignment {
+            $script:roleQueryCount++
+            if ($script:roleQueryCount -eq 1) {
+                @(
+                    $roleNames | ForEach-Object {
+                        [pscustomobject]@{
+                            ObjectId = $principalId.ToString()
+                            RoleDefinitionName = $_
+                            Scope = $scope
+                        }
+                    }
+                    [pscustomobject]@{
+                        ObjectId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+                        RoleDefinitionName = 'Storage Blob Data Owner'
+                        Scope = $scope
+                    }
+                    [pscustomobject]@{
+                        ObjectId = $principalId.ToString()
+                        RoleDefinitionName = 'Storage Blob Data Owner'
+                        Scope = "$scope/blobServices/default/containers/policy"
+                    }
+                )
+            }
+            else {
+                @(
+                    [pscustomobject]@{
+                        ObjectId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+                        RoleDefinitionName = 'Storage Blob Data Owner'
+                        Scope = $scope
+                    }
+                )
+            }
+        }
+        Mock Remove-AzRoleAssignment {}
+
+        Remove-MigrationSourceStorageRoleAssignments `
+            -StorageResourceId $scope `
+            -PrincipalId $principalId
+
+        Should -Invoke Remove-AzRoleAssignment -Times 3 -Exactly
+        Should -Invoke Remove-AzRoleAssignment -ParameterFilter {
+            $ObjectId -eq $principalId.ToString() -and
+            $RoleDefinitionName -in $roleNames -and
+            $Scope -eq $scope
+        } -Times 3 -Exactly
+    }
+
+    It 'preserves the existing Flex plan when resuming after a partial deployment' {
+        $migrationAst.Extent.Text |
+            Should -Match 'if \(-not \$resumeExistingFlex\)'
+        $migrationAst.Extent.Text |
+            Should -Match 'Remove obsolete Storage roles for the old identity and resume deployment without deleting the existing Flex app or plan'
     }
 }

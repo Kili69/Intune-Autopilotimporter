@@ -1326,8 +1326,12 @@ Functions subnet is derived as `/26` and its private-endpoint subnet as `/27`.
 This is a destructive, staged migration with downtime between app deletion and
 the new app's successful deployment. A migration backup can be passed with
 `-BackupPath` to resume if the app has already been deleted. Do not remove the
-Storage account or its data. If deployment fails after the new Flex app starts
-to provision, use the regular updater to finish that deployment.
+Storage account or its data. The migration script removes only the old Function
+identity's three account-scoped Storage data-role assignments before the
+installer assigns them to the new identity. If deployment fails after the
+Linux Flex app has been created, rerun the migration script with the original
+`-BackupPath`; it preserves the existing Flex app and plan while finishing the
+deployment.
 
 Custom hostnames are recorded, but their bindings and certificates are not
 automatically transferred. Microsoft documents that apps created before
