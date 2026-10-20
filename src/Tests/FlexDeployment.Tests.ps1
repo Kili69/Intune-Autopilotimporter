@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.4
+# Project-Version: 1.4.20261020.6
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\Scripts\FunctionDeployment.psm1') -Force
@@ -277,21 +277,11 @@ Describe 'Flex OneDeploy publication' {
             $template | Should -Match "serviceName: 'Microsoft.App/environments'"
             $template | Should -Match "virtualNetworkSubnetId: isFlex \? '.+/subnets/functions'"
         }
-        It 'allocates the VNet and both subnets within the private 172.16.0.0/12 range' {
-            $prefixes = @([regex]::Matches($template, "'(?<prefix>(?:\d{1,3}\.){3}\d{1,3}/\d{1,2})'") |
-                ForEach-Object { $_.Groups['prefix'].Value })
-            $prefixes.Count | Should -Be 3
-            $prefixes | Should -Contain '172.16.0.0/24'
-            $prefixes | Should -Contain '172.16.0.0/26'
-            $prefixes | Should -Contain '172.16.0.64/27'
-            foreach ($prefix in $prefixes) {
-                $address, $length = $prefix -split '/'
-                $octets = ([ipaddress]::Parse($address)).GetAddressBytes()
-                $octets[0] | Should -Be 172
-                $octets[1] | Should -BeGreaterOrEqual 16
-                $octets[1] | Should -BeLessOrEqual 31
-                [int] $length | Should -BeGreaterOrEqual 12
-            }
+        It 'derives both private subnets from a configurable private VNet /24' {
+            $template | Should -Match "param virtualNetworkAddressPrefix string = '172\.16\.0\.0/24'"
+            $template | Should -Match 'addressPrefixes:\s*\[\s*virtualNetworkAddressPrefix\s*\]'
+            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 2, 0\)'
+            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 3, 2\)'
         }
         It 'uses identity-authenticated deployment storage without Azure Files or connection strings' {
             $template | Should -Match "name: 'deployment-packages'"

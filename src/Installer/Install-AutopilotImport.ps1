@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.4
+# Project-Version: 1.4.20261020.6
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -82,6 +82,19 @@ non-interactive deployments do not need a delegated Microsoft Graph login.
 .PARAMETER ApiAudience
 Optional token audience accepted by Easy Auth. The default is api:// followed
 by the Entra application Client ID.
+
+.PARAMETER TagAuthorizationPolicyFallback
+Optional legacy Group Tag policy JSON to use as the application-setting
+fallback. The policy blob remains authoritative and is not modified.
+
+.PARAMETER ManagerAuthorizationPolicyJson
+Optional manager authorization policy JSON to preserve during a controlled
+deployment migration.
+
+.PARAMETER VirtualNetworkAddressPrefix
+Private, aligned IPv4 /24 for the Flex VNet. Function integration and private
+endpoint subnets are derived from this prefix. Review for overlap with peered
+and on-premises networks before deployment.
 
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
@@ -219,6 +232,13 @@ param(
     [guid] $InstallerPrincipalId,
 
     [string] $ApiAudience,
+
+    [string] $TagAuthorizationPolicyFallback,
+
+    [string] $ManagerAuthorizationPolicyJson,
+
+    [ValidatePattern('^(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.\d{1,3}\.0/24$')]
+    [string] $VirtualNetworkAddressPrefix = '172.16.0.0/24',
 
     [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
     [string] $DeviceTagExtensionAttribute = 'extensionAttribute1',
@@ -1839,8 +1859,18 @@ $ClientToolsPath = Read-DeploymentValue `
 if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$') {
     throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
 }
-$tagAuthorizationPolicyJson = Get-DeploymentTagPolicyFallback `
-    -ExistingFunctionApp $existingFunctionApp
+$vnetAddress = [System.Net.IPAddress]::Parse(($VirtualNetworkAddressPrefix -split '/')[0])
+if ($vnetAddress.GetAddressBytes().Length -ne 4 -or
+    [int] ($VirtualNetworkAddressPrefix -split '/')[1] -ne 24 -or
+    @($vnetAddress.GetAddressBytes() | Where-Object { $_ -gt 255 }).Count -gt 0) {
+    throw 'VirtualNetworkAddressPrefix must be a valid private IPv4 /24.'
+}
+$tagAuthorizationPolicyJson = if ($PSBoundParameters.ContainsKey('TagAuthorizationPolicyFallback')) {
+    $TagAuthorizationPolicyFallback
+}
+else {
+    Get-DeploymentTagPolicyFallback -ExistingFunctionApp $existingFunctionApp
+}
 $hostingMode = Get-AutopilotDeploymentHostingMode -ExistingFunctionApp $existingFunctionApp
 if ($hostingMode -eq 'FlexConsumption') {
     $regionResponse = Invoke-AzRestMethod -Method GET `
@@ -2029,13 +2059,32 @@ $additionalManagerPrincipalIds = @(ConvertTo-AdditionalManagerPrincipalIds `
     -InstallingUserObjectId $installingUserObjectId)
 # Separate policy administration from group-to-tag authorization: being allowed
 # to import with a tag does not automatically grant policy-management rights.
-$managerAuthorizationPolicy = [ordered]@{
-    installerPrincipalId          = $installingUserObjectId.ToString()
-    additionalPrincipalIds        = $additionalManagerPrincipalIds
-    allowIntuneRoleAdministrators = $true
+if (-not [string]::IsNullOrWhiteSpace($ManagerAuthorizationPolicyJson)) {
+    $preservedManagerPolicy = $ManagerAuthorizationPolicyJson |
+        ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    if ($preservedManagerPolicy -isnot [System.Collections.IDictionary] -or
+        [guid]::Empty -eq [guid] $preservedManagerPolicy.installerPrincipalId -or
+        $preservedManagerPolicy.additionalPrincipalIds -isnot [array] -or
+        $preservedManagerPolicy.allowIntuneRoleAdministrators -isnot [bool]) {
+        throw 'ManagerAuthorizationPolicyJson is missing a valid installerPrincipalId, additionalPrincipalIds array, or allowIntuneRoleAdministrators boolean.'
+    }
+    if ([guid] $preservedManagerPolicy.installerPrincipalId -ne $installingUserObjectId) {
+        throw 'ManagerAuthorizationPolicyJson installerPrincipalId must match InstallerPrincipalId.'
+    }
+    $managerAuthorizationPolicyJson = $ManagerAuthorizationPolicyJson
+    $additionalManagerPrincipalIds = @($preservedManagerPolicy.additionalPrincipalIds)
 }
-$managerAuthorizationPolicyJson = $managerAuthorizationPolicy |
-    ConvertTo-Json -Depth 4 -Compress
+else {
+    # Separate policy administration from group-to-tag authorization: being allowed
+    # to import with a tag does not automatically grant policy-management rights.
+    $managerAuthorizationPolicy = [ordered]@{
+        installerPrincipalId          = $installingUserObjectId.ToString()
+        additionalPrincipalIds        = $additionalManagerPrincipalIds
+        allowIntuneRoleAdministrators = $true
+    }
+    $managerAuthorizationPolicyJson = $managerAuthorizationPolicy |
+        ConvertTo-Json -Depth 4 -Compress
+}
 Write-Host "  Installing manager: $installingUserObjectId"
 Write-Host "  Additional managers: $($additionalManagerPrincipalIds -join ', ')"
 Write-Host '  Intune Role Administrators: allowed'
@@ -2046,6 +2095,7 @@ $deploymentParameters = @{
     functionAppName   = $FunctionAppName
     location          = $Location
     hostingMode       = $hostingMode
+    virtualNetworkAddressPrefix = $VirtualNetworkAddressPrefix
     entraClientId     = $EntraClientId
     webClientId       = $WebClientId.ToString()
     apiAudience       = $ApiAudience

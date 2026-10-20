@@ -1237,9 +1237,18 @@ routes still require Entra authentication.
 
 Flex requires a new Function App when replacing a Windows Consumption
 installation. A regular update detects and preserves the existing hosting
-model; it never converts or deletes the old app, migrates its data, or switches
-custom-domain bindings automatically. Use a new app name for the new
-installation and plan any data/domain migration separately.
+model; it never converts or deletes the old app or switches custom-domain
+bindings automatically. For a deliberate same-name migration, use
+[`Migrate-AutopilotImportToPrivate.ps1`](src/Scripts/Migrate-AutopilotImportToPrivate.ps1).
+It saves a metadata backup, deletes the Windows app and Y1 plan, then recreates
+the app as Linux Flex Consumption. The existing Storage account is retained in
+place, including the policy blob, processing queues and `importaudit` table;
+the installer then disables public Storage access and creates the private
+endpoints. Supply a private, non-overlapping `-VirtualNetworkAddressPrefix`;
+the script checks current subscription VNets before deleting the source app.
+This migration causes downtime and is staged rather than transactional. The
+custom-domain binding and certificate must be recreated
+afterwards; see the script help and [Developer Guide](DEVELOPER.md#legacy-consumption-to-private-flex-migration).
 
 Flex runtime ZIPs include the compatible `Az.Accounts` version from
 `requirements.psd1` under `Modules`; automatic PowerShell Managed Dependencies

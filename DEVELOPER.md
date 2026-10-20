@@ -1295,6 +1295,48 @@ in-place network migration: Azure can reject subnet address changes while
 Function integration or private endpoints still occupy those subnets. Plan
 any required migration and downtime explicitly.
 
+### Legacy Consumption to Private Flex Migration
+
+Ordinary updates deliberately preserve the existing hosting model. To migrate a
+Windows Y1 installation to Linux Flex while retaining its Function App name,
+run the dedicated migration script from a complete repository checkout or
+deployment package:
+
+```powershell
+pwsh .\src\Scripts\Migrate-AutopilotImportToPrivate.ps1 `
+    -SubscriptionId '<subscription-guid>' `
+    -TenantId '<tenant-guid>' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -VirtualNetworkAddressPrefix '192.168.0.0/24' `
+    -AcceptCustomDomainCertificateReissue
+```
+
+The script validates the source app and plan, saves a metadata-only backup,
+deletes the Windows app and its Y1 plan, and calls the regular installer to
+create a Linux Flex app with the same name. The deterministic Storage account
+name is unchanged. Its policy blob, processing queues and `importaudit` table
+are retained in place while the installer adds private endpoints, disables
+public Storage access and reassigns runtime roles to the new system identity.
+The API and SPA application IDs and policy settings are preserved. Choose an
+aligned, private IPv4 `/24` that does not overlap existing subscription VNets;
+the script checks visible VNet prefixes before deleting the source app. Its
+Functions subnet is derived as `/26` and its private-endpoint subnet as `/27`.
+
+This is a destructive, staged migration with downtime between app deletion and
+the new app's successful deployment. A migration backup can be passed with
+`-BackupPath` to resume if the app has already been deleted. Do not remove the
+Storage account or its data. If deployment fails after the new Flex app starts
+to provision, use the regular updater to finish that deployment.
+
+Custom hostnames are recorded, but their bindings and certificates are not
+automatically transferred. Microsoft documents that apps created before
+site-scoped certificates have no automatic certificate migration path. After
+the new app passes its smoke test, add the custom hostname and create/bind a
+site-scoped certificate in Azure Portal; keep the DNS CNAME pointed at the
+same `<app-name>.azurewebsites.net` hostname. Until that is complete, use the
+default Azure hostname. See [Flex Consumption site-scoped certificates](https://learn.microsoft.com/azure/azure-functions/flex-consumption-how-to#configure-site-scoped-certificates).
+
 Storage has `publicNetworkAccess: Disabled`, `allowSharedKeyAccess: false`,
 anonymous blobs disabled and TLS 1.2. Both host and deployment storage use the
 system-assigned identity; the `deployment-packages` container requires no

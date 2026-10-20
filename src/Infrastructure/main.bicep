@@ -72,6 +72,9 @@ param deviceTagExtensionAttribute string = 'extensionAttribute1'
 @description('Object ID of the installing policy manager.')
 param installerPrincipalId string
 
+@description('Private IPv4 /24 used by the Flex VNet; review overlap with peered and on-premises networks.')
+param virtualNetworkAddressPrefix string = '172.16.0.0/24'
+
 // Storage names permit only lowercase letters/digits and at most 24 characters.
 // A resource-group-derived suffix participates in this deterministic name;
 // changing the app name or resource group can therefore select a new account.
@@ -150,14 +153,14 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
   properties: {
     addressSpace: {
       addressPrefixes: [
-        '172.16.0.0/24'
+        virtualNetworkAddressPrefix
       ]
     }
     subnets: [
       {
         name: 'functions'
         properties: {
-          addressPrefix: '172.16.0.0/26'
+          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 2, 0)
           delegations: [
             {
               name: 'flex-consumption'
@@ -171,7 +174,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
       {
         name: 'private-endpoints'
         properties: {
-          addressPrefix: '172.16.0.64/27'
+          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 3, 2)
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }

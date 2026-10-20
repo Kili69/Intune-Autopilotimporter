@@ -2,11 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
-## `1.4.20261020.4` - 2026-10-20
+## `1.4.20261020.6` - 2026-10-20
 
 - Add a **Changed at** column to the web processing status. It shows when each row's status or step last changed, using the worker's recorded step, completion or failure time where available and otherwise the browser time of the change; the full date appears as a tooltip and the time never moves backwards.
 - Show an information notice when re-tagging skips selected devices that already use the target Group Tag (for example because the policy name hides the tag value), listing their serial numbers, instead of silently processing only the remaining devices.
 - Document the internal helpers of the `AutopilotImport.Client` module with comment-based help and inline comments; `Get-ConfigurationValue` now trims the returned configuration value. Rebuild the versioned frontend and installation artifacts.
+- Add `Migrate-AutopilotImportToPrivate.ps1` for a confirmed, same-name Windows Y1 to Linux Flex migration. It backs up IDs and policy settings, retains the existing Storage account and its policy blob, queues and audit table, recreates private networking, and documents required custom-domain certificate reissue. Allow a configurable private IPv4 /24 and derive the /26 Functions and /27 private-endpoint subnets from it; refuse a range overlapping visible subscription VNets.
 
 ## `1.4.20261019.7` - 2026-10-19
 
