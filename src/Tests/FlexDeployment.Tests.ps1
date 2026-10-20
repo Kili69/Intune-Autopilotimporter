@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.11
+# Project-Version: 1.4.20261020.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\Scripts\FunctionDeployment.psm1') -Force

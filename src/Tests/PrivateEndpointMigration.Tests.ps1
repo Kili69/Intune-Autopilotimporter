@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.11
+# Project-Version: 1.4.20261020.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -293,5 +293,17 @@ Describe 'Private endpoint migration safety' {
         ) -Raw
         $installerText | Should -Match '(?s)if \(-not \[string\]::IsNullOrWhiteSpace\(\$ManagerAuthorizationPolicyJson\)\).*?\$managerAuthorizationPolicy = \$preservedManagerPolicy'
         $installerText | Should -Match 'ManagerAuthorizationPolicy = \$managerAuthorizationPolicy'
+    }
+
+    It 'retains token-based Graph authentication through regular update delegation' {
+        $installerText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        ) -Raw
+        $updaterText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Installer\Update-AutopilotImport.ps1'
+        ) -Raw
+        $installerText | Should -Match 'GraphAccessToken\s*=\s*\$GraphAccessToken'
+        $updaterText | Should -Match '\[securestring\] \$GraphAccessToken'
+        $updaterText | Should -Match 'GraphAccessToken\s*=\s*\$GraphAccessToken'
     }
 }

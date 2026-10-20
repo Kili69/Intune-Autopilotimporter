@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.11
+# Project-Version: 1.4.20261020.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -67,6 +67,10 @@ still takes precedence and does not perform the update.
 .PARAMETER ForceGraphSignIn
 Forces a fresh Microsoft Graph device-code sign-in. Use this after assigning
 new Microsoft Entra roles or when interactive browser authentication is hidden.
+
+.PARAMETER GraphAccessToken
+Short-lived, in-memory Graph delegated token for the managed-identity
+application permission grant, passed through to the installer.
 
 .PARAMETER WebClientId
 Client ID of the existing Entra web application. Overrides WEB_CLIENT_ID from
@@ -178,6 +182,8 @@ param(
 
     [switch] $ForceGraphSignIn,
 
+    [securestring] $GraphAccessToken,
+
     [guid] $WebClientId,
 
     [switch] $SkipEntraAppConfiguration,
@@ -195,6 +201,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
 # Capture preflight and installer diagnostics even during WhatIf. The active
 # flag prevents catch/finally from stopping an already closed transcript.
@@ -1405,6 +1414,7 @@ $installerParameters = @{
     ClientToolsPath             = $resolvedClientToolsPath
     InstallMissingModules       = $InstallMissingModules
     ForceGraphSignIn            = $ForceGraphSignIn
+    GraphAccessToken            = $GraphAccessToken
     SkipExistingDeploymentDetection = $true
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission

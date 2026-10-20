@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.11
+# Project-Version: 1.4.20261020.12
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -118,6 +118,11 @@ for the current user where applicable.
 Signs out the cached Microsoft Graph account before Entra configuration and
 uses device-code authentication to select an account explicitly. The Azure
 PowerShell account is not changed.
+
+.PARAMETER GraphAccessToken
+Short-lived, in-memory Graph delegated token for the managed-identity
+application permission grant. Use instead of ForceGraphSignIn when the
+terminal cannot display a device-code prompt.
 
 .PARAMETER SkipExistingDeploymentDetection
 Prevents delegation to Update-AutopilotImport.ps1 when the target Function App
@@ -274,6 +279,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
 # Log even WhatIf/preflight failures. Track transcript ownership so delegation,
 # catch and finally do not try to stop the same transcript twice.
@@ -1820,6 +1828,7 @@ if ($null -ne $existingFunctionApp -and
         ClientToolsPath           = $updateClientToolsPath
         InstallMissingModules     = $InstallMissingModules
         ForceGraphSignIn          = $ForceGraphSignIn
+        GraphAccessToken          = $GraphAccessToken
         SkipEntraAppConfiguration = $SkipEntraAppConfiguration
         SkipGraphPermission       = $SkipGraphPermission
         SkipPublish               = $SkipPublish

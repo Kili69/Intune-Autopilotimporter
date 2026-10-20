@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261020.11] - 2026-10-20
+## [1.4.20261020.12] - 2026-10-20
 
 ### Added
 
@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The installer passes `-ForceGraphSignIn` through to the managed-identity Graph permission grant, enabling device-code authentication when WAM cannot open from an embedded terminal.
 - Migration and installation accept an in-memory Graph access token when an embedded terminal cannot show a device-code prompt; the token is not saved in the migration backup.
 - Resuming from a backup now returns the preserved manager policy after publishing instead of failing during result construction.
+- In-memory Graph token authentication also reaches the permission grant during regular updates; conflicting authentication options are rejected before deployment.
 - Flex integration subnet CIDRs are derived with the target prefix lengths required by Bicep.
 - Re-tagging shows a notice listing selected devices that already use the target Group Tag and were skipped, instead of silently processing only the remaining devices.
 
