@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.10
+# Project-Version: 1.4.20261020.11
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 BeforeAll {
@@ -285,5 +285,13 @@ Describe 'Private endpoint migration safety' {
         $installerText | Should -Match '-GraphAccessToken \$GraphAccessToken'
         $grantText | Should -Match '\$connectParameters\.AccessToken = \$GraphAccessToken'
         $grantText | Should -Match "different tenant than"
+    }
+
+    It 'returns the preserved manager policy after migration installation' {
+        $installerText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
+        ) -Raw
+        $installerText | Should -Match '(?s)if \(-not \[string\]::IsNullOrWhiteSpace\(\$ManagerAuthorizationPolicyJson\)\).*?\$managerAuthorizationPolicy = \$preservedManagerPolicy'
+        $installerText | Should -Match 'ManagerAuthorizationPolicy = \$managerAuthorizationPolicy'
     }
 }

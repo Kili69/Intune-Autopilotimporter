@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.10
+# Project-Version: 1.4.20261020.11
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -2073,6 +2073,7 @@ if (-not [string]::IsNullOrWhiteSpace($ManagerAuthorizationPolicyJson)) {
     if ([guid] $preservedManagerPolicy.installerPrincipalId -ne $installingUserObjectId) {
         throw 'ManagerAuthorizationPolicyJson installerPrincipalId must match InstallerPrincipalId.'
     }
+    $managerAuthorizationPolicy = $preservedManagerPolicy
     $managerAuthorizationPolicyJson = $ManagerAuthorizationPolicyJson
     $additionalManagerPrincipalIds = @($preservedManagerPolicy.additionalPrincipalIds)
 }
