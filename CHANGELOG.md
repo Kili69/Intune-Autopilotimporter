@@ -6,13 +6,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261020.13] - 2026-10-20
+## [1.4.20261020.14] - 2026-10-20
 
 ### Added
 
 - The web processing status shows a **Changed at** column with the time of each row's latest status or step change (full date as tooltip).
 - `Migrate-AutopilotImportToPrivate.ps1` migrates a Windows Y1 deployment to Linux Flex Consumption using the same app and Storage account names. It backs up deployment IDs and policy settings, retains the policy blob, queues and audit table, accepts a configurable private VNet `/24`, rejects overlap with visible subscription VNets and documents custom-domain certificate reissue as a manual post-migration step.
 - If a Flex migration deployment fails after the app is created, rerunning the script with its original backup resumes without deleting the Flex app or plan. It removes only the old Function identity's three account-scoped Storage data-role assignments before reassigning them to the new identity.
+
+### Changed
+
+- Document private-endpoint migration in a dedicated operator How To linked from the README, with implementation and recovery details in the developer guide. Ship both guides in installation packages and clarify that running the migration requires a full repository checkout.
 
 ### Fixed
 

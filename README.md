@@ -1235,32 +1235,10 @@ and Table**. Storage public network access, anonymous blobs and shared-key
 authentication are disabled. The UI remains publicly reachable; protected API
 routes still require Entra authentication.
 
-Flex requires a new Function App when replacing a Windows Consumption
-installation. A regular update detects and preserves the existing hosting
-model; it never converts or deletes the old app or switches custom-domain
-bindings automatically. For a deliberate same-name migration, use
-[`Migrate-AutopilotImportToPrivate.ps1`](src/Scripts/Migrate-AutopilotImportToPrivate.ps1).
-It saves a metadata backup, deletes the Windows app and Y1 plan, then recreates
-the app as Linux Flex Consumption. The existing Storage account is retained in
-place, including the policy blob, processing queues and `importaudit` table;
-the installer then disables public Storage access and creates the private
-endpoints. Supply a private, non-overlapping `-VirtualNetworkAddressPrefix`;
-the script checks current subscription VNets before deleting the source app.
-It removes only the old Function identity's three Storage data-role assignments
-before recreating those roles for the new identity. If deployment fails after
-the new Flex app has been created, rerun the migration script with the original
-`-BackupPath`; it resumes the existing Flex deployment without deleting its
-app or plan. In a terminal where WAM cannot open a browser, add
-`-ForceGraphSignIn` to grant the new identity's Graph permissions with
-device-code sign-in. If that terminal cannot display a device-code prompt,
-pass a short-lived Microsoft Graph delegated token with
-`Application.Read.All` and `AppRoleAssignment.ReadWrite.All` as a
-`SecureString` via `-GraphAccessToken`. The token remains in memory and is not
-written to the migration backup.
-Subsequent regular updates read and preserve the deployed Flex VNet range.
-This migration causes downtime and is staged rather than transactional. The
-custom-domain binding and certificate must be recreated
-afterwards; see the script help and [Developer Guide](DEVELOPER.md#legacy-consumption-to-private-flex-migration).
+Windows Consumption installations are not converted by regular updates; a
+regular update preserves the existing hosting model. To migrate an existing
+installation to private endpoints, follow
+[HOWTO-Migrate-To-Private-Endpoints.md](HOWTO-Migrate-To-Private-Endpoints.md).
 
 Flex runtime ZIPs include the compatible `Az.Accounts` version from
 `requirements.psd1` under `Modules`; automatic PowerShell Managed Dependencies

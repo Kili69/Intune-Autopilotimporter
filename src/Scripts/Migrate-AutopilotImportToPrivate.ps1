@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Az.Accounts, Az.Resources, Az.Websites, Az.Storage
-# Project-Version: 1.4.20261020.13
+# Project-Version: 1.4.20261020.14
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#

@@ -1299,8 +1299,9 @@ any required migration and downtime explicitly.
 
 Ordinary updates deliberately preserve the existing hosting model. To migrate a
 Windows Y1 installation to Linux Flex while retaining its Function App name,
-run the dedicated migration script from a complete repository checkout or
-deployment package:
+run the dedicated migration script from a complete repository checkout.
+The deployment package does not contain the migration script or its required
+repository layout:
 
 ```powershell
 pwsh .\src\Scripts\Migrate-AutopilotImportToPrivate.ps1 `
@@ -1332,6 +1333,42 @@ installer assigns them to the new identity. If deployment fails after the
 Linux Flex app has been created, rerun the migration script with the original
 `-BackupPath`; it preserves the existing Flex app and plan while finishing the
 deployment.
+
+The operator procedure is in
+[HOWTO-Migrate-To-Private-Endpoints.md](HOWTO-Migrate-To-Private-Endpoints.md).
+Technical details:
+
+- **Backup.** Written before any deletion; contains resource IDs, hostnames,
+  app settings relevant to the policy and `sourceManagedIdentityObjectId`, but
+  no secrets. `-BackupPath` selects resume mode: an existing Flex app and plan
+  are never deleted, and the installer is re-run against them.
+- **Role-assignment conflict.** `main.bicep` uses deterministic role-assignment
+  names for the Storage data roles (Blob Data Owner, Queue Data Contributor,
+  Table Data Contributor). Assignments owned by the deleted app's identity
+  would make ARM fail with `RoleAssignmentUpdateNotPermitted`, so the script
+  first removes exactly those three assignments at the account scope for the
+  old principal. The principal comes from the backup, or else from the single
+  service principal holding all three roles at that scope. Other users' roles
+  are untouched.
+- **Networking.** `-VirtualNetworkAddressPrefix` must be a private /24 and is
+  checked against visible subscription VNets. The template derives the /26 and
+  /27 subnets with `cidrSubnet`, which needs target prefix lengths (not
+  additional bits). `Update-AutopilotImport.ps1` reads the address space of
+  `vnet-<app>` and passes it on, so later updates do not fall back to the
+  default range.
+- **Graph permissions.** The installer forwards `-ForceGraphSignIn` and
+  `-GraphAccessToken` (SecureString, in memory only) through updater, installer
+  and `Grant-ManagedIdentityGraphPermission.ps1`; the helper checks the token's
+  tenant, and combining both parameters is rejected. WAM fails in embedded
+  terminals ("window handle"), hence device code or a token from
+  `az account get-access-token --resource-type ms-graph`. Azure CLI tokens
+  cannot carry `RoleManagement.ReadWrite.Directory` (AADSTS65002), so the
+  AU-scoped role uses `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
+- **Result object.** The manager authorization policy may come from the backup
+  rather than the deployment; the installer result handles both sources.
+- **Tests.** `src/Tests/PrivateEndpointMigration.Tests.ps1` covers parameter
+  validation, VNet overlap, resume, role cleanup, token forwarding and VNet
+  preservation.
 
 Custom hostnames are recorded, but their bindings and certificates are not
 automatically transferred. Microsoft documents that apps created before

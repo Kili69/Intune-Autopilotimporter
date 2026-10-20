@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261020.13
+# Project-Version: 1.4.20261020.14
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -288,7 +288,9 @@ Assert-BuiltWebFrontend -Root $ProjectRoot
 $packageEntries = @(
     @{ Source = 'AUTHOR'; Destination = 'AUTHOR' }
     @{ Source = 'CHANGELOG.md'; Destination = 'CHANGELOG.md' }
+    @{ Source = 'DEVELOPER.md'; Destination = 'DEVELOPER.md' }
     @{ Source = 'History.md'; Destination = 'History.md' }
+    @{ Source = 'HOWTO-Migrate-To-Private-Endpoints.md'; Destination = 'HOWTO-Migrate-To-Private-Endpoints.md' }
     @{ Source = 'LICENSE'; Destination = 'LICENSE' }
     @{ Source = 'README.md'; Destination = 'README.md' }
     @{ Source = 'VERSION'; Destination = 'VERSION' }
