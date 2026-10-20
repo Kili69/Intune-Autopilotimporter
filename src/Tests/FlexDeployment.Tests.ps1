@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261020.6
+# Project-Version: 1.4.20261020.7
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\Scripts\FunctionDeployment.psm1') -Force
@@ -280,8 +280,8 @@ Describe 'Flex OneDeploy publication' {
         It 'derives both private subnets from a configurable private VNet /24' {
             $template | Should -Match "param virtualNetworkAddressPrefix string = '172\.16\.0\.0/24'"
             $template | Should -Match 'addressPrefixes:\s*\[\s*virtualNetworkAddressPrefix\s*\]'
-            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 2, 0\)'
-            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 3, 2\)'
+            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 26, 0\)'
+            $template | Should -Match 'addressPrefix: cidrSubnet\(virtualNetworkAddressPrefix, 27, 2\)'
         }
         It 'uses identity-authenticated deployment storage without Azure Files or connection strings' {
             $template | Should -Match "name: 'deployment-packages'"

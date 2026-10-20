@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
-## [1.4.20261020.6] - 2026-10-20
+## [1.4.20261020.7] - 2026-10-20
 
 ### Added
 
@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Flex integration subnet CIDRs are derived with the target prefix lengths required by Bicep.
 - Re-tagging shows a notice listing selected devices that already use the target Group Tag and were skipped, instead of silently processing only the remaining devices.
 
 ## [1.4.20261019.7] - 2026-10-19

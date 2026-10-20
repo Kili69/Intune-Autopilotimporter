@@ -160,7 +160,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
       {
         name: 'functions'
         properties: {
-          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 2, 0)
+          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 26, 0)
           delegations: [
             {
               name: 'flex-consumption'
@@ -174,7 +174,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-07-01' = if (isFlex) {
       {
         name: 'private-endpoints'
         properties: {
-          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 3, 2)
+          addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 27, 2)
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }
