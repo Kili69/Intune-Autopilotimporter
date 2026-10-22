@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261018.2
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -8,7 +8,7 @@ Runs unit tests for Autopilot import validation and authorization.
 .DESCRIPTION
 Pester tests covering Microsoft Graph payload construction, malformed hardware
 hash rejection, Easy Auth role enforcement, Entra group-to-tag authorization,
-tag casing, installer authorization-rule parsing, and project metadata markers.
+tag casing, rule-independent deployment, and project metadata markers.
 
 .EXAMPLE
 Invoke-Pester -Script .\src\Tests\AutopilotImport.Tests.ps1
@@ -26,6 +26,37 @@ $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $modulePath = Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1'
 Remove-Module AutopilotImport -Force -ErrorAction SilentlyContinue
 Import-Module $modulePath -Force
+
+Describe 'Client module documentation' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $clientAst = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot '..\AutopilotImport.Client\AutopilotImport.Client.psm1'),
+            [ref] $tokens, [ref] $parseErrors)
+        $clientFunctions = $clientAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst]
+        }, $true)
+    }
+    It 'parses without errors' {
+        $parseErrors.Count | Should -Be 0
+    }
+    It 'documents the purpose, behavior, outputs and every parameter of all client functions' {
+        $clientFunctions.Count | Should -Be 35
+        foreach ($function in $clientFunctions) {
+            $help = $function.GetHelpContent()
+            $help.Synopsis | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Description | Should -Not -BeNullOrEmpty -Because $function.Name
+            $help.Outputs | Should -Not -BeNullOrEmpty -Because $function.Name
+            foreach ($parameter in $function.Body.ParamBlock.Parameters) {
+                $name = $parameter.Name.VariablePath.UserPath
+                $help.Parameters[$name.ToUpperInvariant()] |
+                    Should -Not -BeNullOrEmpty -Because "$($function.Name) parameter $name"
+            }
+        }
+    }
+}
 
 Describe 'Client API error messages' {
     BeforeAll {
@@ -671,16 +702,19 @@ Describe 'Client configuration display' {
         $expectedCommands = @(
             'Add-AutoPilotTagPolicy'
             'Add-AutoPilotTagPolicyManager'
+            'Export-AutoPilotConfiguration'
             'Get-AutoPilotDeviceTagAssignment'
             'Get-AutoPilotImporterClientConfiguration'
             'Get-AutoPilotImportHistory'
             'Get-AutoPilotImportStatus'
             'Get-AutoPilotTagPolicy'
+            'Get-AutoPilotTagPolicyHistory'
             'Get-AutoPilotTagPolicyManager'
             'Import-AutoPilotDevice'
             'New-AutoPilotImporterClientConfiguration'
             'Remove-AutoPilotTagPolicy'
             'Remove-AutoPilotTagPolicyManager'
+            'Restore-AutoPilotConfiguration'
             'Set-AutoPilotDeviceGroupTag'
             'Set-AutoPilotTagPolicy'
             'Update-AutoPilotTagPolicyManager'
@@ -897,11 +931,13 @@ Describe 'Client manager policy App Settings' {
             Select-Object -First 1
     }
 
-    It 'passes manager policy JSON to Az.Websites as a string value' {
+    It 'routes manager changes through the audited backend instead of direct settings writes' {
         $managerFunctionAst.Extent.Text | Should -Match `
-            '(?s)\$appSettings\[''MANAGER_AUTHORIZATION_POLICY''\]\s*=.*?\[string\]\s+\$updatedPolicyJson'
+            'Invoke-RestMethod -Method Put'
         $managerFunctionAst.Extent.Text | Should -Not -Match `
-            '\$appSettings\.MANAGER_AUTHORIZATION_POLICY\s*='
+            'Set-AzWebApp -ResourceGroupName'
+        $managerFunctionAst.Extent.Text | Should -Match 'x-autopilot-arm-token'
+        $managerFunctionAst.Extent.Text | Should -Match 'expectedPolicy = \$appSettings.MANAGER_AUTHORIZATION_POLICY'
     }
 
     It 'discovers Azure details missing after URL bootstrap' {
@@ -930,6 +966,7 @@ Describe 'Client manager policy App Settings' {
                 Id = '/subscriptions/33333333-3333-3333-3333-333333333333/resourceGroups/rg-autopilot-import/providers/Microsoft.Web/sites/func-autopilot-import'
                 SiteConfig = [pscustomobject]@{
                     AppSettings = @(
+                        [pscustomobject]@{ Name = 'API_AUDIENCE'; Value = 'api://test-api' }
                         [pscustomobject]@{
                             Name = 'MANAGER_AUTHORIZATION_POLICY'
                             Value = '{"installerPrincipalId":"44444444-4444-4444-4444-444444444444","additionalPrincipalIds":[],"allowIntuneRoleAdministrators":true}'
@@ -957,7 +994,9 @@ Describe 'Client manager policy App Settings' {
         }
         Mock Test-TagManagerPolicyAdministratorRole `
             -ModuleName AutopilotImport.Client { $true }
-        Mock Set-AzWebApp -ModuleName AutopilotImport.Client
+        Mock Invoke-RestMethod -ModuleName AutopilotImport.Client {
+            @{ policy = @{ additionalPrincipalIds = @('11111111-1111-1111-1111-111111111111') } }
+        }
 
         $result = Update-AutoPilotTagPolicyManager `
             -AddPrincipalId '11111111-1111-1111-1111-111111111111' `
@@ -965,6 +1004,9 @@ Describe 'Client manager policy App Settings' {
             -Confirm:$false
 
         $result.FunctionAppName | Should -Be 'func-autopilot-import'
+        Should -Invoke Invoke-RestMethod -ModuleName AutopilotImport.Client -Times 1 -ParameterFilter {
+            $Method -eq 'Put' -and $Uri -eq 'https://func-autopilot-import.azurewebsites.net/api/management/policy-managers'
+        }
         Should -Invoke Resolve-ClientFunctionAppFromUrl `
             -ModuleName AutopilotImport.Client `
             -Times 1 `
@@ -1193,6 +1235,14 @@ Describe 'Client import history' {
                         requestedByDisplayName = 'Ada Lovelace'
                         requestReceivedAtUtc = '2026-09-18T10:00:00.0000000Z'
                         graphImportCreatedAtUtc = '2026-09-18T10:00:01.0000000Z'
+                        graphImportCompletedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        autopilotGroupTagUpdatedAtUtc = '2026-09-18T10:01:59.0000000Z'
+                        appliedExtensionAttributes = [pscustomobject]@{ extensionAttribute5 = 'Berlin' }
+                        targetDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        addedDeviceGroupIds = @('22222222-2222-2222-2222-222222222222')
+                        removedDeviceGroupIds = @()
+                        administrativeUnitName = 'Berlin Devices'
+                        removedAdministrativeUnits = @('Old AU')
                         queuedAtUtc = '2026-09-18T10:00:02.0000000Z'
                         processingStartedAtUtc = '2026-09-18T10:01:00.0000000Z'
                         entraDeviceResolvedAtUtc = '2026-09-18T10:02:00.0000000Z'
@@ -1229,6 +1279,14 @@ Describe 'Client import history' {
         $result[0].RequestedBy | Should -Be 'ada@example.com'
         $result[0].RequestedByDisplayName | Should -Be 'Ada Lovelace'
         $result[0].RequestReceivedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].GraphImportCompletedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AutopilotGroupTagUpdatedAtUtc | Should -BeOfType [datetimeoffset]
+        $result[0].AppliedExtensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+        $result[0].TargetDeviceGroupIds | Should -Be @('22222222-2222-2222-2222-222222222222')
+        $result[0].AddedDeviceGroupIds | Should -Be $result[0].TargetDeviceGroupIds
+        $result[0].RemovedDeviceGroupIds.Count | Should -Be 0
+        $result[0].AdministrativeUnitName | Should -Be 'Berlin Devices'
+        $result[0].RemovedAdministrativeUnits | Should -Be @('Old AU')
         $result[0].ProcessingCompletedAtUtc.ToString('o') |
             Should -Be '2026-09-18T10:02:03.0000000+00:00'
         $result[1].RequestReceivedAtUtc | Should -BeNullOrEmpty
@@ -1459,6 +1517,7 @@ Describe 'Import history endpoint' {
                 $projectRoot `
                 'src\Installer\Install-AutopilotImport.ps1') `
             -Raw
+        $runtimePackager = Get-Content -LiteralPath (Join-Path $projectRoot 'src\Scripts\FunctionDeployment.psm1') -Raw
         $historyBinding = Get-Content `
             -LiteralPath (Join-Path `
                 $projectRoot `
@@ -1467,12 +1526,9 @@ Describe 'Import history endpoint' {
     }
 
     It 'includes the import history Function in the Azure publish archive' {
-        $installer.Contains(
-            "Join-Path `$functionAppRoot 'GetImportHistory'") |
-            Should -BeTrue
-        $installer.Contains(
-            "Join-Path `$functionAppRoot 'RemoveExpiredImportHistory'") |
-            Should -BeTrue
+        $installer | Should -Match 'New-AutopilotFunctionPackage'
+        $runtimePackager | Should -Match "'GetImportHistory'"
+        $runtimePackager | Should -Match "'RemoveExpiredImportHistory'"
         @($historyBinding.bindings[0].methods) | Should -Contain 'post'
     }
 
@@ -1616,6 +1672,7 @@ Describe 'Client Group Tag policy display' {
             'AutopilotImport.TagPolicyRule'
         $result[0].PSStandardMembers.DefaultDisplayPropertySet.ReferencedPropertyNames |
             Should -Be @(
+                'Name'
                 'GroupId'
                 'GroupName'
                 'Tags'
@@ -2774,7 +2831,7 @@ Describe 'Group-based tag authorization' {
     }
 }
 
-Describe 'Installer tag authorization rules' {
+Describe 'Deployment-independent tag authorization rules' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
         $tokens = $null
@@ -2787,17 +2844,61 @@ Describe 'Installer tag authorization rules' {
         $functionAst = $installerAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'ConvertTo-TagAuthorizationPolicy'
+            $node.Name -eq 'Get-DeploymentTagPolicyFallback'
         }, $true) | Select-Object -First 1
         Invoke-Expression $functionAst.Extent.Text
     }
 
-    It 'accepts structured policy rule objects at the installer entry point' {
-        $parameter = $installerAst.ParamBlock.Parameters | Where-Object {
-            $_.Name.VariablePath.UserPath -eq 'TagAuthorizationRule'
-        }
+    It 'does not expose rule or administrative-unit deployment parameters' {
+        $installerAst.ParamBlock.Parameters.Name.VariablePath.UserPath |
+            Should -Not -Contain 'TagAuthorizationRule'
+        $installerAst.ParamBlock.Parameters.Name.VariablePath.UserPath |
+            Should -Not -Contain 'AdministrativeUnitName'
+        $installerAst.Extent.Text | Should -Not -Match 'Entra group Object ID|Allowed Device Tags|Administrative unit display name'
+    }
 
-        $parameter.StaticType | Should -Be ([object[]])
+    It 'starts a fresh installation without rules or an Azure settings request' {
+        Mock Invoke-AzRestMethod { throw 'Unexpected settings lookup' }
+        Get-DeploymentTagPolicyFallback -ExistingFunctionApp $null | Should -BeExactly '[]'
+        Should -Invoke Invoke-AzRestMethod -Times 0
+    }
+
+    It 'preserves legacy policy JSON verbatim without normalizing rule actions' {
+        $legacyJson = "[`n { `"tags`": [`"Sales`"], `"groupId`": `"11111111-1111-1111-1111-111111111111`", `"futureAction`": { `"keep`": true } }`n]"
+        Mock Invoke-AzRestMethod {
+            @{ StatusCode = 200; Content = (ConvertTo-Json -InputObject @{
+                properties = @{ TAG_AUTHORIZATION_POLICY = $legacyJson }
+            } -Depth 8) }
+        }
+        Get-DeploymentTagPolicyFallback -ExistingFunctionApp @{ Id = '/subscriptions/test/sites/function' } |
+            Should -BeExactly $legacyJson
+        Should -Invoke Invoke-AzRestMethod -Times 1 -ParameterFilter {
+            $Method -eq 'POST' -and
+            $Path -eq '/subscriptions/test/sites/function/config/appsettings/list?api-version=2023-12-01' -and
+            $ErrorAction -eq 'Stop'
+        }
+    }
+
+    It 'uses an empty fallback when an existing deployment has no legacy setting' {
+        Mock Invoke-AzRestMethod { @{ StatusCode = 200; Content = '{"properties":{}}' } }
+        Get-DeploymentTagPolicyFallback -ExistingFunctionApp @{ Id = '/sites/function' } |
+            Should -BeExactly '[]'
+    }
+
+    It 'aborts instead of resetting policy when settings cannot be read' -ForEach @(
+        @{ Status = 403; Content = '{"error":{}}' }
+        @{ Status = 200; Content = '{}' }
+        @{ Status = 200; Content = 'invalid' }
+    ) {
+        Mock Invoke-AzRestMethod { @{ StatusCode = $Status; Content = $Content } }
+        { Get-DeploymentTagPolicyFallback -ExistingFunctionApp @{ Id = '/sites/function' } } |
+            Should -Throw
+    }
+
+    It 'never reads or overwrites the persisted policy during deployment' {
+        $installerAst.Extent.Text | Should -Not -Match 'Set-AzStorageBlobContent|Get-AzStorageBlobContent|New-AzStorageContext'
+        $installerAst.Extent.Text | Should -Match 'tagAuthorizationPolicy\s*=\s*\$tagAuthorizationPolicyJson'
+        $installerAst.Extent.Text | Should -Match 'Get-DeploymentTagPolicyFallback\s+`?\s*-ExistingFunctionApp'
     }
 
     It 'consolidates tags for the same group' {
@@ -3176,6 +3277,112 @@ Describe 'Administrative unit membership' {
 
 }
 
+Describe 'Dependency bootstrap for <EntryPoint>' -ForEach @(
+    @{ EntryPoint = 'installer'; ScriptName = 'Install-AutopilotImport.ps1' }
+    @{ EntryPoint = 'updater'; ScriptName = 'Update-AutopilotImport.ps1' }
+) {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot "..\Installer\$ScriptName"),
+            [ref] $tokens, [ref] $parseErrors)
+        if ($EntryPoint -eq 'installer') {
+            $functionAst = $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Import-DeploymentModule'
+            }, $true) | Select-Object -First 1
+            Invoke-Expression $functionAst.Extent.Text
+            $bootstrap = { Import-DeploymentModule -Name 'Az.Accounts' }
+        }
+        else {
+            $dependencyAst = $ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.StartsWith(
+                    "if (-not (Get-Module -ListAvailable -Name 'Az.Accounts'))")
+            }, $true) | Select-Object -First 1
+            $bootstrap = [scriptblock]::Create(
+                $dependencyAst.Extent.Text +
+                "`nImport-Module 'Az.Accounts' -ErrorAction Stop")
+        }
+        if (-not (Get-Command Install-PSResource -ErrorAction SilentlyContinue)) {
+            function Install-PSResource {
+                [CmdletBinding()]
+                param($Name, $Scope, $Repository, [switch] $TrustRepository)
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:InstallMissingModules = $true
+        Mock Get-Module { @() } -ParameterFilter { $Name -eq 'Az.Accounts' }
+        Mock Get-Command { [pscustomobject]@{ Name = 'Install-PSResource' } } `
+            -ParameterFilter { $Name -eq 'Install-PSResource' }
+        Mock Install-PSResource {}
+        Mock Install-Module {}
+        Mock Import-Module {} -ParameterFilter { $Name -eq 'Az.Accounts' }
+    }
+
+    It 'prefers modern dependency installation for the current user' {
+        & $bootstrap
+        Should -Invoke Install-PSResource -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'Az.Accounts' -and $Scope -eq 'CurrentUser' -and
+            $Repository -eq 'PSGallery' -and $TrustRepository -and
+            $ErrorAction -eq 'Stop'
+        }
+        Should -Invoke Install-Module -Times 0
+        Should -Invoke Import-Module -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'Az.Accounts'
+        }
+    }
+
+    It 'retains explicit CurrentUser PowerShellGet support on older hosts' {
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Install-PSResource' }
+        & $bootstrap
+        Should -Invoke Install-Module -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'Az.Accounts' -and $Scope -eq 'CurrentUser' -and
+            $Repository -eq 'PSGallery' -and $Force -and $AllowClobber -and
+            $ErrorAction -eq 'Stop'
+        }
+        Should -Invoke Install-PSResource -Times 0
+    }
+
+    It 'stops on modern installation errors without retrying or importing' {
+        Mock Install-PSResource { Write-Error 'Dependency installation failed.' }
+        { & $bootstrap } | Should -Throw '*Dependency installation failed*'
+        Should -Invoke Install-Module -Times 0
+        Should -Invoke Import-Module -Times 0 -ParameterFilter { $Name -eq 'Az.Accounts' }
+    }
+
+    It 'preserves legacy installation errors instead of importing a missing module' {
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Install-PSResource' }
+        Mock Install-Module { Write-Error 'Legacy dependency installation failed.' }
+        { & $bootstrap } | Should -Throw '*Legacy dependency installation failed*'
+        Should -Invoke Import-Module -Times 0 -ParameterFilter { $Name -eq 'Az.Accounts' }
+    }
+
+    It 'imports existing modules without installing them again' {
+        Mock Get-Module { [pscustomobject]@{ Name = 'Az.Accounts' } } `
+            -ParameterFilter { $Name -eq 'Az.Accounts' }
+        & $bootstrap
+        Should -Invoke Install-PSResource -Times 0
+        Should -Invoke Install-Module -Times 0
+        Should -Invoke Import-Module -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'Az.Accounts'
+        }
+    }
+
+    It 'requires permission to install missing dependencies' {
+        $script:InstallMissingModules = $false
+        { & $bootstrap } | Should -Throw '*InstallMissingModules*'
+        Should -Invoke Install-PSResource -Times 0
+        Should -Invoke Install-Module -Times 0
+        Should -Invoke Import-Module -Times 0 -ParameterFilter { $Name -eq 'Az.Accounts' }
+    }
+}
+
 Describe 'Installer Function App naming' {
     BeforeAll {
         $installerPath = Join-Path $PSScriptRoot '..\Installer\Install-AutopilotImport.ps1'
@@ -3243,6 +3450,9 @@ Describe 'Installer Azure account display names' {
 
 Describe 'Installer existing deployment detection' {
     BeforeAll {
+        if (-not (Get-Command Get-AzWebApp -ErrorAction SilentlyContinue)) {
+            function Get-AzWebApp { [CmdletBinding()] param($ResourceGroupName, $Name) }
+        }
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $installer = Get-Content `
             -LiteralPath (Join-Path $projectRoot `
@@ -3252,6 +3462,37 @@ Describe 'Installer existing deployment detection' {
             -LiteralPath (Join-Path $projectRoot `
                 'src\Installer\Update-AutopilotImport.ps1') `
             -Raw
+        $tokens = $null
+        $parseErrors = $null
+        $installerAst = [System.Management.Automation.Language.Parser]::ParseInput(
+            $installer, [ref] $tokens, [ref] $parseErrors)
+        $lookupAst = $installerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.TryStatementAst] -and
+            $node.Extent.Text -match '\$existingFunctionApp = Get-AzWebApp'
+        }, $true) | Sort-Object { $_.Extent.Text.Length } | Select-Object -First 1
+        $ResourceGroupName = 'rg-test'
+        $FunctionAppName = 'func-test'
+    }
+
+    It 'does not mistake a failed lookup for an empty new deployment' {
+        Mock Get-AzWebApp { throw 'Access denied' }
+        { Invoke-Expression $lookupAst.Extent.Text } | Should -Throw 'Access denied'
+    }
+
+    It 'allows a confirmed missing app to start without rules' {
+        Mock Get-AzWebApp {
+            $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::NotFound)
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Not found', $response)
+        }
+        Invoke-Expression $lookupAst.Extent.Text
+        $existingFunctionApp | Should -BeNullOrEmpty
+    }
+
+    It 'retains the identity of an existing app for policy-setting preservation' {
+        Mock Get-AzWebApp { [pscustomobject]@{ Id = '/sites/existing' } }
+        Invoke-Expression $lookupAst.Extent.Text
+        $existingFunctionApp.Id | Should -BeExactly '/sites/existing'
     }
 
     It 'checks for an existing Function before requesting new configuration' {
@@ -3500,7 +3741,7 @@ Describe 'Installer client tools package' {
         Import-Module `
             (Join-Path $modulePath 'AutopilotImport.Client.psd1') `
             -Force
-            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 15
+            (Get-Command -Module AutopilotImport.Client).Count | Should -Be 18
         Remove-Module AutopilotImport.Client
     }
 }
@@ -3526,7 +3767,6 @@ Describe 'Update script deployment discovery' {
                 'Get-UserAutoPilotClientModuleRoots',
                 'Resolve-AutoPilotDeploymentResult',
                 'Install-SystemWideAutopilotClientModule',
-                'ConvertTo-UpdateTagAuthorizationRules',
                 'Assert-AutoPilotAppSettingsResponse',
                 'Get-UpdateWebClientId',
                 'Get-UpdateWebRedirectUri',
@@ -3561,8 +3801,7 @@ Describe 'Update script deployment discovery' {
                 'ResourceGroupName',
                 'FunctionAppName',
                 'FunctionUrl',
-                'ApiAudience',
-                'ManagementUrl'
+                'ApiAudience'
             )) {
             $updateAst.ParamBlock.Parameters.Name.VariablePath.UserPath |
                 Should -Contain $parameterName
@@ -3622,8 +3861,11 @@ Describe 'Update script deployment discovery' {
             }
         }
 
-        $deployment = Resolve-AutoPilotFunctionAppFromUrl `
-            -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
+        $deployment = & {
+            Set-StrictMode -Version Latest
+            Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://func-autopilot-test.azurewebsites.net/api/ui/index.html'
+        }
 
         $deployment.SubscriptionId | Should -Be `
             '11111111-1111-1111-1111-111111111111'
@@ -3635,11 +3877,203 @@ Describe 'Update script deployment discovery' {
         Should -Invoke Set-AzContext -Times 1
     }
 
-    It 'rejects a Function URL outside azurewebsites.net' {
+    It 'rejects a non-HTTPS Function URL' {
         {
             Resolve-AutoPilotFunctionAppFromUrl `
-                -Url 'https://example.test/api/devices/import'
-        } | Should -Throw '*azurewebsites.net*'
+                -Url 'http://example.test/api/devices/import'
+        } | Should -Throw '*absolute HTTPS URL*'
+    }
+
+    Context 'Custom domain discovery' {
+        BeforeEach {
+            $discoverySite = [pscustomobject]@{
+                id = '/subscriptions/sub-one/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
+                name = 'func-autopilot'
+                type = 'Microsoft.Web/sites'
+                kind = 'functionapp,linux'
+                properties = @{ hostNames = @('autopilot.example.test') }
+            }
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+            }
+            Mock Set-AzContext { }
+            Mock Get-UpdateWebAppHostNameBinding { @() }
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{ value = @($discoverySite) } |
+                        ConvertTo-Json -Depth 8
+                }
+            }
+        }
+
+        It 'resolves an exact custom hostname under strict mode with one subscription' {
+            $deployment = & {
+                Set-StrictMode -Version Latest
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://AUTOPILOT.example.test/api/ui/index.html'
+            }
+
+            $deployment.SubscriptionId | Should -Be 'sub-one'
+            $deployment.TenantId | Should -Be 'tenant-one'
+            $deployment.ResourceGroupName | Should -Be 'rg-autopilot'
+            $deployment.FunctionAppName | Should -Be 'func-autopilot'
+            $deployment.FunctionUrl | Should -Be 'https://autopilot.example.test'
+            Should -Invoke Invoke-AzRestMethod -Times 1 -Exactly -ParameterFilter {
+                $Path -eq '/subscriptions/sub-one/providers/Microsoft.Web/sites?api-version=2023-12-01'
+            }
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 0
+        }
+
+        It 'uses hostname bindings when site metadata omits the custom domain' {
+            $discoverySite.properties.hostNames = @('func-autopilot.azurewebsites.net')
+            Mock Get-UpdateWebAppHostNameBinding { 'autopilot.example.test' }
+
+            $deployment = Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test'
+
+            $deployment.FunctionAppName | Should -Be 'func-autopilot'
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 1 -Exactly -ParameterFilter {
+                $ResourceId -eq '/subscriptions/sub-one/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot'
+            }
+        }
+
+        It 'limits lookup to an explicitly selected subscription' {
+            Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test' `
+                -SubscriptionId 'sub-one' | Out-Null
+
+            Should -Invoke Get-AzSubscription -Times 1 -Exactly -ParameterFilter {
+                $SubscriptionId -eq 'sub-one'
+            }
+        }
+
+        It 'reports zero accessible subscriptions instead of a Count error' {
+            Mock Get-AzSubscription { }
+
+            {
+                Set-StrictMode -Version Latest
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*No accessible Azure subscriptions*'
+            Should -Invoke Invoke-AzRestMethod -Times 0
+        }
+
+        It 'does not match hostname suffixes or DNS aliases without a binding' {
+            $discoverySite.properties.hostNames = @('autopilot.example.test.other.test')
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*hostname*was not found*'
+        }
+
+        It 'does not select an ordinary web app with the same hostname' {
+            $discoverySite.kind = 'app,linux'
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*hostname*was not found*'
+            Should -Invoke Get-UpdateWebAppHostNameBinding -Times 0
+        }
+
+        It 'finds a Function App on a later ARM inventory page' {
+            Mock Invoke-AzRestMethod {
+                $page = if ($Path -like '*skiptoken=next*') {
+                    @{ value = @($discoverySite) }
+                }
+                else {
+                    @{
+                        value = @()
+                        nextLink = 'https://management.azure.com/subscriptions/sub-one/providers/Microsoft.Web/sites?api-version=2023-12-01&skiptoken=next'
+                    }
+                }
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = $page | ConvertTo-Json -Depth 8
+                }
+            }
+
+            (Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test').FunctionAppName |
+                Should -Be 'func-autopilot'
+            Should -Invoke Invoke-AzRestMethod -Times 2 -Exactly
+        }
+
+        It 'rejects inventory pagination outside the selected subscription' {
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{
+                        value = @()
+                        nextLink = 'https://management.azure.com/subscriptions/sub-other/providers/Microsoft.Web/sites?api-version=2023-12-01'
+                    } | ConvertTo-Json -Depth 5
+                }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*outside the selected subscription*'
+        }
+
+        It 'rejects ambiguous custom domain matches across subscriptions' {
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+                [pscustomobject]@{ Id = 'sub-two'; TenantId = 'tenant-two' }
+            }
+            Mock Invoke-AzRestMethod {
+                $subscriptionId = ($Path -split '/')[2]
+                [pscustomobject]@{
+                    StatusCode = 200
+                    Content = @{
+                        value = @(@{
+                            id = "/subscriptions/$subscriptionId/resourceGroups/rg-autopilot/providers/Microsoft.Web/sites/func-autopilot"
+                            name = 'func-autopilot'
+                            type = 'Microsoft.Web/sites'
+                            kind = 'functionapp'
+                            properties = @{ hostNames = @('autopilot.example.test') }
+                        })
+                    } | ConvertTo-Json -Depth 8
+                }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test'
+            } | Should -Throw '*Use -SubscriptionId*'
+        }
+
+        It 'reports inaccessible subscriptions while continuing discovery' {
+            Mock Get-AzSubscription {
+                [pscustomobject]@{ Id = 'sub-denied'; TenantId = 'tenant-one' }
+                [pscustomobject]@{ Id = 'sub-one'; TenantId = 'tenant-one' }
+            }
+            Mock Set-AzContext {
+                if ($Subscription -eq 'sub-denied') { throw 'Access denied' }
+            }
+
+            $deployment = Resolve-AutoPilotFunctionAppFromUrl `
+                -Url 'https://autopilot.example.test' `
+                -WarningVariable discoveryWarnings -WarningAction SilentlyContinue
+
+            $deployment.SubscriptionId | Should -Be 'sub-one'
+            $discoveryWarnings | Should -Match 'sub-denied.*Access denied'
+        }
+
+        It 'reports failed inventory requests instead of silently claiming no match' {
+            Mock Invoke-AzRestMethod {
+                [pscustomobject]@{ StatusCode = 403; Content = '{}' }
+            }
+
+            {
+                Resolve-AutoPilotFunctionAppFromUrl `
+                    -Url 'https://autopilot.example.test' `
+                    -WarningVariable script:discoveryWarnings -WarningAction SilentlyContinue
+            } | Should -Throw '*was not found*'
+            $script:discoveryWarnings | Should -Match 'HTTP 403'
+        }
     }
 
     It 'passes FunctionUrl to the discovery helper as Url' {
@@ -3710,13 +4144,13 @@ Describe 'Update script deployment discovery' {
             -Times 1
     }
 
-    It 'reads deployment endpoints from Azure when no config is installed' {
+    It 'reads the deployment audience from Azure without requiring a management endpoint' {
         $updateAst.Extent.Text | Should -Match `
             '(?s)API_AUDIENCE.*?Use -ApiAudience'
+        $updateAst.ParamBlock.Parameters.Name.VariablePath.UserPath |
+            Should -Not -Contain 'ManagementUrl'
         $updateAst.Extent.Text | Should -Match `
-            'https://\$defaultHostName/api/management/tag-policy'
-        $updateAst.Extent.Text | Should -Match `
-            '(?s)Get-AutoPilotTagPolicy\s+.*?-ManagementUrl\s+\$resolvedManagementUrl\s+.*?-ApiApplicationIdUri\s+\$resolvedApiAudience\s+.*?-TenantId\s+\$TenantId'
+            'ApiAudience\s*=\s*\$resolvedApiAudience'
     }
 
     It 'discovers a versioned configuration installed through PSModulePath' {
@@ -3823,38 +4257,12 @@ Describe 'Update script deployment discovery' {
             '(?s)\$installerOutput\s*=\s*@\(&\s*\$installerPath.*?Resolve-AutoPilotDeploymentResult.*?\$sourceSettingsPath\s*=.*?InstalledClientSettingsPath.*?if \(Test-SystemWideClientModuleAccess\).*?Install-SystemWideAutopilotClientModule'
     }
 
-    It 'converts the current policy into installer rules with individual RMAUs' {
-        $rules = @(ConvertTo-UpdateTagAuthorizationRules -Policy @(
-            [pscustomobject]@{
-                groupId = '11111111-1111-1111-1111-111111111111'
-                tags    = @('PAW-CSM', 'BG-Default')
-                administrativeUnitName = 'RMAU-PAW'
-            }
-        ))
-
-        $rules[0].groupId | Should -Be `
-            '11111111-1111-1111-1111-111111111111'
-        $rules[0].tags | Should -Be @('PAW-CSM', 'BG-Default')
-        $rules[0].administrativeUnitName |
-            Should -Be 'RMAU-PAW'
-    }
-
-    It 'keeps a single preserved installer rule as an array' {
-        $assignmentAst = $updateAst.FindAll({
-            param($node)
-            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-            $node.Left.Extent.Text -eq '$tagAuthorizationRules'
-        }, $true) | Select-Object -Last 1
-
-        $assignmentAst.Extent.Text | Should -Match `
-            '(?s)\$tagAuthorizationRules\s*=\s*@\('
-    }
-
-    It 'requests the raw policy response for deployment preservation' {
-        $updateAst.Extent.Text | Should -Match `
-            '(?s)Get-AutoPilotTagPolicy\s+.*?-Raw'
-        $updateAst.Extent.Text | Should -Match `
-            "did not return a Group Tag policy"
+    It 'updates without management API access or rule conversion' {
+        $updateAst.Extent.Text | Should -Not -Match 'Get-AutoPilotTagPolicy|ConvertTo-UpdateTagAuthorizationRules'
+        $updateAst.Extent.Text | Should -Not -Match 'TagAuthorizationRule\s*=|\bAdministrativeUnitName\s*='
+        $updateAst.Extent.Text | Should -Match 'RestrictedAdministrativeUnitName\s*=\s*@\(\$RestrictedAdministrativeUnitName\)'
+        $updateAst.Extent.Text | Should -Match 'SkipAdministrativeUnitRole\s*=\s*\$SkipAdministrativeUnitRole'
+        $updateAst.Extent.Text | Should -Not -Match 'Set-AzStorageBlobContent|Get-AzStorageBlobContent'
     }
 
     It 'supports forcing an update without an execution confirmation' {
@@ -4139,7 +4547,25 @@ Describe 'Update script deployment discovery' {
 
         $errorRecord.Exception.Message | Should -Match 'Azure role assignments'
         $errorRecord.Exception.Data['PermissionDetails'] | Should -Match `
-            'Contributor plus Role Based Access Control Administrator or User Access Administrator'
+            'Contributor plus User Access Administrator'
+    }
+
+    It 'checks custom role definition permission before updating' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureUpdatePermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test'
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Message | Should -Match 'Custom role definitions'
+        $errorRecord.Exception.Data['PermissionDetails'] | Should -Match 'custom role definition writes'
     }
 }
 
@@ -4187,6 +4613,21 @@ Describe 'Entra web application Graph responses' {
 
         $items.Count | Should -Be 1
         $items[0].displayName | Should -Be 'Autopilot Import Web'
+    }
+
+    It 'registers separate interactive and silent redirects for a single frontend' -ForEach @(
+        @{ Existing = @() }
+        @{ Existing = @('https://func-example.azurewebsites.net/api/ui/index.html') }
+    ) {
+        $redirectUris = @(Merge-WebRedirectUri `
+            -ExistingRedirectUri $Existing `
+            -PrimaryRedirectUri 'https://func-example.azurewebsites.net/api/ui/index.html')
+
+        $redirectUris.Count | Should -Be 2
+        $redirectUris | Should -Be @(
+            'https://func-example.azurewebsites.net/api/ui/index.html'
+            'https://func-example.azurewebsites.net/api/ui/auth.html'
+        )
     }
 
     It 'keeps a single existing and additional SPA redirect as separate URIs' {
@@ -4571,6 +5012,27 @@ Describe 'Azure deployment permission validation' {
         }
     }
 
+    It 'requires private-network joins and Storage approval only for Flex' -ForEach @(
+        @{ DeniedAction = 'Microsoft.Network/virtualNetworks/join/action' }
+        @{ DeniedAction = 'Microsoft.Network/virtualNetworks/subnets/join/action' }
+        @{ DeniedAction = 'Microsoft.Network/privateDnsZones/join/action' }
+        @{ DeniedAction = 'Microsoft.Storage/storageAccounts/privateEndpointConnectionsApproval/action' }
+    ) {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{ value = @(@{ actions = @('*'); notActions = @($DeniedAction) }) } | ConvertTo-Json -Depth 5
+            }
+        }
+        {
+            Assert-AzureDeploymentPermissions -SubscriptionId sub -ResourceGroupName rg -ResourceGroupExists
+        } | Should -Not -Throw
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions -SubscriptionId sub -ResourceGroupName rg -ResourceGroupExists -PrivateNetworking
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Data['MissingActions'] | Should -Be $DeniedAction
+    }
+
     It 'rejects permissions excluded through NotActions' {
         Mock Invoke-AzRestMethod {
             [pscustomobject]@{
@@ -4598,13 +5060,31 @@ Describe 'Azure deployment permission validation' {
         $errorRecord.Exception.Message | Should -Match `
             'Create or update Azure role assignments'
         $errorRecord.Exception.Message | Should -Match `
-            'Contributor and Role Based Access Control Administrator'
+            'Contributor and User Access Administrator'
         $errorRecord.Exception.Message | Should -Match `
             "Checked scope: /subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-test"
         $errorRecord.Exception.Data['MissingActions'] | Should -Be `
-            'Microsoft.Authorization/roleAssignments/write'
+            'Microsoft.Authorization/roleAssignments/write,Microsoft.Authorization/roleDefinitions/write'
         $errorRecord.Exception.Data[ `
             'AutopilotDeploymentPermissionError'] | Should -BeTrue
+    }
+
+    It 'requires permission to define the manager visibility role before deployment' {
+        Mock Invoke-AzRestMethod {
+            [pscustomobject]@{
+                StatusCode = 200
+                Content = @{
+                    value = @(@{ actions = @('*'); notActions = @('Microsoft.Authorization/roleDefinitions/write') })
+                } | ConvertTo-Json -Depth 5
+            }
+        }
+        $errorRecord = {
+            Assert-AzureDeploymentPermissions `
+                -SubscriptionId '11111111-1111-1111-1111-111111111111' `
+                -ResourceGroupName 'rg-test' -ResourceGroupExists
+        } | Should -Throw -PassThru
+        $errorRecord.Exception.Data['MissingActions'] | Should -Be 'Microsoft.Authorization/roleDefinitions/write'
+        $errorRecord.Exception.Message | Should -Match 'manager access reader custom role'
     }
 
     It 'requires permission to create the Log Analytics workspace' {
@@ -5328,7 +5808,7 @@ Describe 'Web frontend response types' {
         $frontendSource | Should -Match `
             'redirectUri:\s*config\.silentRedirectUri'
         $frontendSource | Should -Match `
-            'if \(redirectResult\?\.accessToken\) accessTokenResult = redirectResult'
+            '(?s)if \(redirectResult\?\.accessToken && redirectResult\.scopes\.some\(.*?scope\.toLowerCase\(\) === config\.scope\.toLowerCase\(\).*?accessTokenResult = redirectResult'
         $frontendSource | Should -Match `
             "error\.errorCode === 'monitor_window_timeout'"
         $frontendSource | Should -Match `
@@ -5380,6 +5860,7 @@ Describe 'Web frontend response types' {
             'ManageDeviceTags'  = 'api/devices/tags/assignments'
             'GetImportHistory'  = 'api/management/imports'
             'ManageTagPolicy'   = 'api/management/tag-policy'
+            'ManagePolicyManagers' = 'api/management/policy-managers'
             'WebFrontend'       = 'api/ui/{*path}'
         }
 
@@ -5924,6 +6405,8 @@ Describe 'Deployment package' {
                     'scripts/Ensure-EntraApiApplication.ps1'
                     'scripts/Ensure-EntraWebApplication.ps1'
                     'scripts/Grant-ManagedIdentityGraphPermission.ps1'
+                    'scripts/Grant-ManagedIdentityAdministrativeUnitRole.ps1'
+                    'scripts/FunctionDeployment.psm1'
                     'scripts/Import-AutopilotDevice.ps1'
                     'scripts/Start-IntuneAutopilotImporter.ps1'
                     'scripts/Set-TagAuthorizationPolicy.ps1'
@@ -5933,10 +6416,13 @@ Describe 'Deployment package' {
                     'ManageDeviceTags/run.ps1'
                     'GetImportHistory/function.json'
                     'GetImportHistory/run.ps1'
+                    'ManagePolicyManagers/function.json'
+                    'ManagePolicyManagers/run.ps1'
                     'RemoveExpiredImportHistory/function.json'
                     'RemoveExpiredImportHistory/run.ps1'
                     'proxies.json'
                     'WebFrontend/function.json'
+                    'RootRedirect/function.json'
                     'WebFrontend/wwwroot/index.html'
                     'web/package.json'
                     'web/src/main.ts'
@@ -5946,6 +6432,15 @@ Describe 'Deployment package' {
             $entries | Where-Object {
                 $_ -match '/WebFrontend/wwwroot/assets/.+\.(css|js)$'
             } | Should -Not -BeNullOrEmpty
+            $runtimeFunctions = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'src\FunctionApp') -Directory |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'function.json') }
+            $installerText = Get-Content -LiteralPath (Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1') -Raw
+            $packagerText = Get-Content -LiteralPath (Join-Path $projectRoot 'src\Scripts\FunctionDeployment.psm1') -Raw
+            $installerText | Should -Match 'New-AutopilotFunctionPackage'
+            foreach ($runtimeFunction in $runtimeFunctions) {
+                $entries | Should -Contain "$packageRoot/$($runtimeFunction.Name)/function.json"
+                $packagerText | Should -Match ([regex]::Escape("'$($runtimeFunction.Name)'"))
+            }
             $entries | Where-Object {
                 $_ -match `
                     '(^|/)(client\.settings\.json|local\.settings\.json|tests|\.git)(/|$)'

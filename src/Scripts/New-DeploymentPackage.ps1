@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261018.2
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -107,11 +107,12 @@ function Assert-BuiltWebFrontend {
     else {
         Join-Path $Root 'WebFrontend\wwwroot'
     }
+    # Ensure the web root directory exists.
     $indexPath = Join-Path $webRoot 'index.html'
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
         throw "The prebuilt web frontend is missing: $indexPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
     }
-
+    # Read the contents of the index file to check for asset references.
     $index = Get-Content -LiteralPath $indexPath -Raw
     # The frontend is served under /api/ui, so the index can reference assets
     # with or without that prefix.
@@ -119,6 +120,7 @@ function Assert-BuiltWebFrontend {
         $index,
         '(?:src|href)=["''](?:/api/ui/)?(?<path>assets/[^"'']+)["'']'
     )
+    # Extract all asset references from the index file.
     if ($assetMatches.Count -eq 0) {
         throw "The prebuilt web frontend index does not reference any assets: $indexPath"
     }
@@ -126,20 +128,25 @@ function Assert-BuiltWebFrontend {
     # An index without a JavaScript bundle would produce an empty page at
     # runtime, so a stylesheet alone is not sufficient.
     $hasJavaScriptAsset = $false
+    # Check each asset referenced in the index to ensure it exists in the web root.
     foreach ($assetMatch in $assetMatches) {
+        # Get the relative path of the asset as referenced in the index file.
         $relativePath = $assetMatch.Groups['path'].Value.Replace(
             '/',
             [IO.Path]::DirectorySeparatorChar
         )
+        # Convert the relative path to use the correct directory separator for the current platform.
         $assetPath = Join-Path $webRoot $relativePath
+        # Combine the web root with the relative path to get the full path to the asset.
         if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
             throw "The prebuilt web frontend asset is missing: $assetPath. Run 'npm ci' and 'npm run build' in the web directory before creating a deployment package."
         }
+        # Check if the asset is a JavaScript file to determine if the index has a JavaScript asset.
         if ([IO.Path]::GetExtension($assetPath) -eq '.js') {
             $hasJavaScriptAsset = $true
         }
     }
-
+    # Ensure that the index references at least one JavaScript asset.
     if (-not $hasJavaScriptAsset) {
         throw "The prebuilt web frontend index does not reference a JavaScript asset: $indexPath"
     }
@@ -168,17 +175,19 @@ function Assert-ProjectVersionConsistency {
         [Parameter(Mandatory)]
         [string] $ProjectVersion
     )
-
+    # Validate the format of the project version before proceeding.
     if ($ProjectVersion -notmatch '^\d+\.\d+\.\d{8}\.\d+$') {
         throw "VERSION contains an invalid project version: $ProjectVersion"
     }
 
+    # Gather all PowerShell files in the project, excluding certain directories.
     $powerShellFiles = @(
         Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
             $_.Extension -in '.ps1', '.psm1', '.psd1' -and
             $_.FullName -notmatch '[\\/](?:node_modules|InstallationPackage|\.git)[\\/]'
         }
     )
+    # Verify that each PowerShell file contains exactly one Project-Version marker matching the project version.
     foreach ($file in $powerShellFiles) {
         $content = Get-Content -LiteralPath $file.FullName -Raw
         $markers = [regex]::Matches(
@@ -194,9 +203,12 @@ function Assert-ProjectVersionConsistency {
         }
     }
 
+    # Verify that the client module manifest contains the correct project version.
     $manifestPath = Join-Path $Root `
         'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
+    # Ensure the manifest file exists before attempting to import it.
     $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
+    # Import the manifest file as a PowerShell data file to access its properties.
     if ([string] $manifest.ModuleVersion -ne $ProjectVersion) {
         throw "Client module manifest uses version $($manifest.ModuleVersion) instead of $ProjectVersion."
     }
@@ -227,8 +239,9 @@ function Resolve-PackageBranchName {
         [Parameter(Mandatory)]
         [string] $Root
     )
-
+    # Attempt to resolve the branch name from the explicit parameter, environment variables, or the local Git repository.
     $resolvedName = $Name
+    # Start with the explicitly provided branch name, if any.
     if ([string]::IsNullOrWhiteSpace($resolvedName)) {
         $resolvedName = @(
             $env:GITHUB_HEAD_REF
@@ -238,6 +251,7 @@ function Resolve-PackageBranchName {
             -not [string]::IsNullOrWhiteSpace($_)
         } | Select-Object -First 1
     }
+    # If the branch name could not be resolved from the environment, attempt to query the local Git repository.
     if ([string]::IsNullOrWhiteSpace($resolvedName)) {
         $gitCommand = Get-Command git -ErrorAction SilentlyContinue
         if ($gitCommand) {
@@ -250,12 +264,16 @@ function Resolve-PackageBranchName {
             }
         }
     }
+    # If the branch name could not be resolved from either the environment or the local Git repository, throw an error.
     if ([string]::IsNullOrWhiteSpace($resolvedName)) {
         throw 'The source branch could not be determined. Use -BranchName.'
     }
 
+    # Convert the resolved branch name into a safe format for use in file names.
+    # Replace any characters that are not alphanumeric, dot, underscore, or hyphen with a hyphen.
     $safeName = $resolvedName.Trim() -replace '[^A-Za-z0-9._-]', '-'
     $safeName = $safeName.Trim('-', '.')
+    # If the resulting safe name is empty, throw an error indicating that the branch name does not contain any portable file-name characters.
     if ([string]::IsNullOrWhiteSpace($safeName)) {
         throw "Branch name '$resolvedName' does not contain any portable file-name characters."
     }
@@ -266,29 +284,37 @@ function Resolve-PackageBranchName {
 $projectVersion = (Get-Content `
     -LiteralPath (Join-Path $ProjectRoot 'VERSION') `
     -Raw).Trim()
+# Ensure that the project version is not empty.
 if ([string]::IsNullOrWhiteSpace($projectVersion)) {
     throw 'VERSION must contain a package version.'
 }
-
+# Resolve the package branch name using the provided branch name and project root.
 $packageBranch = Resolve-PackageBranchName `
     -Name $BranchName `
     -Root $ProjectRoot
+# Construct the package name using the resolved branch name and project version.
 $packageName = "Intune-autopilotImporter-$packageBranch$projectVersion"
+# Define the staging root and package root directories, as well as the final package path.
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) `
     "$packageName-$([guid]::NewGuid().ToString('N'))"
+# Define the package root and final package path based on the staging root and package name.
 $packageRoot = Join-Path $stagingRoot $packageName
+# Define the final package path based on the output directory and package name.
 $packagePath = Join-Path $OutputDirectory "$packageName.zip"
-
+# Assert that the project version is consistent and that the web frontend has been built.
 Assert-ProjectVersionConsistency `
     -Root $ProjectRoot `
     -ProjectVersion $projectVersion
+# Assert that the web frontend has been built.
 Assert-BuiltWebFrontend -Root $ProjectRoot
 
 # Keep package content explicit so local configuration and development files stay excluded.
 $packageEntries = @(
     @{ Source = 'AUTHOR'; Destination = 'AUTHOR' }
     @{ Source = 'CHANGELOG.md'; Destination = 'CHANGELOG.md' }
+    @{ Source = 'DEVELOPER.md'; Destination = 'DEVELOPER.md' }
     @{ Source = 'History.md'; Destination = 'History.md' }
+    @{ Source = 'HOWTO-Migrate-To-Private-Endpoints.md'; Destination = 'HOWTO-Migrate-To-Private-Endpoints.md' }
     @{ Source = 'LICENSE'; Destination = 'LICENSE' }
     @{ Source = 'README.md'; Destination = 'README.md' }
     @{ Source = 'VERSION'; Destination = 'VERSION' }
@@ -305,13 +331,17 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\ManageDeviceTags'; Destination = 'ManageDeviceTags' }
     @{ Source = 'src\FunctionApp\GetImportHistory'; Destination = 'GetImportHistory' }
     @{ Source = 'src\FunctionApp\ManageTagPolicy'; Destination = 'ManageTagPolicy' }
+    @{ Source = 'src\FunctionApp\ManagePolicyManagers'; Destination = 'ManagePolicyManagers' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
     @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
+    @{ Source = 'src\FunctionApp\RootRedirect'; Destination = 'RootRedirect' }
     @{ Source = 'src\Infrastructure'; Destination = 'infra' }
     @{ Source = 'src\Scripts\Ensure-EntraApiApplication.ps1'; Destination = 'scripts\Ensure-EntraApiApplication.ps1' }
     @{ Source = 'src\Scripts\Ensure-EntraWebApplication.ps1'; Destination = 'scripts\Ensure-EntraWebApplication.ps1' }
     @{ Source = 'src\Scripts\Grant-ManagedIdentityGraphPermission.ps1'; Destination = 'scripts\Grant-ManagedIdentityGraphPermission.ps1' }
+    @{ Source = 'src\Scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1'; Destination = 'scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1' }
+    @{ Source = 'src\Scripts\FunctionDeployment.psm1'; Destination = 'scripts\FunctionDeployment.psm1' }
     @{ Source = 'src\Scripts\Import-AutopilotDevice.ps1'; Destination = 'scripts\Import-AutopilotDevice.ps1' }
     @{ Source = 'src\Scripts\Start-IntuneAutopilotImporter.ps1'; Destination = 'scripts\Start-IntuneAutopilotImporter.ps1' }
     @{ Source = 'src\Scripts\Set-TagAuthorizationPolicy.ps1'; Destination = 'scripts\Set-TagAuthorizationPolicy.ps1' }
@@ -329,16 +359,21 @@ $packageEntries = @(
 try {
     # Assemble the distributable directory in a unique temporary location.
     New-Item -Path $packageRoot -ItemType Directory -Force | Out-Null
+    # Ensure that the staging root and package root directories exist.
     foreach ($entry in $packageEntries) {
+        # Ensure that the source path exists before attempting to copy it.
         $sourcePath = Join-Path $ProjectRoot $entry.Source
+        # Determine the full destination path for the current package entry.
         if (-not (Test-Path -LiteralPath $sourcePath)) {
             throw "Required deployment package entry was not found: $sourcePath"
         }
+        # Determine the full destination path for the current package entry.
         $destinationPath = Join-Path $packageRoot $entry.Destination
         New-Item `
             -Path (Split-Path $destinationPath -Parent) `
             -ItemType Directory `
             -Force | Out-Null
+        # Copy the source item to the determined destination path, preserving the directory structure.
         Copy-Item `
             -LiteralPath $sourcePath `
             -Destination $destinationPath `
@@ -347,6 +382,7 @@ try {
     }
 
     # Compress the complete package root and replace an existing archive of this version.
+    # Ensure that the output directory exists before attempting to create the package.
     New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
     Compress-Archive `
         -Path $packageRoot `
@@ -358,6 +394,7 @@ try {
 }
 finally {
     # Always remove staging data, including after copy or compression failures.
+    # This ensures that temporary files do not accumulate and affect subsequent packaging operations.
     Remove-Item `
         -LiteralPath $stagingRoot `
         -Recurse `

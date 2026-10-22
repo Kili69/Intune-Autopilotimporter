@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261018.2
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -7,12 +7,13 @@
 Updates an existing Autopilot Import deployment from the current source tree.
 
 .DESCRIPTION
-Discovers the installed client configuration, reads the current Group Tag
-policy through the Function management API, preserves configured policy
-managers and optional RMAU, and reads the deployed extension attribute and
+Discovers the installed client configuration, preserves configured policy
+managers, and reads the deployed extension attribute and
 region from Azure. It then invokes Install-AutopilotImport.ps1 with the
 existing resource names and synchronizes the updated client module to the
-system-wide Windows PowerShell module directory. When this changes Application Insights from a
+system-wide Windows PowerShell module directory. Rules and their administrative
+units remain untouched; no management API access is required.
+When this changes Application Insights from a
 previously linked Log Analytics workspace to the integrated workspace in the
 Function resource group, the script identifies the old workspace that can be
 deleted after its remaining use and historical telemetry have been reviewed.
@@ -40,18 +41,16 @@ Name of the existing Azure Function App.
 
 .PARAMETER FunctionUrl
 HTTPS URL of the existing Azure Function App, including an optional API path.
-The script derives the Function App name from an azurewebsites.net hostname and
-searches the subscriptions available to the signed-in Azure account to resolve
-the subscription, tenant, and resource group. Values discovered from this URL
-take precedence over an automatically selected client configuration.
+The script accepts an azurewebsites.net hostname or a custom domain bound to
+the Function App. It searches the subscriptions available to the signed-in
+Azure account to resolve the subscription, tenant, and resource group. Custom
+domains are verified against Azure hostname metadata or bindings, not DNS.
+Values discovered from this URL take precedence over an automatically
+selected client configuration.
 
 .PARAMETER ApiAudience
 Optional API audience override. When omitted, it is read from the installed
 configuration or the Function App's API_AUDIENCE setting.
-
-.PARAMETER ManagementUrl
-Optional Group Tag management endpoint override. When omitted, it is read
-from the installed configuration or derived from the Function App hostname.
 
 .PARAMETER ClientToolsPath
 Client package destination. By default, it is derived from ConfigPath. When no
@@ -69,6 +68,10 @@ still takes precedence and does not perform the update.
 Forces a fresh Microsoft Graph device-code sign-in. Use this after assigning
 new Microsoft Entra roles or when interactive browser authentication is hidden.
 
+.PARAMETER GraphAccessToken
+Short-lived, in-memory Graph delegated token for the managed-identity
+application permission grant, passed through to the installer.
+
 .PARAMETER WebClientId
 Client ID of the existing Entra web application. Overrides WEB_CLIENT_ID from
 the deployed Function App settings when supplied.
@@ -78,6 +81,15 @@ Skips Entra application configuration during the update.
 
 .PARAMETER SkipGraphPermission
 Skips managed identity Microsoft Graph permission assignment.
+
+.PARAMETER RestrictedAdministrativeUnitName
+Additional restricted management administrative units for which the Function
+managed identity receives a scoped custom role 'Autopilot Import Device Attribute Writer'. Units used
+by the current Group Tag rules are detected automatically.
+
+.PARAMETER SkipAdministrativeUnitRole
+Skips the scoped role assignment for restricted management administrative
+units.
 
 .PARAMETER SkipPublish
 Skips publishing Function source code.
@@ -110,6 +122,13 @@ Azure account must be able to read the Function App and its subscription.
 
 .EXAMPLE
 .\Update-AutopilotImport.ps1 `
+    -FunctionUrl 'https://autopilot.example.com' `
+    -InstallMissingModules
+
+Discovers the Function App by its bound custom domain and updates it.
+
+.EXAMPLE
+.\Update-AutopilotImport.ps1 `
     -SubscriptionId '00000000-0000-0000-0000-000000000000' `
     -TenantId '11111111-1111-1111-1111-111111111111' `
     -ResourceGroupName 'rg-autopilot-import' `
@@ -132,9 +151,8 @@ System.Management.Automation.PSCustomObject. The deployment result returned by
 Install-AutopilotImport.ps1.
 
 .NOTES
-The updating account needs permission to read the Function App configuration,
-update its Azure resources, and read the current Group Tag policy through the
-Function management API. Run the script from an elevated PowerShell 7 session
+The updating account needs permission to read the Function App configuration
+and update its Azure resources. Run the script from an elevated PowerShell 7 session
 so it can update the system-wide client module under Program Files.
 #>
 
@@ -156,9 +174,6 @@ param(
     [ValidatePattern('^api://')]
     [string] $ApiAudience,
 
-    [ValidatePattern('^https://')]
-    [string] $ManagementUrl,
-
     [string] $ClientToolsPath,
 
     [switch] $InstallMissingModules,
@@ -167,11 +182,17 @@ param(
 
     [switch] $ForceGraphSignIn,
 
+    [securestring] $GraphAccessToken,
+
     [guid] $WebClientId,
 
     [switch] $SkipEntraAppConfiguration,
 
     [switch] $SkipGraphPermission,
+
+    [string[]] $RestrictedAdministrativeUnitName,
+
+    [switch] $SkipAdministrativeUnitRole,
 
     [switch] $SkipPublish,
 
@@ -180,7 +201,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
+# Capture preflight and installer diagnostics even during WhatIf. The active
+# flag prevents catch/finally from stopping an already closed transcript.
 $setupLogPath = Join-Path ([IO.Path]::GetTempPath()) `
     "Intune-Autopilotimport-update-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N')).log"
 Start-Transcript `
@@ -221,6 +247,8 @@ function Resolve-AutoPilotUpdateConfigPath {
     )
 
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        # Explicit configuration is authoritative; do not silently select a
+        # different installed deployment when that file cannot be resolved.
         return (Resolve-Path -LiteralPath $Path).Path
     }
 
@@ -228,6 +256,8 @@ function Resolve-AutoPilotUpdateConfigPath {
     if ([string]::IsNullOrWhiteSpace($documentsPath)) {
         $documentsPath = $HOME
     }
+    # Search portable clients and both PowerShell editions' module locations.
+    # MyDocuments respects redirected/OneDrive folders; HOME is the fallback.
     $moduleRoots = [Collections.Generic.List[string]]::new()
     $moduleRoots.Add((Join-Path $documentsPath `
         'AutopilotImport\Modules\AutopilotImport.Client'))
@@ -255,6 +285,8 @@ function Resolve-AutoPilotUpdateConfigPath {
             'WindowsPowerShell\Modules\AutopilotImport.Client'))
     }
 
+    # PSModulePath can repeat the standard locations. Inspect each root once,
+    # including both unversioned settings and settings in version subfolders.
     $searchedModuleRoots = @($moduleRoots | Select-Object -Unique)
     $candidates = @($searchedModuleRoots | ForEach-Object {
         $moduleRoot = $_
@@ -280,11 +312,14 @@ function Resolve-AutoPilotUpdateConfigPath {
     })
     if ($candidates.Count -eq 0) {
         if ($AllowMissing) {
+            # Missing local tools need not block an explicitly targeted update.
             return $null
         }
         throw "No installed client.settings.json was found in the portable or PowerShell module directories: $($searchedModuleRoots -join ', '). Use -ConfigPath."
     }
 
+    # Choose by parsed module version, not file timestamp or string ordering.
+    # Non-version directory names sort as 0.0.
     return ($candidates | Sort-Object {
         $parsedVersion = [version]::new()
         if ([version]::TryParse($_.Directory.Name, [ref] $parsedVersion)) {
@@ -313,6 +348,8 @@ function Read-AutoPilotUpdateValue {
         [string] $DefaultValue
     )
 
+    # Precedence is resolved by the call site; this helper only handles the
+    # final supplied value versus an interactive default.
     if (-not [string]::IsNullOrWhiteSpace($CurrentValue)) {
         return $CurrentValue.Trim()
     }
@@ -345,6 +382,8 @@ function Get-AutoPilotUpdateConfigurationValue {
         [string] $Name
     )
 
+    # Older client configurations may lack deployment metadata. Check property
+    # existence explicitly because strict mode rejects missing-property access.
     if ($null -ne $Configuration -and
         $null -ne $Configuration.PSObject.Properties[$Name]) {
         return [string] $Configuration.$Name
@@ -358,10 +397,10 @@ function Resolve-AutoPilotFunctionAppFromUrl {
     Resolves an Azure Function App resource from its public URL.
 
     .DESCRIPTION
-    Derives the Function App name from an azurewebsites.net hostname and
-    searches either one requested subscription or every subscription available
-    to the signed-in Azure account. Exactly one matching Function App is
-    required.
+    Resolves a standard Azure hostname by app name, or a custom domain by
+    Function App hostname metadata and bindings. Searches either one requested
+    subscription or every subscription available to the signed-in Azure
+    account. Exactly one matching Function App is required.
     #>
     param(
         [Parameter(Mandatory)]
@@ -378,25 +417,29 @@ function Resolve-AutoPilotFunctionAppFromUrl {
         ) -or $parsedUrl.Scheme -ne 'https') {
         throw "FunctionUrl must be an absolute HTTPS URL. Received '$Url'."
     }
-    if ($parsedUrl.Host -notmatch `
+    $functionAppName = $null
+    if ($parsedUrl.Host -match `
         '^(?<name>[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?)\.azurewebsites\.net$') {
-        throw "FunctionUrl must use the Function App's azurewebsites.net hostname. Received '$($parsedUrl.Host)'."
+        $functionAppName = $Matches.name
     }
-    $functionAppName = $Matches.name
 
-    $subscriptions = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
-        @(Get-AzSubscription -ErrorAction Stop)
-    }
-    else {
-        @(Get-AzSubscription `
-            -SubscriptionId $SubscriptionId `
-            -ErrorAction Stop)
-    }
+    # An explicit subscription narrows discovery; otherwise search all visible
+    # subscriptions, selecting each tenant/context before querying ARM.
+    $subscriptions = @(
+        if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+            Get-AzSubscription -ErrorAction Stop
+        }
+        else {
+            Get-AzSubscription `
+                -SubscriptionId $SubscriptionId `
+                -ErrorAction Stop
+        }
+    )
     if ($subscriptions.Count -eq 0) {
         throw 'No accessible Azure subscriptions were found for Function URL discovery.'
     }
 
-    $matches = [Collections.Generic.List[object]]::new()
+    $deployments = [Collections.Generic.List[object]]::new()
     foreach ($subscription in $subscriptions) {
         try {
             Set-AzContext `
@@ -404,20 +447,44 @@ function Resolve-AutoPilotFunctionAppFromUrl {
                 -Tenant $subscription.TenantId `
                 -WhatIf:$false `
                 -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Warning "Function URL discovery could not select subscription '$($subscription.Id)': $($_.Exception.Message)"
+            continue
+        }
+        if ($functionAppName) {
             $filter = [uri]::EscapeDataString(
                 "resourceType eq 'Microsoft.Web/sites' and name eq '$functionAppName'"
             )
-            $response = Invoke-AzRestMethod `
-                -Method GET `
-                -Path "/subscriptions/$($subscription.Id)/resources?api-version=2021-04-01&`$filter=$filter" `
-                -ErrorAction Stop
-            if ($response.StatusCode -ge 400) {
-                Write-Verbose "Function URL discovery returned HTTP $($response.StatusCode) for subscription '$($subscription.Id)'."
-                continue
+            $nextPath = "/subscriptions/$($subscription.Id)/resources?api-version=2021-04-01&`$filter=$filter"
+        }
+        else {
+            $nextPath = "/subscriptions/$($subscription.Id)/providers/Microsoft.Web/sites?api-version=2023-12-01"
+        }
+        $visitedPaths = [Collections.Generic.HashSet[string]]::new()
+        while ($nextPath) {
+            if (-not $visitedPaths.Add($nextPath)) {
+                throw "Function URL discovery received a repeated page for subscription '$($subscription.Id)'."
             }
-            foreach ($resource in @(($response.Content | ConvertFrom-Json).value)) {
+            try {
+                $response = Invoke-AzRestMethod `
+                    -Method GET `
+                    -Path $nextPath `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Function URL discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
+                break
+            }
+            if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) {
+                Write-Warning "Function URL discovery returned HTTP $($response.StatusCode) for subscription '$($subscription.Id)'."
+                break
+            }
+            $page = $response.Content | ConvertFrom-Json -ErrorAction Stop
+            foreach ($resource in @($page.value)) {
                 if ([string] $resource.type -ine 'Microsoft.Web/sites' -or
-                    [string] $resource.name -ine $functionAppName) {
+                    ($functionAppName -and
+                        [string] $resource.name -ine $functionAppName)) {
                     continue
                 }
                 $resourceIdMatch = [regex]::Match(
@@ -425,38 +492,73 @@ function Resolve-AutoPilotFunctionAppFromUrl {
                     '^/subscriptions/(?<subscription>[^/]+)/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Web/sites/(?<name>[^/]+)$',
                     [Text.RegularExpressions.RegexOptions]::IgnoreCase
                 )
-                if ($resourceIdMatch.Success) {
-                    $matches.Add([pscustomobject]@{
+                if (-not $resourceIdMatch.Success -or
+                    $resourceIdMatch.Groups['subscription'].Value -ine
+                        [string] $subscription.Id) {
+                    continue
+                }
+                if (-not $functionAppName) {
+                    $kind = $resource.PSObject.Properties['kind']
+                    if ($null -eq $kind -or
+                        'functionapp' -notin @(([string] $kind.Value) -split ',')) {
+                        continue
+                    }
+                    $hostNames = @(Get-UpdateWebAppHostName -WebApp $resource)
+                    if ($parsedUrl.Host -notin $hostNames) {
+                        try {
+                            $hostNames = @(Get-UpdateWebAppHostNameBinding `
+                                    -ResourceId ([string] $resource.id))
+                        }
+                        catch {
+                            Write-Warning "Function URL discovery could not read hostname bindings for '$($resource.id)': $($_.Exception.Message)"
+                            continue
+                        }
+                        if ($parsedUrl.Host -notin $hostNames) {
+                            continue
+                        }
+                    }
+                }
+                $deployments.Add([pscustomobject]@{
                             SubscriptionId   = $resourceIdMatch.Groups['subscription'].Value
                             TenantId         = [string] $subscription.TenantId
                             ResourceGroupName = $resourceIdMatch.Groups['resourceGroup'].Value
                             FunctionAppName  = $resourceIdMatch.Groups['name'].Value
                             FunctionUrl      = "https://$($parsedUrl.Host)"
                         })
+            }
+            $nextLink = $page.PSObject.Properties['nextLink']
+            $nextPath = $null
+            if ($null -ne $nextLink -and
+                -not [string]::IsNullOrWhiteSpace([string] $nextLink.Value)) {
+                $nextUri = [uri]::new([string] $nextLink.Value, [UriKind]::Absolute)
+                $nextPath = $nextUri.PathAndQuery
+                if (-not $nextPath.StartsWith(
+                        "/subscriptions/$($subscription.Id)/",
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Function URL discovery received a page outside the selected subscription.'
                 }
             }
         }
-        catch {
-            Write-Verbose "Function URL discovery could not search subscription '$($subscription.Id)': $($_.Exception.Message)"
-        }
     }
 
-    if ($matches.Count -eq 0) {
+    # Never guess a target from an empty or ambiguous search. Later call sites
+    # also reject conflicting explicit tenant/group/site parameters.
+    if ($deployments.Count -eq 0) {
         $scopeDescription = if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
             'the accessible Azure subscriptions'
         }
         else {
             "subscription '$SubscriptionId'"
         }
-        throw "Function App '$functionAppName' was not found in $scopeDescription. Verify the URL and Azure access."
+        throw "Function App for hostname '$($parsedUrl.Host)' was not found in $scopeDescription. Verify the URL, hostname binding and Azure access."
     }
-    if ($matches.Count -gt 1) {
-        $locations = $matches | ForEach-Object {
+    if ($deployments.Count -gt 1) {
+        $locations = $deployments | ForEach-Object {
             "$($_.SubscriptionId)/$($_.ResourceGroupName)"
         }
         throw "Function URL '$Url' matched more than one accessible Function App: $($locations -join ', '). Use -SubscriptionId to select one deployment."
     }
-    return $matches[0]
+    return $deployments[0]
 }
 
 function Get-AutoPilotClientToolsPath {
@@ -488,6 +590,8 @@ function Get-AutoPilotClientToolsPath {
         return [IO.Path]::GetFullPath($OverridePath)
     }
 
+    # Walk the versioned module layout back to the portable package root.
+    # Unrecognized layouts require an explicit destination instead of guessing.
     $versionDirectory = Split-Path $SettingsPath -Parent
     $moduleDirectory = Split-Path $versionDirectory -Parent
     $modulesDirectory = Split-Path $moduleDirectory -Parent
@@ -498,6 +602,8 @@ function Get-AutoPilotClientToolsPath {
 }
 
 function Test-SystemWideClientModuleAccess {
+    # This is an elevation check, not a filesystem ACL probe. Even an elevated
+    # copy can fail, so the caller handles that separately and warns.
     if (-not $IsWindows) {
         return $false
     }
@@ -508,6 +614,8 @@ function Test-SystemWideClientModuleAccess {
 }
 
 function Get-UserAutoPilotClientModuleRoots {
+    # Install into both per-user module trees so Windows PowerShell and
+    # PowerShell 7 can find the same release without editing PSModulePath.
     $documentsPath = [Environment]::GetFolderPath('MyDocuments')
     if ([string]::IsNullOrWhiteSpace($documentsPath)) {
         $documentsPath = $HOME
@@ -526,12 +634,16 @@ function Resolve-AutoPilotDeploymentResult {
         [object[]] $InstallerOutput
     )
 
+    # Some invoked commands may emit extra objects. Identify the deployment
+    # result by its settings path rather than assuming the final output is it.
     $results = @($InstallerOutput | Where-Object {
         $null -ne $_ -and
         $null -ne $_.PSObject.Properties['InstalledClientSettingsPath'] -and
         -not [string]::IsNullOrWhiteSpace(
             [string] $_.InstalledClientSettingsPath)
     })
+    # Zero results can mean an aborted installer; several are ambiguous. Both
+    # must stop post-install copying rather than appear to be a successful update.
     if ($results.Count -ne 1) {
         throw "The installer returned $($results.Count) structured deployment results; exactly one result with InstalledClientSettingsPath was expected."
     }
@@ -565,6 +677,8 @@ function Install-SystemWideAutopilotClientModule {
     $sourceVersionDirectory = $sourceSettings.Directory.FullName
     $manifestPath = Join-Path $sourceVersionDirectory `
         'AutopilotImport.Client.psd1'
+    # Take the installed manifest as the version source so copied directory
+    # names agree with PowerShell's versioned module-autoloading conventions.
     $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
     $moduleVersion = [string] $manifest.ModuleVersion
 
@@ -581,6 +695,8 @@ function Install-SystemWideAutopilotClientModule {
     $destinationVersionDirectory = Join-Path `
         $destinationModuleRoot `
         $moduleVersion
+    # A caller can target the source location itself. Avoid copying files onto
+    # themselves, but still allow cleanup of other version directories.
     $sameDirectory = [string]::Equals(
         [IO.Path]::GetFullPath($sourceVersionDirectory).TrimEnd('\'),
         [IO.Path]::GetFullPath($destinationVersionDirectory).TrimEnd('\'),
@@ -593,6 +709,8 @@ function Install-SystemWideAutopilotClientModule {
             -ItemType Directory `
             -Force)
         if (-not $sameDirectory) {
+            # Keep the client, shared dependency and deployment defaults
+            # together; copying just the public module would be incomplete.
             foreach ($fileName in @(
                     'AutopilotImport.Client.psm1'
                     'AutopilotImport.Client.psd1'
@@ -611,6 +729,8 @@ function Install-SystemWideAutopilotClientModule {
         throw "The client module could not be updated in '$destinationModuleRoot'. $($_.Exception.Message)"
     }
 
+    # Remove obsolete versions only in this module root. A locked/undeletable
+    # old directory is reported but does not invalidate the new version's copy.
     Get-ChildItem -LiteralPath $destinationModuleRoot -Directory |
         Where-Object { $_.Name -ne $moduleVersion } |
         ForEach-Object {
@@ -629,51 +749,6 @@ function Install-SystemWideAutopilotClientModule {
     return Join-Path $destinationVersionDirectory 'client.settings.json'
 }
 
-function ConvertTo-UpdateTagAuthorizationRules {
-    <#
-    .SYNOPSIS
-    Converts the deployed Group Tag policy into installer rule objects.
-
-    .DESCRIPTION
-    Validates every policy entry and preserves its optional restricted
-    management administrative unit. Invalid or empty policies terminate the
-    update before deployment changes are made.
-
-    .PARAMETER Policy
-    Group Tag policy objects returned by Get-AutoPilotTagPolicy.
-
-    .OUTPUTS
-    System.Object[]. Installer-compatible Group Tag authorization rules.
-    #>
-    param([Parameter(Mandatory)][object[]] $Policy)
-
-    $rules = @($Policy | ForEach-Object {
-        $tags = @($_.tags | Where-Object {
-            -not [string]::IsNullOrWhiteSpace([string] $_)
-        })
-        if ([string]::IsNullOrWhiteSpace([string] $_.groupId) -or
-            $tags.Count -eq 0) {
-            throw 'The current Group Tag policy contains an invalid rule.'
-        }
-        $rule = [ordered]@{
-            groupId = ([guid] $_.groupId).ToString()
-            tags = $tags
-        }
-        if ($_.PSObject.Properties[
-                'administrativeUnitName'] -and
-            -not [string]::IsNullOrWhiteSpace(
-                [string] $_.administrativeUnitName)) {
-            $rule.administrativeUnitName =
-                ([string] $_.administrativeUnitName).Trim()
-        }
-        [pscustomobject] $rule
-    })
-    if ($rules.Count -eq 0) {
-        throw 'The current Group Tag policy is empty.'
-    }
-    return $rules
-}
-
 function Assert-AutoPilotAppSettingsResponse {
     [CmdletBinding()]
     param(
@@ -681,6 +756,8 @@ function Assert-AutoPilotAppSettingsResponse {
         [object] $Response
     )
 
+    # Reading site metadata does not imply permission to list settings. Give
+    # specific guidance for this separately protected ARM action.
     if ($Response.StatusCode -lt 400) {
         return
     }
@@ -709,6 +786,8 @@ function Get-UpdateWebClientId {
         [switch] $SkipEntraAppConfiguration
     )
 
+    # Older deployments may predate the SPA. Empty allows Entra discovery/
+    # creation unless app configuration is explicitly disabled.
     $webClientId = [guid]::Empty
     $webClientIdProperty = $Properties.PSObject.Properties['WEB_CLIENT_ID']
     $hasValidWebClientId = $null -ne $webClientIdProperty -and
@@ -725,6 +804,8 @@ function Get-UpdateWebRedirectUri {
         [object[]] $HostName
     )
 
+    # The installer already adds the default Azure redirect. Preserve only
+    # custom-domain redirects here, without creating/changing DNS or certificates.
     return @(
         @($HostName) |
             ForEach-Object { ([string] $_).Trim() } |
@@ -747,6 +828,8 @@ function Get-UpdateWebAppHostName {
         return @()
     }
 
+    # Az objects and raw ARM JSON expose hostnames in different containers.
+    # Gather candidates from all supported shapes; deduplicate at URL conversion.
     $containers = @($WebApp)
     foreach ($containerName in @('SiteConfig', 'Properties')) {
         $property = $WebApp.PSObject.Properties[$containerName]
@@ -786,6 +869,8 @@ function Get-UpdateWebAppHostNameBinding {
         [string] $ResourceId
     )
 
+    # Direct binding enumeration complements site metadata, which can omit
+    # custom domains in some Az/ARM representations.
     $response = Invoke-AzRestMethod `
         -Method GET `
         -Path "$ResourceId/hostNameBindings?api-version=2023-12-01"
@@ -823,6 +908,8 @@ function Get-UpdateApplicationInsightsWorkspaceResourceId {
         [string] $FunctionAppName
     )
 
+    # Snapshot the old telemetry linkage before the installer reconciles the
+    # integrated workspace. This is advisory, not a prerequisite for deployment.
     $applicationInsightsResourceId = `
         "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Insights/components/$FunctionAppName-insights"
     try {
@@ -838,6 +925,8 @@ function Get-UpdateApplicationInsightsWorkspaceResourceId {
         return [string] $applicationInsights.properties.WorkspaceResourceId
     }
     catch {
+        # Do not block a working app update for an unavailable migration hint.
+        # Unlike required configuration reads, this failure is verbose-only.
         Write-Verbose "Application Insights workspace lookup failed: $($_.Exception.Message)"
         return $null
     }
@@ -855,6 +944,8 @@ function Write-UpdateLogAnalyticsWorkspaceMigrationNotice {
         [string] $IntegratedWorkspaceResourceId
     )
 
+    # Compare normalized IDs so casing/trailing slashes do not create a false
+    # migration warning. This helper only reports; it never deletes telemetry.
     if ([string]::IsNullOrWhiteSpace($PreviousWorkspaceResourceId) -or
         $PreviousWorkspaceResourceId.TrimEnd('/').Equals(
             $IntegratedWorkspaceResourceId.TrimEnd('/'),
@@ -876,6 +967,8 @@ function Test-AzurePermissionPattern {
         [string] $Pattern
     )
 
+    # Azure action patterns use *. Escape everything else and anchor the full
+    # string rather than treating an action pattern as an arbitrary regex.
     $expression = '^' + [regex]::Escape($Pattern).Replace('\*', '.*') + '$'
     return $Action -match $expression
 }
@@ -889,6 +982,8 @@ function Assert-AzureUpdatePermissions {
         [string] $ResourceGroupName
     )
 
+    # Updates target an existing group. Verify management-plane writes for the
+    # entire installer path, including monitoring and Storage role assignments.
     $scope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
     $requiredActions = @(
         'Microsoft.Resources/deployments/write'
@@ -903,6 +998,7 @@ function Assert-AzureUpdatePermissions {
         'Microsoft.Web/sites/write'
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
+        'Microsoft.Authorization/roleDefinitions/write'
     )
     $permissionsResponse = try {
         Invoke-AzRestMethod `
@@ -911,14 +1007,16 @@ function Assert-AzureUpdatePermissions {
     }
     catch {
         Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
-        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
     if ($permissionsResponse.StatusCode -ge 400) {
         Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
-        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure update permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
 
     $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
+    # An action is allowed if at least one permission set grants it without a
+    # matching notActions exclusion in that same set.
     $missingActions = @($requiredActions | Where-Object {
         $requiredAction = $_
         -not ($permissionSets | Where-Object {
@@ -951,11 +1049,15 @@ function Assert-AzureUpdatePermissions {
                 'Microsoft.Web/sites/write' { 'Function Apps' }
                 'Microsoft.Web/sites/config/write' { 'Function App configuration' }
                 'Microsoft.Authorization/roleAssignments/write' { 'Azure role assignments' }
+                'Microsoft.Authorization/roleDefinitions/write' { 'Custom role definitions' }
             }
         } | Select-Object -Unique)
         $roleAssignmentMissing = $missingActions -contains `
             'Microsoft.Authorization/roleAssignments/write'
-        $requiredRoles = if ($roleAssignmentMissing) {
+        $requiredRoles = if ($missingActions -contains 'Microsoft.Authorization/roleDefinitions/write') {
+            'Owner, or Contributor plus User Access Administrator (including custom role definition writes)'
+        }
+        elseif ($roleAssignmentMissing) {
             'Owner, or Contributor plus Role Based Access Control Administrator or User Access Administrator'
         }
         else {
@@ -966,6 +1068,8 @@ function Assert-AzureUpdatePermissions {
         $permissionException = [UnauthorizedAccessException]::new(
             "Missing Azure permissions for: $($missingCapabilities -join ', ')."
         )
+        # Structured markers let the outer handler distinguish missing Azure
+        # privileges from Entra/Graph permissions and general runtime failures.
         $permissionException.Data['AutopilotUpdatePermissionError'] = $true
         $permissionException.Data['PermissionDetails'] = $permissionDetails
         throw $permissionException
@@ -976,6 +1080,7 @@ function Assert-AzureUpdatePermissions {
 
 #region Resolve installed deployment
 
+# Support both the checkout's src layout and the flattened release ZIP.
 $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $projectRoot = if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'VERSION')) {
     $repositoryRoot
@@ -989,21 +1094,30 @@ $installerPath = if ($projectRoot -eq $PSScriptRoot) {
 else {
     Join-Path $projectRoot 'src\Installer\Install-AutopilotImport.ps1'
 }
-$clientModulePath = Join-Path $projectRoot `
-    'src\AutopilotImport.Client\AutopilotImport.Client.psd1'
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer not found: $installerPath"
 }
 
+# Discovery itself needs Az.Accounts. The installer resolves its additional
+# prerequisites later; fail early for missing Graph tooling when installation
+# of prerequisites is not allowed.
 if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
     if (-not $InstallMissingModules) {
         throw 'Az.Accounts is required. Run again with -InstallMissingModules.'
     }
-    Install-Module `
-        -Name 'Az.Accounts' `
-        -Scope CurrentUser `
-        -Force `
-        -AllowClobber
+    if (Get-Command Install-PSResource -ErrorAction SilentlyContinue) {
+        Install-PSResource -Name 'Az.Accounts' -Scope CurrentUser `
+            -Repository PSGallery -TrustRepository -ErrorAction Stop
+    }
+    else {
+        Install-Module `
+            -Name 'Az.Accounts' `
+            -Scope CurrentUser `
+            -Repository PSGallery `
+            -Force `
+            -AllowClobber `
+            -ErrorAction Stop
+    }
 }
 if (-not $SkipEntraAppConfiguration -and
     -not $InstallMissingModules -and
@@ -1022,6 +1136,8 @@ if (-not (Get-Command Get-AzContext -ErrorAction SilentlyContinue) -or
     throw 'Az.Accounts did not provide the required Azure commands.'
 }
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
+# Local settings are optional discovery hints, not the authoritative snapshot
+# of current policy or all deployed application settings.
 $resolvedConfigPath = Resolve-AutoPilotUpdateConfigPath `
     -Path $ConfigPath `
     -AllowMissing
@@ -1048,6 +1164,8 @@ $configuredFunctionAppName = Get-AutoPilotUpdateConfigurationValue `
 $hasFunctionUrl = $PSBoundParameters.ContainsKey('FunctionUrl')
 $discoveredFunctionApp = $null
 if ($hasFunctionUrl) {
+    # A URL-selected deployment takes precedence over automatic config discovery.
+    # A supplied subscription constrains the search rather than being overridden.
     if (-not $currentContext) {
         Connect-AzAccount | Out-Null
         $currentContext = Get-AzContext -ErrorAction Stop
@@ -1059,6 +1177,7 @@ if ($hasFunctionUrl) {
     $discoveredFunctionApp = Resolve-AutoPilotFunctionAppFromUrl `
         @discoveryParameters
 
+    # Reject contradictory explicit identifiers before any update writes.
     foreach ($identityParameter in @{
             TenantId         = $discoveredFunctionApp.TenantId
             ResourceGroupName = $discoveredFunctionApp.ResourceGroupName
@@ -1073,6 +1192,9 @@ if ($hasFunctionUrl) {
     Write-Host "Function URL resolved to '$($discoveredFunctionApp.FunctionAppName)' in resource group '$($discoveredFunctionApp.ResourceGroupName)' and subscription '$($discoveredFunctionApp.SubscriptionId)'."
 }
 
+# Resolve each identity in order: URL discovery, explicitly bound parameter,
+# installed configuration, then interactive defaults. ContainsKey preserves the
+# distinction between an omitted parameter and a deliberately supplied value.
 $SubscriptionId = Read-AutoPilotUpdateValue `
     -CurrentValue $(if ($discoveredFunctionApp) {
         $discoveredFunctionApp.SubscriptionId
@@ -1119,6 +1241,8 @@ $FunctionAppName = Read-AutoPilotUpdateValue `
     -Prompt 'Azure Function App name' `
     -DefaultValue $defaultFunctionName
 
+# Preserve the portable client destination when it can be derived; an explicit
+# ClientToolsPath overrides it. Without settings, request a destination.
 if ($resolvedConfigPath) {
     $resolvedClientToolsPath = Get-AutoPilotClientToolsPath `
         -SettingsPath $resolvedConfigPath `
@@ -1139,6 +1263,8 @@ else {
 
 #region Read current deployment configuration
 
+# Discovery may have switched contexts while searching subscriptions. Select
+# the final target again before permission checks and ARM configuration reads.
 if (-not $currentContext -or
     [string] $currentContext.Subscription.Id -ne $SubscriptionId -or
     [string] $currentContext.Tenant.Id -ne $TenantId) {
@@ -1156,6 +1282,8 @@ Assert-AzureUpdatePermissions `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName
 
+# Read the existing site rather than accepting a new region from the caller.
+# Its live location is forwarded unchanged to the idempotent installer.
 $resourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/sites/$FunctionAppName"
 $siteResponse = Invoke-AzRestMethod `
     -Method GET `
@@ -1168,6 +1296,23 @@ $site = $siteResponse.Content | ConvertFrom-Json
 if (-not $site.id) {
     throw "Function App '$FunctionAppName' was not found."
 }
+$virtualNetworkAddressPrefix = $null
+if ($site.properties.reserved -eq $true) {
+    $vnetId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/vnet-$FunctionAppName"
+    $vnetResponse = Invoke-AzRestMethod `
+        -Method GET `
+        -Path "${vnetId}?api-version=2024-05-01"
+    if ($vnetResponse.StatusCode -ne 200) {
+        throw "Existing Flex virtual network lookup failed with HTTP $($vnetResponse.StatusCode)."
+    }
+    $vnet = $vnetResponse.Content | ConvertFrom-Json -ErrorAction Stop
+    $prefixes = @($vnet.properties.addressSpace.addressPrefixes)
+    if ($prefixes.Count -ne 1 -or
+        $prefixes[0] -notmatch '^(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.\d{1,3}\.0/24$') {
+        throw "Existing Flex virtual network '$vnetId' has an unsupported address space."
+    }
+    $virtualNetworkAddressPrefix = [string] $prefixes[0]
+}
 $previousApplicationInsightsWorkspaceResourceId = `
     Get-UpdateApplicationInsightsWorkspaceResourceId `
         -SubscriptionId $SubscriptionId `
@@ -1175,6 +1320,9 @@ $previousApplicationInsightsWorkspaceResourceId = `
         -FunctionAppName $FunctionAppName
 $integratedLogAnalyticsWorkspaceResourceId = `
     "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$FunctionAppName-la"
+# ARM lists app settings via POST even though this operation is read-only.
+# WhatIf must still allow this lookup to construct an accurate update plan.
+# The response can include secrets; do not print the full settings document.
 $appSettingsResponse = Invoke-AzRestMethod `
     -Method POST `
     -Path "$resourceId/config/appsettings/list?api-version=2023-12-01" `
@@ -1184,6 +1332,8 @@ $appSettings = $appSettingsResponse.Content | ConvertFrom-Json
 $configuredApiAudience = Get-AutoPilotUpdateConfigurationValue `
     -Configuration $settings `
     -Name 'apiApplicationIdUri'
+# Explicit audience wins. Ignore a discovered local configuration's audience
+# for URL-targeted updates, because that file may describe a different app.
 $resolvedApiAudience = if ($PSBoundParameters.ContainsKey('ApiAudience')) {
     $ApiAudience
 }
@@ -1197,6 +1347,8 @@ else {
 if ([string]::IsNullOrWhiteSpace($resolvedApiAudience)) {
     throw "Function App '$FunctionAppName' does not define API_AUDIENCE. Use -ApiAudience."
 }
+# This updater expects the project's api://<client-GUID> convention so it can
+# recover the API registration ID; arbitrary Application ID URIs are rejected.
 $entraClientIdText = $resolvedApiAudience -replace '^api://', ''
 $entraClientId = [guid]::Empty
 if ($resolvedApiAudience -notmatch '^api://' -or
@@ -1204,13 +1356,7 @@ if ($resolvedApiAudience -notmatch '^api://' -or
     throw "API audience '$resolvedApiAudience' does not contain a valid Entra Client ID."
 }
 
-$configuredManagementUrl = Get-AutoPilotUpdateConfigurationValue `
-    -Configuration $settings `
-    -Name 'managementUrl'
-$defaultHostName = [string] $site.properties.defaultHostName
-if ([string]::IsNullOrWhiteSpace($defaultHostName)) {
-    $defaultHostName = "$FunctionAppName.azurewebsites.net"
-}
+# Preserve custom-domain login redirects from both metadata and ARM bindings.
 $siteHostNames = @(Get-UpdateWebAppHostName -WebApp $site)
 $siteHostNames += @(
     Get-UpdateWebAppHostNameBinding -ResourceId $resourceId
@@ -1218,33 +1364,7 @@ $siteHostNames += @(
 $additionalWebRedirectUris = @(
     Get-UpdateWebRedirectUri -HostName $siteHostNames
 )
-$resolvedManagementUrl = if ($PSBoundParameters.ContainsKey('ManagementUrl')) {
-    $ManagementUrl
-}
-elseif (-not $hasFunctionUrl -and
-    -not [string]::IsNullOrWhiteSpace($configuredManagementUrl)) {
-    $configuredManagementUrl
-}
-else {
-    "https://$defaultHostName/api/management/tag-policy"
-}
-
-Import-Module $clientModulePath -Force
-$policyResponse = Get-AutoPilotTagPolicy `
-    -ManagementUrl $resolvedManagementUrl `
-    -ApiApplicationIdUri $resolvedApiAudience `
-    -TenantId $TenantId `
-    -Raw
-if ($null -eq $policyResponse -or
-    $null -eq $policyResponse.PSObject.Properties['policy']) {
-    throw "The management endpoint '$resolvedManagementUrl' did not return a Group Tag policy. Verify the Function App, API audience, and management URL."
-}
-$tagAuthorizationRules = @(
-    ConvertTo-UpdateTagAuthorizationRules `
-        -Policy @($policyResponse.policy)
-)
-$administrativeUnitName = ''
-
+# Preserve deployed legacy defaults and manager IDs without reading rules.
 $extensionAttribute = [string] `
     $appSettings.properties.DEVICE_TAG_EXTENSION_ATTRIBUTE
 if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
@@ -1252,6 +1372,8 @@ if ([string]::IsNullOrWhiteSpace($extensionAttribute)) {
 }
 $managerPolicy = $appSettings.properties.MANAGER_AUTHORIZATION_POLICY |
     ConvertFrom-Json
+# A nonempty explicit SPA ID overrides settings; otherwise old deployments can
+# let the installer discover/create the web registration when Entra is enabled.
 $webClientId = if ($PSBoundParameters.ContainsKey('WebClientId') -and
     $WebClientId -ne [guid]::Empty) {
     $WebClientId
@@ -1284,13 +1406,18 @@ Write-Host "  Tenant        : $TenantId"
 Write-Host "  Resource group: $ResourceGroupName"
 Write-Host "  Function      : $FunctionAppName"
 Write-Host "  Region        : $($site.location)"
+if ($virtualNetworkAddressPrefix) {
+    Write-Host "  Flex VNet     : $virtualNetworkAddressPrefix (preserved)"
+}
 Write-Host "  Client tools  : $resolvedClientToolsPath"
 Write-Host "  Device Tag attribute: $extensionAttribute"
-Write-Host '  Administrative unit: preserved per policy rule'
-Write-Host "  Preserved Group Tag rules: $($tagAuthorizationRules.Count)"
+Write-Host '  Rules        : unchanged; read only to detect restricted administrative units'
 Write-Host "  Preserved manager principals: $($managerPrincipalIds.Count)"
 Write-Host "  Custom web redirects: $($additionalWebRedirectUris.Count)"
 
+# Reuse the regular installer rather than duplicating deployment logic.
+# SkipExistingDeploymentDetection is essential: without it, the installer
+# would detect this same app and delegate straight back to the updater.
 $installerParameters = @{
     SubscriptionId              = $SubscriptionId
     TenantId                    = $TenantId
@@ -1302,22 +1429,25 @@ $installerParameters = @{
     AdditionalWebRedirectUri    = $additionalWebRedirectUris
     InstallerPrincipalId        = $installerPrincipalId
     ApiAudience                 = $resolvedApiAudience
-    TagAuthorizationRule        = $tagAuthorizationRules
-    AdministrativeUnitName = `
-        [string] $administrativeUnitName
     DeviceTagExtensionAttribute = $extensionAttribute
     TagManagerPrincipalId       = @($managerPrincipalIds)
     ClientToolsPath             = $resolvedClientToolsPath
     InstallMissingModules       = $InstallMissingModules
     ForceGraphSignIn            = $ForceGraphSignIn
+    GraphAccessToken            = $GraphAccessToken
+    VirtualNetworkAddressPrefix = if ($virtualNetworkAddressPrefix) { $virtualNetworkAddressPrefix } else { '172.16.0.0/24' }
     SkipExistingDeploymentDetection = $true
     SkipEntraAppConfiguration   = $SkipEntraAppConfiguration
     SkipGraphPermission         = $SkipGraphPermission
+    RestrictedAdministrativeUnitName = @($RestrictedAdministrativeUnitName)
+    SkipAdministrativeUnitRole  = $SkipAdministrativeUnitRole
     SkipPublish                 = $SkipPublish
     SkipSmokeTest               = $SkipSmokeTest
 }
 
 $target = "$FunctionAppName in $ResourceGroupName"
+# WhatIf takes precedence over Force. It still invokes installer preflight and
+# prints the plan, but returns before post-install module synchronization.
 if ($WhatIfPreference) {
     & $installerPath @installerParameters -WhatIf
     return
@@ -1327,12 +1457,16 @@ if (-not $Force -and
     return
 }
 
+# Approval is handled above; suppress a second installer confirmation. Capture
+# all success-stream output and require exactly one structured deployment result.
 $installerOutput = @(& $installerPath @installerParameters -Confirm:$false)
 $deploymentResult = Resolve-AutoPilotDeploymentResult `
     -InstallerOutput $installerOutput
 $sourceSettingsPath = [string] $deploymentResult.InstalledClientSettingsPath
 $systemWideClientSettingsPath = $null
 if (Test-SystemWideClientModuleAccess) {
+    # Prefer a machine-wide client for elevated Windows runs, but a local
+    # module-copy failure does not undo an already successful Azure deployment.
     try {
         $systemWideClientSettingsPath = `
             Install-SystemWideAutopilotClientModule `
@@ -1345,6 +1479,8 @@ if (Test-SystemWideClientModuleAccess) {
 }
 
 if (-not $systemWideClientSettingsPath) {
+    # Unelevated runs, non-Windows runs or a failed system copy use both user
+    # module roots. Warn explicitly that Program Files was not updated.
     $userClientSettingsPaths = @(
         Get-UserAutoPilotClientModuleRoots | ForEach-Object {
             Install-SystemWideAutopilotClientModule `
@@ -1359,11 +1495,16 @@ Write-UpdateLogAnalyticsWorkspaceMigrationNotice `
     -PreviousWorkspaceResourceId `
         $previousApplicationInsightsWorkspaceResourceId `
     -IntegratedWorkspaceResourceId $integratedLogAnalyticsWorkspaceResourceId
+# Return the installer contract unchanged so callers can consume the same
+# endpoints, installed paths and deployment metadata as a fresh installation.
 $deploymentResult
 
 #endregion Invoke idempotent installer
 }
 catch {
+    # Preserve the original exception details and nested installer log path.
+    # Missing Azure deployment roles and missing Entra app-management roles need
+    # different operator guidance; neither is repaired automatically here.
     $isUpdatePermissionError = `
         $_.Exception.Data['AutopilotUpdatePermissionError'] -eq $true
     $isMicrosoftGraphPermissionError = `
@@ -1387,6 +1528,7 @@ catch {
         $_.ScriptStackTrace
     ) -join [Environment]::NewLine
     if ($setupTranscriptActive) {
+        # Append the detailed failure block after closing the transcript.
         Stop-Transcript -WhatIf:$false | Out-Null
         $setupTranscriptActive = $false
     }
@@ -1396,10 +1538,15 @@ catch {
         -WhatIf:$false `
         -Encoding utf8
     if ($isUpdatePermissionError) {
+        # This recognized preflight failure reports an error and returns no
+        # result rather than rethrowing. Callers must not assume a zero-result
+        # invocation means that deployment succeeded.
         Write-Error $_.Exception.Message -ErrorAction Continue
         return
     }
     if ($isMicrosoftGraphPermissionError) {
+        # The installer marks Graph account/role failures with structured
+        # metadata. Explain the separate Entra role and how to select an account.
         Write-Host
         Write-Host 'Update stopped: Microsoft Entra permission required' `
             -ForegroundColor Red
@@ -1426,6 +1573,7 @@ catch {
     throw
 }
 finally {
+    # Close logging on success, cancellation, WhatIf and unhandled failures.
     if ($setupTranscriptActive) {
         Stop-Transcript -WhatIf:$false | Out-Null
         $setupTranscriptActive = $false

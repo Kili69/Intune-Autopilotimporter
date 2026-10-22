@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.3.20261018.2
+.VERSION 1.4.20261022.1
 .GUID 8f3a78b6-8c87-4a89-b8cf-fb20f90ef96d
 .AUTHOR andreas.lucas@outlook.com (aka Kili)
 .COMPANYNAME Community
@@ -14,7 +14,7 @@ Creates an Autopilot hardware hash CSV and opens the secured web importer.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.3.20261018.2
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -128,6 +128,7 @@ function Resolve-AutoPilotImporterWebUrl {
     # TryCreate prevents malformed input from producing less helpful exceptions.
     # HTTPS is mandatory for both the browser frontend and Entra authentication.
     $parsedUrl = $null
+    # Attempt to parse the provided URL into an absolute URI object.
     if (-not [uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref] $parsedUrl) -or
         $parsedUrl.Scheme -ne 'https') {
         throw 'WebUrl must be an absolute HTTPS URL.'
@@ -278,10 +279,11 @@ function Get-LocalAutopilotDeviceInformation {
         -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" `
         -ErrorAction Stop
     $hardwareHash = [string] $deviceDetail.DeviceHardwareData
-
+    # Ensure that both the serial number and hardware hash have been successfully retrieved before proceeding.
     if ([string]::IsNullOrWhiteSpace($serialNumber)) {
         throw 'Windows did not return a device serial number.'
     }
+    # Trim any leading or trailing whitespace from the serial number to ensure accurate validation.
     if ([string]::IsNullOrWhiteSpace($hardwareHash)) {
         throw 'Windows did not return Autopilot DeviceHardwareData.'
     }
@@ -294,6 +296,7 @@ function Get-LocalAutopilotDeviceInformation {
     catch {
         throw 'Windows returned invalid Autopilot DeviceHardwareData.'
     }
+    # Ensure that the decoded hardware hash is not empty before proceeding.
     if ($hashBytes.Length -eq 0) {
         throw 'Windows returned an empty Autopilot hardware hash.'
     }

@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.3.20261018.2
+.VERSION 1.4.20261022.1
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
@@ -33,7 +33,7 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.3.20261018.2
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -127,8 +127,9 @@ function Resolve-AutoPilotApplicationUrl {
     System.Uri. The canonical application page URL without query or fragment.
     #>
     param([Parameter(Mandatory)][string] $Url)
-
+    # Parse and validate the input URL.
     $parsedUrl = $null
+    # Initialize the parsed URL variable.
     if (-not [uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref] $parsedUrl) -or
         $parsedUrl.Scheme -ne 'https') {
         throw 'ApplicationUrl must be an absolute HTTPS URL.'
@@ -136,6 +137,7 @@ function Resolve-AutoPilotApplicationUrl {
 
     # Normalize every supported entry URL to the page beside the public config.
     $builder = [UriBuilder]::new($parsedUrl)
+    # Build a URI for the canonical application page.
     if ($builder.Path -eq '/' -or [string]::IsNullOrWhiteSpace($builder.Path)) {
         $builder.Path = '/api/ui/index.html'
     }
@@ -174,6 +176,7 @@ function Get-AutoPilotRuntimeConfiguration {
     $configurationUrl = [uri]::new($ApplicationUri, './config')
     Write-Verbose "Reading runtime configuration from '$configurationUrl'."
     try {
+        # Attempt to read the configuration from the specified URL.
         $configuration = Invoke-RestMethod `
             -Method Get `
             -Uri $configurationUrl `
@@ -194,13 +197,14 @@ function Get-AutoPilotRuntimeConfiguration {
     if ($scope -notmatch '^(?<audience>api://(?<clientId>[0-9a-fA-F-]{36}))/DeviceHash\.Import$') {
         throw 'The application configuration does not contain a valid DeviceHash.Import scope.'
     }
+    # Extract the audience and client ID from the matched scope.
     $audience = [string] $Matches.audience
     $clientId = [string] $Matches.clientId
     $parsedClientId = [guid]::Empty
     if (-not [guid]::TryParse($clientId, [ref] $parsedClientId)) {
         throw 'The DeviceHash.Import scope does not contain a valid application GUID.'
     }
-
+    # Validate the Microsoft Entra authority and extract the tenant ID.
     $authority = $null
     if (-not [uri]::TryCreate(
             [string] $configuration.authority,
@@ -210,6 +214,7 @@ function Get-AutoPilotRuntimeConfiguration {
         $authority.Host -ne 'login.microsoftonline.com') {
         throw 'The application configuration does not contain a valid Microsoft Entra authority.'
     }
+    # Extract the tenant ID from the authority's absolute path and validate it as a GUID.
     $tenantId = $authority.AbsolutePath.Trim('/')
     $parsedTenantId = [guid]::Empty
     if (-not [guid]::TryParse($tenantId, [ref] $parsedTenantId)) {
@@ -265,24 +270,28 @@ function ConvertTo-AutoPilotDeviceRecord {
         [Parameter(Mandatory)][string] $HardwareHash,
         [Parameter(Mandatory)][string] $Source
     )
-
+    # Trim the input values to remove any leading or trailing whitespace.
     if ([string]::IsNullOrWhiteSpace($SerialNumber)) {
         throw "$Source does not contain a device serial number."
     }
+    # Validate that the serial number is not null or whitespace.
+    # Validate that the hardware hash is not null or whitespace.
     if ([string]::IsNullOrWhiteSpace($HardwareHash)) {
         throw "$Source does not contain a hardware hash."
     }
     # Decoding verifies the hash format without changing the submitted value.
     try {
+        # Attempt to decode the hardware hash from Base64 to verify its format.
         $hashBytes = [Convert]::FromBase64String($HardwareHash)
     }
     catch {
         throw "$Source contains an invalid Base64 hardware hash."
     }
+    # Verify that the decoded hardware hash is not empty.
     if ($hashBytes.Length -eq 0) {
         throw "$Source contains an empty hardware hash."
     }
-
+    # Return the validated and normalized Autopilot device record.
     return [pscustomobject]@{
         SerialNumber = $SerialNumber.Trim()
         HardwareHash = $HardwareHash
@@ -307,12 +316,14 @@ function Get-AutoPilotCsvDevice {
     the same order as the CSV rows.
     #>
     param([Parameter(Mandatory)][string] $Path)
-
+    # Ensure the provided path is valid and points to an existing file.
     $csvFile = Get-Item -LiteralPath $Path
+    # Check if the CSV file is empty and throw an error if it is.
     if ($csvFile.Length -eq 0) {
         throw "The Autopilot CSV file '$($csvFile.FullName)' is empty."
     }
     $rows = @(Import-Csv -LiteralPath $csvFile.FullName)
+    # Check if the CSV contains any rows and throw an error if it does not.
     if ($rows.Count -eq 0) {
         throw 'The Autopilot CSV does not contain any devices.'
     }
@@ -321,6 +332,7 @@ function Get-AutoPilotCsvDevice {
         'Device Serial Number', 'Hardware Hash' |
             Where-Object { $_ -notin $headers }
     )
+    # Check for missing required columns and throw an error if any are missing.
     if ($missingColumns.Count -gt 0) {
         throw "The Autopilot CSV is missing required columns: $($missingColumns -join ', ')."
     }
@@ -348,27 +360,32 @@ function Get-LocalAutoPilotDevice {
     System.Management.Automation.PSCustomObject. The validated local device
     record.
     #>
+    # Ensure the script is running on a supported Windows platform and with elevated privileges.
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'Local Autopilot hardware hash collection is supported only on Windows.'
     }
-
+    # Ensure the script is running with administrative privileges.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    # Get the current Windows identity to check for administrative privileges.
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    # Check if the current Windows identity has administrative privileges.
     if (-not $principal.IsInRole(
             [Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Run this script from an elevated PowerShell session to collect the local hardware hash.'
+    # At this point, the script is running with administrative privileges.
     }
 
     # Autopilot hardware hashes are exposed through the Windows MDM Bridge WMI provider.
     $serialNumber = [string] (Get-CimInstance `
         -ClassName Win32_BIOS `
         -ErrorAction Stop).SerialNumber
+    # Retrieve the device details from the Windows MDM Bridge WMI provider.
     $deviceDetail = Get-CimInstance `
         -Namespace 'root/cimv2/mdm/dmmap' `
         -ClassName 'MDM_DevDetail_Ext01' `
         -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" `
         -ErrorAction Stop
-
+    # Convert the retrieved device details into an Autopilot device record and return it.
     return ConvertTo-AutoPilotDeviceRecord `
         -SerialNumber $serialNumber `
         -HardwareHash ([string] $deviceDetail.DeviceHardwareData) `
@@ -394,16 +411,18 @@ function Install-AutoPilotAzAccounts {
         'Connect-AzAccount'
         'Get-AzAccessToken'
     )
+    # Determine which required commands are missing from the current session.
     $missingCommands = @(
         $requiredCommands |
             Where-Object {
                 -not (Get-Command $_ -ErrorAction SilentlyContinue)
             }
     )
+    # If no required commands are missing, exit the function early.
     if ($missingCommands.Count -eq 0) {
         return
     }
-
+    # If any required commands are missing, attempt to install Az.Accounts from the PowerShell Gallery.
     if (-not (Get-Command Install-Module -ErrorAction SilentlyContinue)) {
         throw 'Az.Accounts is required, but PowerShellGet is not available. Install PowerShellGet and Az.Accounts for the current user, then try again.'
     }
@@ -420,7 +439,7 @@ function Install-AutoPilotAzAccounts {
                 -Scope CurrentUser `
                 -Force | Out-Null
         }
-
+        # Attempt to install Az.Accounts for the current user.
         Install-Module `
             -Name Az.Accounts `
             -MinimumVersion '2.2.0' `
@@ -434,13 +453,14 @@ function Install-AutoPilotAzAccounts {
     catch {
         throw "Az.Accounts could not be installed for the current user. $($_.Exception.Message)"
     }
-
+    # Re-evaluate which required commands are still missing after attempting installation.
     $missingCommands = @(
         $requiredCommands |
             Where-Object {
                 -not (Get-Command $_ -ErrorAction SilentlyContinue)
             }
     )
+    # If any required commands are still missing, throw an error indicating which ones are unavailable.
     if ($missingCommands.Count -gt 0) {
         throw "Az.Accounts was installed, but required commands are unavailable: $($missingCommands -join ', '). Close PowerShell, start it again, and retry."
     }
@@ -458,17 +478,22 @@ function ConvertFrom-AutoPilotSecureString {
     .PARAMETER SecureString
     SecureString value returned by Az.Accounts.
 
+    .NOTES
+    This function requires Az.Accounts to be installed and imported.
+
     .OUTPUTS
-    System.String. The plain-text access token used in the Authorization
-    header.
+    System.String. A plain-text bearer token.
+    header for HTTP requests.
     #>
     param([Parameter(Mandatory)][Security.SecureString] $SecureString)
 
     # Windows PowerShell 5.1 lacks the newer plain-text SecureString switch.
     $buffer = [IntPtr]::Zero
     try {
+        # Convert the SecureString to a plain-text string using BSTR marshalling.
         $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
             $SecureString)
+        # Return the plain-text string.
         return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($buffer)
     }
     finally {
@@ -500,9 +525,9 @@ function Get-AutoPilotAccessToken {
         [Parameter(Mandatory)][string] $TenantId,
         [Parameter(Mandatory)][string] $ApiAudience
     )
-
+    # Ensure that Az.Accounts is installed and imported before attempting to acquire an access token.
     Install-AutoPilotAzAccounts
-
+    # Retrieve the current Azure context to determine if a sign-in is necessary.
     $context = Get-AzContext -ErrorAction SilentlyContinue
     if (-not $context -or [string] $context.Tenant.Id -ne $TenantId) {
         Write-Verbose "Signing in to Microsoft Entra tenant '$TenantId'."
@@ -511,6 +536,7 @@ function Get-AutoPilotAccessToken {
     else {
         Write-Verbose "Using the existing Azure context for tenant '$TenantId'."
     }
+    # Request an access token for the specified API audience.
     Write-Verbose "Requesting an access token for '$ApiAudience'."
     $tokenResult = Get-AzAccessToken -ResourceUrl $ApiAudience
     # Az.Accounts versions return either a SecureString or a plain token string.
@@ -524,7 +550,7 @@ function Get-AutoPilotAccessToken {
 function Get-AutoPilotRestErrorMessage {
     <#
     .SYNOPSIS
-    Creates a concise message from a REST API error.
+    Generates a user-friendly error message from a REST API error response.
 
     .DESCRIPTION
     Reads a JSON error response across Windows PowerShell 5.1 and PowerShell 7,
@@ -558,18 +584,21 @@ function Get-AutoPilotRestErrorMessage {
     else {
         ''
     }
+    # Initialize the response object to null. This will later hold the parsed JSON error response if available.
     $httpResponse = if ($ErrorRecord.Exception.PSObject.Properties['Response']) {
         $ErrorRecord.Exception.Response
     }
     else {
         $null
     }
+    # If the response text is still empty but an HTTP response exists, attempt to read the content from the response.
     if ([string]::IsNullOrWhiteSpace($responseText) -and $httpResponse) {
         try {
             # PowerShell 7 returns an HttpResponseMessage with a Content
             # property, Windows PowerShell 5.1 a WebResponse with a stream.
             # Probing for the members keeps both editions supported.
             $contentProperty = $httpResponse.PSObject.Properties['Content']
+            # Check if the HTTP response has a Content property that can be read as a string.
             if ($contentProperty -and $contentProperty.Value -and
                 $contentProperty.Value.PSObject.Methods['ReadAsStringAsync']) {
                 $responseText = `
@@ -578,6 +607,7 @@ function Get-AutoPilotRestErrorMessage {
             elseif ($httpResponse.PSObject.Methods['GetResponseStream']) {
                 $responseStream = $httpResponse.GetResponseStream()
                 if ($responseStream) {
+                    # Read the response stream into a string.
                     $reader = [IO.StreamReader]::new($responseStream)
                     try {
                         $responseText = $reader.ReadToEnd()
@@ -600,19 +630,22 @@ function Get-AutoPilotRestErrorMessage {
             $response = $null
         }
     }
-
+    # Extract the error code, server message, and status code from the response and HTTP response.
     $errorCode = if ($response -and $response.PSObject.Properties['error']) {
         [string] $response.error
     }
     else {
         ''
     }
+    # Extract the error code from the response, if available. Otherwise, default to an empty string.
+    # Extract the server message from the response, if available. Otherwise, default to an empty string.
     $serverMessage = if ($response -and $response.PSObject.Properties['message']) {
         [string] $response.message
     }
     else {
         ''
     }
+    # Extract the HTTP status code from the response, if available. Otherwise, attempt to infer it from the error message or default to 0.
     $statusCode = if ($httpResponse -and
         $httpResponse.PSObject.Properties['StatusCode']) {
         [int] $httpResponse.StatusCode
@@ -625,7 +658,7 @@ function Get-AutoPilotRestErrorMessage {
     else {
         0
     }
-
+    # Generate a user-friendly message based on the error code, server message, and status code.
     $message = switch ($errorCode) {
         'groupTagNotAllowed' {
             "Group Tag '$GroupTag' is not allowed for the signed-in user. Verify the tag and the user's Entra group assignments."
@@ -662,7 +695,7 @@ function Get-AutoPilotRestErrorMessage {
             }
         }
     }
-
+    # Extract the correlation ID from the response or HTTP headers for troubleshooting purposes.
     $correlationId = if ($response -and
         $response.PSObject.Properties['correlationId']) {
         [string] $response.correlationId
@@ -670,6 +703,7 @@ function Get-AutoPilotRestErrorMessage {
     else {
         ''
     }
+    # If the correlation ID is not found in the response, attempt to retrieve it from the HTTP headers.
     if ([string]::IsNullOrWhiteSpace($correlationId) -and $httpResponse -and
         $httpResponse.PSObject.Properties['Headers']) {
         try {
@@ -691,6 +725,7 @@ function Get-AutoPilotRestErrorMessage {
             $correlationId = ''
         }
     }
+    # If a correlation ID was successfully retrieved, write it to the verbose output for troubleshooting.
     if (-not [string]::IsNullOrWhiteSpace($correlationId)) {
         Write-Verbose "Correlation ID: $correlationId."
     }
@@ -707,19 +742,20 @@ function Write-AutoPilotImportStatus {
     and Entra extension-attribute processing states.
 
     .PARAMETER Status
-    REST status response returned for an accepted import.
+    The REST status response returned for an accepted import.
 
     .OUTPUTS
     None. Status information is written to the host.
     #>
     param([Parameter(Mandatory)][object] $Status)
-
+    # Retrieve and display the status of an Autopilot import.
     $extensionStatus = if ($Status.PSObject.Properties['extensionAttributeStatus']) {
         [string] $Status.extensionAttributeStatus
     }
     else {
         'pending'
     }
+    # Display the status line with a timestamp, serial number, import status, workflow status, and device attribute status.
     Write-Host ('[{0}] {1}: import={2}, workflow={3}, device attribute={4}' -f `
         (Get-Date -Format 'HH:mm:ss'),
         [string] $Status.serialNumber,
@@ -727,9 +763,10 @@ function Write-AutoPilotImportStatus {
         [string] $Status.workflowStatus,
         $extensionStatus)
 }
-
+# Resolve the application URL and retrieve the runtime configuration for the Autopilot import.
 $applicationUri = Resolve-AutoPilotApplicationUrl -Url $ApplicationUrl
 Write-Verbose "Resolved application URL to '$($applicationUri.AbsoluteUri)'."
+# Retrieve the runtime configuration for the Autopilot import using the resolved application URL.
 $runtimeConfiguration = Get-AutoPilotRuntimeConfiguration `
     -ApplicationUri $applicationUri
 # The outer array prevents one CSV row from becoming a scalar under PS 5.1.
@@ -742,9 +779,10 @@ $devices = @(
     }
 )
 Write-Verbose "Validated $($devices.Count) device record(s) from $(if ($CsvPath) { "CSV '$((Resolve-Path -LiteralPath $CsvPath).Path)'" } else { 'the local Windows device' })."
-
+# If the ValidateOnly switch is specified, output the validation results and skip the import.
 if ($ValidateOnly) {
     Write-Verbose 'Validation completed; authentication and import were skipped.'
+    # Return the validation results as a custom object.
     return [pscustomobject]@{
         ApplicationUrl = $runtimeConfiguration.ApplicationUrl
         ImportUrl = $runtimeConfiguration.ImportUrl
@@ -761,24 +799,29 @@ if ($ValidateOnly) {
         IsValid = $true
     }
 }
-
+# Prepare the target description for the import operation.
 $target = "$($devices.Count) device(s) using '$($runtimeConfiguration.ApplicationUrl)'"
 # Low impact preserves -WhatIf without prompting under PowerShell defaults.
+# Check if the import should proceed based on the target description and the Group Tag.
 if (-not $PSCmdlet.ShouldProcess($target, "Import with Group Tag '$GroupTag'")) {
     return
 }
 
 Write-Verbose "Starting import of $($devices.Count) device(s) with Group Tag '$GroupTag'."
+# Acquire an access token for the Autopilot API and prepare the authorization headers.
 $token = Get-AutoPilotAccessToken `
     -TenantId $runtimeConfiguration.TenantId `
     -ApiAudience $runtimeConfiguration.ApiAudience
 $authorizationHeaders = @{
     Authorization = "Bearer $token"
 }
+# Record the time when the access token was acquired and initialize the list of pending imports.
 $tokenAcquiredAt = [datetimeoffset]::Now
+# Iterate over each device and submit an import request to the Autopilot API.
 $pendingImports = [Collections.Generic.List[object]]::new()
-
+# Submit import requests for each device and track their pending status.
 foreach ($device in $devices) {
+    # Prepare the request body for the current device's import.
     $body = @{
         serialNumber = $device.SerialNumber
         hardwareIdentifier = $device.HardwareHash
@@ -786,6 +829,7 @@ foreach ($device in $devices) {
     } | ConvertTo-Json -Compress
     try {
         Write-Verbose "Submitting import request for serial '$($device.SerialNumber)'."
+        # Submit the import request to the Autopilot API and capture the response.
         $response = Invoke-RestMethod `
             -Method Post `
             -Uri $runtimeConfiguration.ImportUrl `
@@ -795,6 +839,7 @@ foreach ($device in $devices) {
             -ErrorAction Stop
     }
     catch {
+        # Handle any errors that occur during the import request.
         $errorMessage = Get-AutoPilotRestErrorMessage `
             -ErrorRecord $_ `
             -GroupTag $GroupTag
@@ -803,35 +848,43 @@ foreach ($device in $devices) {
             -ForegroundColor Red
         exit 1
     }
+    # Add the current import to the list of pending imports.
     $pendingImports.Add([pscustomobject]@{
         ImportId = [guid] $response.importId
         SerialNumber = $device.SerialNumber
         LastStatus = $response
     })
+    # Inform the user that the import request has been accepted.
     Write-Host "Import accepted for '$($device.SerialNumber)' with ID '$($response.importId)'."
 }
-
+# Initialize the list to track the final statuses of all imports.
 $finalStatuses = [Collections.Generic.List[object]]::new()
 while ($pendingImports.Count -gt 0) {
     # Poll all accepted imports until backend and extension-attribute work is terminal.
+    # This loop continues until all pending imports have reached a terminal status.
+    # Wait for the specified polling interval before checking the status of pending imports.
     Write-Verbose "Waiting $pollIntervalSeconds seconds before polling $($pendingImports.Count) pending import(s)."
     Start-Sleep -Seconds $pollIntervalSeconds
-    # Refresh before typical access-token expiry during unusually long imports.
+    # Refresh the access token if it is close to expiring to avoid authentication issues during long-running imports.
     if (([datetimeoffset]::Now - $tokenAcquiredAt).TotalMinutes -ge 45) {
         Write-Verbose 'Refreshing the API access token before polling continues.'
+        # Acquire a new access token and update the authorization headers.
         $token = Get-AutoPilotAccessToken `
             -TenantId $runtimeConfiguration.TenantId `
             -ApiAudience $runtimeConfiguration.ApiAudience
+        # Update the authorization headers with the new access token.
         $authorizationHeaders.Authorization = "Bearer $token"
+        # Record the time when the new access token was acquired.
         $tokenAcquiredAt = [datetimeoffset]::Now
     }
-
+    # Iterate over each pending import to check its status.
     foreach ($pendingImport in @($pendingImports)) {
         # Iterate over a copy because completed entries are removed from the
         # original list inside the loop.
         $statusUrl = "$($runtimeConfiguration.ImportUrl)?importId=$($pendingImport.ImportId)"
         try {
             Write-Verbose "Requesting status for import '$($pendingImport.ImportId)' and serial '$($pendingImport.SerialNumber)'."
+            # Request the current status of the pending import from the Autopilot API.
             $status = Invoke-RestMethod `
                 -Method Get `
                 -Uri $statusUrl `
@@ -840,20 +893,22 @@ while ($pendingImports.Count -gt 0) {
         }
         catch {
             Write-Warning "Status request for '$($pendingImport.SerialNumber)' failed and will be retried in $pollIntervalSeconds seconds. $(Get-AutoPilotRestErrorMessage -ErrorRecord $_ -GroupTag $GroupTag)"
+            # Skip to the next pending import if the status request fails.
             continue
         }
-
+        # Update the last known status for the pending import and display it to the user.
         $pendingImport.LastStatus = $status
         Write-AutoPilotImportStatus -Status $status
         # workflowStatus covers the Intune import and the subsequent Entra
         # device attribute processing; only these two values are terminal.
         if (([string] $status.workflowStatus) -in @('complete', 'error')) {
+            # Add the final status to the list and remove the import from the pending list.
             $finalStatuses.Add($status)
             [void] $pendingImports.Remove($pendingImport)
         }
     }
 }
-
+# Identify the failed imports based on their final statuses.
 $failedStatuses = @(
     $finalStatuses |
         Where-Object { [string] $_.workflowStatus -eq 'error' }

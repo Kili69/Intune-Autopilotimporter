@@ -109,6 +109,7 @@ select:disabled { color: #8b95a8; background: #f5f7fa; }
 .alert { margin: 0 0 24px; padding: 14px 17px; border-radius: 11px; line-height: 1.45; }
 .alert-error { color: #8c2330; background: #fff0f1; border: 1px solid #f6cbd0; }
 .alert-success { color: #116647; background: #eaf9f2; border: 1px solid #bce8d5; }
+.alert-info { color: #1d4f91; background: #eef5ff; border: 1px solid #c7dcfa; }
 .results-panel { margin-top: 24px; }
 .activity-section:not(.hidden) + .activity-section {
   margin-top: 30px; padding-top: 30px; border-top: 1px solid #e5eaf1;
@@ -139,6 +140,9 @@ td { padding: 14px 12px; border-bottom: 1px solid #edf1f6; color: #43516b; max-w
 .status-pending { color: #805d0a; background: #fff5d8; }
 .status-complete { color: #0b704c; background: #e3f8ef; }
 .status-error { color: #9a2835; background: #fdebed; }
+.status-processing { color: #174ea6; background: #e3eefc; }
+.operation-id { font-size: .82em; overflow-wrap: anywhere; }
+.status-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .trace-dialog {
   width: min(680px, calc(100% - 32px)); max-height: min(760px, calc(100vh - 48px));
   border: 0; border-radius: 20px; padding: 28px; color: #14213d;
@@ -195,4 +199,104 @@ footer a:hover { color: #0d5bd7; }
   .results-header { align-items: start; flex-direction: column; gap: 8px; }
   .trace-dialog { padding: 22px; }
   .trace-summary { grid-template-columns: 1fr; }
+}
+.policy-rule {
+  display: grid;
+  gap: 0.8rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #ccd4df;
+  border-radius: 0.75rem;
+}
+
+.policy-rule input,
+.policy-rule textarea,
+.policy-rule select {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.65rem;
+  font: inherit;
+}
+
+.policy-rule textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.group-picker-results {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.group-picker-result {
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.policy-details {
+  margin: 1rem 0;
+  border: 1px solid #ccd4df;
+  border-radius: 0.75rem;
+}
+
+.policy-details > summary {
+  padding: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.policy-details > .policy-rule {
+  border: 0;
+  margin: 0;
+}
+
+.policy-attribute-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.policy-rule [hidden] {
+  display: none;
+}
+
+.object-picker-dialog {
+  width: min(42rem, calc(100vw - 3rem));
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  border: 1px solid #ccd4df;
+  border-radius: 0.75rem;
+}
+
+.object-picker-dialog::backdrop { background: #15264466; }
+.object-picker-dialog input { width: 100%; padding: 0.65rem; margin: 0.5rem 0; font: inherit; }
+.object-picker > button { margin: 0.5rem 0.5rem 0 0; }
+.object-picker select { min-height: 4rem; }
+.object-picker select[size="1"] { min-height: 0; }
+.policy-section-title {
+  display: block;
+  margin: 0.8rem 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.management-history-dialog { width: min(64rem, calc(100vw - 3rem)); }
+.management-history-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; }
+.management-history-dialog details > p { padding: 0 1rem; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .policy-attribute-row { grid-template-columns: 1fr; }
 }

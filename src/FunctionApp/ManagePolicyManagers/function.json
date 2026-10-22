@@ -1,0 +1,24 @@
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "Request",
+      "methods": ["get", "put"],
+      "route": "api/management/policy-managers"
+    },
+    {
+      "type": "blob",
+      "direction": "in",
+      "name": "TagPolicyBlob",
+      "path": "configuration/tag-authorization-policy.json",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "Response"
+    }
+  ]
+}
