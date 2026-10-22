@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261022.1] - 2026-10-22
+
+### Changed
+
+- Clarify authority and tenant ID validation comments in the import script without changing behavior; prepare version 1.4 for dev promotion and rebuild the versioned frontend and installation package.
+
 ## [1.4.20261020.15] - 2026-10-20
 
 ### Added

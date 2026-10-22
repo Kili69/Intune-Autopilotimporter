@@ -2,6 +2,10 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261022.1` - 2026-10-22
+
+- Clarify Microsoft Entra authority and tenant ID validation in the import script without changing runtime behavior. Prepare the existing 1.4 development line for promotion to dev and rebuild the versioned frontend and installation package.
+
 ## `1.4.20261020.15` - 2026-10-20
 
 - Add a **Changed at** column to the web processing status. It shows when each row's status or step last changed, using the worker's recorded step, completion or failure time where available and otherwise the browser time of the change; the full date appears as a tooltip and the time never moves backwards.

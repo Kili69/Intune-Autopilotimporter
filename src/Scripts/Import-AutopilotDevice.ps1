@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.4.20261020.15
+.VERSION 1.4.20261022.1
 
 .GUID 5c9800d6-0239-4a66-86a7-a906f956bf35
 
@@ -33,7 +33,7 @@ compatibility, automatic Az.Accounts installation, and status polling.
 #>
 
 #Requires -Version 5.1
-# Project-Version: 1.4.20261020.15
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -204,7 +204,7 @@ function Get-AutoPilotRuntimeConfiguration {
     if (-not [guid]::TryParse($clientId, [ref] $parsedClientId)) {
         throw 'The DeviceHash.Import scope does not contain a valid application GUID.'
     }
-
+    # Validate the Microsoft Entra authority and extract the tenant ID.
     $authority = $null
     if (-not [uri]::TryCreate(
             [string] $configuration.authority,
@@ -214,6 +214,7 @@ function Get-AutoPilotRuntimeConfiguration {
         $authority.Host -ne 'login.microsoftonline.com') {
         throw 'The application configuration does not contain a valid Microsoft Entra authority.'
     }
+    # Extract the tenant ID from the authority's absolute path and validate it as a GUID.
     $tenantId = $authority.AbsolutePath.Trim('/')
     $parsedTenantId = [guid]::Empty
     if (-not [guid]::TryParse($tenantId, [ref] $parsedTenantId)) {
