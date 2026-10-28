@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -25,6 +25,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-ProjectVersion([string] $Commit) {
+    <#
+    .SYNOPSIS
+    Retrieves the project version from the VERSION file at the specified Git commit.
+    .DESCRIPTION
+    Reads the VERSION file from the given commit and validates its format.
+    Returns a [version] object representing the project version.
+    .PARAMETER Commit
+    The Git commit SHA to read the VERSION file from.
+    #>
     $value = & git show "${Commit}:VERSION"
     if ($LASTEXITCODE -ne 0) { throw "Cannot read VERSION at $Commit." }
     $value = ($value -join "`n").Trim()
@@ -33,28 +42,20 @@ function Get-ProjectVersion([string] $Commit) {
     }
     return [version] $value
 }
-
-function Get-ReleaseLine([version] $Version) {
-    return [version] "$($Version.Major).$($Version.Minor)"
-}
-
-if ($SourceBranch -eq 'nextversion' -and
-    ($TargetBranch -ne 'dev' -or $SourceRepository -ne $TargetRepository)) {
-    throw 'nextversion may only be promoted to dev in this repository.'
-}
+# Validate the branch route and project version before allowing promotion.
 if ($TargetBranch -eq 'main' -and
     ($SourceBranch -ne 'dev' -or $SourceRepository -ne $TargetRepository)) {
     throw 'main may only be updated from dev in this repository.'
 }
-
-if ($TargetBranch -notin 'main', 'dev', 'nextversion') { return }
-
+# Skip validation for branches other than main and dev.
+if ($TargetBranch -notin 'main', 'dev') { return }
+# Retrieve and validate the project versions for the base and result commits.
 $baseVersion = Get-ProjectVersion $BaseCommit
+# Retrieve and validate the project version for the result commit.
 $resultVersion = Get-ProjectVersion $ResultCommit
-$baseLine = Get-ReleaseLine $baseVersion
-$resultLine = Get-ReleaseLine $resultVersion
+# Ensure that the result version is not lower than the base version.
 if ($resultVersion -lt $baseVersion) { throw 'A merge must not decrease VERSION.' }
-
+# Perform branch-specific validation based on the target branch.
 switch ($TargetBranch) {
     'main' {
         if ($resultVersion -le $baseVersion) {
@@ -62,32 +63,11 @@ switch ($TargetBranch) {
         }
     }
     'dev' {
-        if ($SourceBranch -eq 'nextversion' -and $SourceRepository -eq $TargetRepository) {
-            if ($resultLine -le $baseLine) {
-                throw 'nextversion must introduce at least a new minor or major release line.'
-            }
-            & git merge-base --is-ancestor $DevCommit $HeadCommit
-            if ($LASTEXITCODE -eq 1) {
-                throw 'Sync the latest dev changes into nextversion before promotion.'
-            }
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify dev ancestry.' }
+        & git merge-base --is-ancestor $DevCommit $HeadCommit
+        if ($LASTEXITCODE -eq 1) {
+            throw 'Sync the latest dev changes into the development branch before promotion.'
         }
-        elseif ($resultLine -ne $baseLine) {
-            throw 'Only nextversion may change the major/minor release line of dev.'
-        }
-    }
-    'nextversion' {
-        $devLine = Get-ReleaseLine (Get-ProjectVersion $DevCommit)
-        if ($resultLine -le $devLine) {
-            throw 'nextversion must be at least one minor or major release ahead of dev. Start the next cycle explicitly after promotion.'
-        }
-        if ($SourceBranch -like 'sync/dev-to-nextversion*' -or $SourceBranch -eq 'dev') {
-            if ($resultLine -ne $baseLine) {
-                throw 'A dev sync must preserve the major/minor release line of nextversion.'
-            }
-            & git merge-base --is-ancestor $DevCommit $HeadCommit
-            if ($LASTEXITCODE -ne 0) { throw 'The sync must include the latest dev commit.' }
-        }
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify dev ancestry.' }
     }
 }
 

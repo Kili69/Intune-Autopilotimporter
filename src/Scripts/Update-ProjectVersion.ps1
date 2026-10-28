@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -62,25 +62,36 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
+# Determine the project root and paths to key files.
 $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+# Path to the VERSION file containing the current project version.
 $versionPath = Join-Path $projectRoot 'VERSION'
+# Regex pattern to match the version format: major.minor.yyyyMMdd.counter
 $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<date>\d{8})\.(?<counter>\d+)$'
 # The version appears in three different notations. Each pattern is anchored to
 # the start of a line so that documentation or examples are never rewritten.
 $markerPattern = '(?m)^# Project-Version: \d+\.\d+\.\d{8}\.\d+\r?$'
+# Regex pattern to match the ModuleVersion line in PowerShell module files.
 $moduleVersionPattern = "(?m)^(\s*ModuleVersion\s*=\s*)'\d+\.\d+\.\d{8}\.\d+'"
+# Regex pattern to match the .VERSION line in PowerShell script files.
 $scriptInfoVersionPattern = `
     '(?m)^(\.VERSION\s+)\d+\.\d+\.\d{8}\.\d+\r?$'
-
+# Current project version read from the VERSION file.
 $currentVersion = (Get-Content -LiteralPath $versionPath -Raw).Trim()
+
+# Validate that the current version matches the expected pattern.
 if ($currentVersion -notmatch $versionPattern) {
     throw "VERSION contains '$currentVersion', which does not match major.minor.yyyyMMdd.counter."
 }
+# Extract the major, minor, date, and counter components from the current version.
 $currentMajor = [int] $Matches.major
+# Determine the target major and minor versions based on the provided parameters or the current version.
 $currentMinor = [int] $Matches.minor
+# Determine the current date and counter from the current version.
 $currentDate = $Matches.date
+# Determine the current counter from the current version.
 $currentCounter = [int] $Matches.counter
+# Determine the target major, minor, and date for the new version.
 $targetMajor = if ($PSBoundParameters.ContainsKey('Major')) { $Major } else { $currentMajor }
 $targetMinor = if ($PSBoundParameters.ContainsKey('Minor')) { $Minor } else { $currentMinor }
 if ($targetMajor -lt $currentMajor -or
@@ -95,6 +106,7 @@ if ($targetMajor -eq $currentMajor -and $targetMinor -eq $currentMinor -and
     $versionDate -lt $currentDate) {
     throw 'The version date must not move backwards within a release line.'
 }
+# Determine the counter for the new version based on whether the major, minor, and date match the current version.
 $counter = if ($currentMajor -eq $targetMajor -and
     $currentMinor -eq $targetMinor -and
     $currentDate -eq $versionDate) {
@@ -103,6 +115,7 @@ $counter = if ($currentMajor -eq $targetMajor -and
 else {
     $IncrementBy
 }
+# Construct the new version string from the target major, minor, date, and counter.
 $newVersion = "$targetMajor.$targetMinor.$versionDate.$counter"
 
 # Generated and external directories are excluded. They contain copies whose
@@ -165,6 +178,7 @@ $updatedManifestContent = [regex]::Replace(
     "`$1'$newVersion'",
     1
 )
+# Update the client module manifest with the new ModuleVersion.
 if ($PSCmdlet.ShouldProcess($clientManifestPath, "Set ModuleVersion to $newVersion")) {
     Set-Content `
         -LiteralPath $clientManifestPath `

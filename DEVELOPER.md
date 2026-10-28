@@ -9,8 +9,11 @@ integration, publishing, versioning, branch promotion, testing,
 troubleshooting, and operational security requirements for the Autopilot
 Importer project.
 
-## 1. Contents
+## Contents
 
+- [1. Azure Overview](#1-azure-overview)
+  - [1.1. Entra components and authorization](#11-entra-components-and-authorization)
+  - [1.2. Function dependencies](#12-function-dependencies)
 - [2. Development Prerequisites](#2-development-prerequisites)
 - [3. Versioning](#3-versioning)
 - [4. Repository Layout](#4-repository-layout)
@@ -27,6 +30,7 @@ Importer project.
   - [6.4. Device Retagging Interface](#64-device-retagging-interface)
   - [6.5. Import History Interface](#65-import-history-interface)
   - [6.6. Group Tag Policy Management Interface](#66-group-tag-policy-management-interface)
+    - [6.6.1. Configuration Backup and Restore REST API](#661-configuration-backup-and-restore-rest-api)
   - [6.7. Web Frontend Interface](#67-web-frontend-interface)
   - [6.8. Asynchronous Processing Interfaces](#68-asynchronous-processing-interfaces)
   - [6.9. PowerShell Client Module Interface](#69-powershell-client-module-interface)
@@ -51,6 +55,122 @@ Importer project.
 - [16. Publish the OOBE Helper to PowerShell Gallery](#16-publish-the-oobe-helper-to-powershell-gallery)
 - [17. Branch Promotion Policy](#17-branch-promotion-policy)
 - [18. Operations and Security](#18-operations-and-security)
+
+## 1. Azure Overview
+
+New installations run the PowerShell API, background workers, and web frontend
+in one Azure Function App on a Linux Flex Consumption plan. The installer
+configures Microsoft Entra ID separately from the Azure resources deployed by
+`src/Infrastructure/main.bicep`.
+
+### 1.1. Entra components and authorization
+
+| Component | Purpose |
+|---|---|
+| API app registration (`Autopilot Import API`) | Defines the single-tenant API identity, its `api://<client-ID>` audience, and the delegated `DeviceHash.Import` scope. Security-group claims provide input to endpoint-level policy checks. |
+| API enterprise application (service principal) | Represents the API application in the tenant. Assignment is not required; an authenticated tenant user must still pass the Function's authorization checks. |
+| Web app registration (`Autopilot Import Web`) | Defines the separate single-tenant SPA client and its exact frontend redirect URI. The browser uses MSAL and Authorization Code Flow with PKCE, without a client secret. The SPA is preauthorized for `DeviceHash.Import`. |
+| Microsoft Azure PowerShell client | Existing public client, preauthorized for the same delegated API scope. The PowerShell tools use it to obtain a user token for the Function API, not direct Intune permissions. |
+| Function system-assigned managed identity | Separate service principal whose lifecycle belongs to the Function App. Background work uses this identity for Microsoft Graph, Storage, and the limited Azure authorization read operation; no user token or client secret is needed for these calls. |
+| Microsoft Graph service principal | Exposes the application permissions assigned to the Function identity. These grants are separate from both the delegated API scope and Azure RBAC. |
+| Tenant users and security groups | Identify callers and policy targets. Group Tag policies authorize import and device actions; the separate manager policy controls rule management. Azure Owner/Contributor checks also participate in manager-access evaluation. |
+
+The Function identity receives these Microsoft Graph **application**
+permissions:
+
+| Permission | Runtime purpose |
+|---|---|
+| `DeviceManagementServiceConfig.ReadWrite.All` | Import and retag Windows Autopilot devices. |
+| `Device.ReadWrite.All` | Update Entra device extension attributes. |
+| `AdministrativeUnit.ReadWrite.All` | Resolve administrative units and manage device membership for configured policy actions. |
+| `DeviceManagementRBAC.Read.All` | Evaluate Intune role assignments for authorization. |
+| `GroupMember.ReadWrite.All` | Synchronize configured static security-group memberships. |
+| `GroupMember.Read.All` | Read group membership for authorization. |
+| `User.ReadBasic.All` | Resolve user identities for authorization. |
+
+The administrator's delegated Graph permissions used during installation are
+not runtime permissions and are not granted to API users. Likewise, possession
+of `DeviceHash.Import` only permits calling the API; it does not bypass policy
+checks or grant direct Microsoft Graph access. Fresh installations have no
+Group Tag rules, so import and device-tag actions remain denied until a manager
+creates a rule.
+
+### 1.2. Function dependencies
+
+The following diagram shows the default Flex deployment. Solid arrows show
+runtime access or data flow; dotted arrows show hosting, identity,
+authorization, or DNS relationships.
+
+```mermaid
+flowchart TB
+    User["Tenant user"]
+    Browser["Browser / MSAL SPA"]
+    CLI["PowerShell client / Azure PowerShell"]
+    Entra["Microsoft Entra ID<br/>API app + enterprise application<br/>Web SPA app + preauthorized clients"]
+    Graph["Microsoft Graph<br/>Intune / Windows Autopilot<br/>Entra devices, users, groups, administrative units"]
+    ARM["Azure Resource Manager<br/>Caller role-assignment checks"]
+
+    subgraph Azure["Azure resource group"]
+        Plan["Linux Flex Consumption plan (FC1)"]
+        Auth["Easy Auth<br/>Tenant, audience and allowed-client validation"]
+        Function["Function App<br/>Public frontend + protected HTTP APIs<br/>Queue workers + scheduled maintenance"]
+        Identity["System-assigned managed identity"]
+        RBAC["Azure RBAC<br/>Storage data roles<br/>Custom manager-access reader role"]
+        Insights["Application Insights"]
+        Logs["Log Analytics workspace"]
+
+        subgraph VNet["VNet 172.16.0.0/24"]
+            Integration["functions subnet 172.16.0.0/26<br/>Delegated to Microsoft.App/environments"]
+            Endpoints["private-endpoints subnet 172.16.0.64/27<br/>Blob, Queue and Table private endpoints"]
+        end
+
+        DNS["Private DNS zones + VNet links + zone groups<br/>privatelink.blob / queue / table.core.windows.net"]
+        subgraph Storage["Storage account: no public access or shared keys"]
+            Blob["Blob<br/>Host state, configuration policy<br/>Deployment packages"]
+            Queue["Queue<br/>Asynchronous import and device processing"]
+            Table["Table<br/>Audit history and processing state"]
+        end
+    end
+
+    User --> Browser
+    User --> CLI
+    Browser -->|"Sign-in / API token"| Entra
+    CLI -->|"Sign-in / API token"| Entra
+    Browser -->|"Public UI and configuration"| Function
+    Browser -->|"Bearer token / API calls"| Auth
+    CLI -->|"Bearer token / API calls"| Auth
+    Entra -.->|"Token validation configuration"| Auth
+    Auth --> Function
+    Plan -.->|"Hosts"| Function
+    Function -.->|"Uses"| Identity
+    Identity -.->|"Application permission grants"| Graph
+    RBAC -.->|"Role assignments"| Identity
+    Function -->|"App-only calls"| Graph
+    Function -->|"Managed identity"| ARM
+    Function --> Integration
+    Integration --> Endpoints
+    DNS -.-> Integration
+    DNS -.-> Endpoints
+    Endpoints --> Blob
+    Endpoints --> Queue
+    Endpoints --> Table
+    Function -->|"Telemetry"| Insights
+    Insights --> Logs
+```
+
+The frontend and authenticated API remain reachable over public HTTPS. VNet
+integration protects outbound Storage access; it does **not** make the
+Function's HTTP endpoint private. Blob, Queue, and Table each use a private
+endpoint and private DNS. The Function identity has Storage Blob Data Owner,
+Storage Queue Data Contributor, and Storage Table Data Contributor on this
+account. Its custom manager-access reader role is scoped to the Function and
+only permits reading role assignments.
+
+The VNet occupies a `/24` inside the RFC 1918 range `172.16.0.0/12`
+(`172.16.0.0` through `172.31.255.255`), rather than reserving the entire `/12`.
+Check for overlaps before peering or connecting it to another network.
+Existing Windows Consumption deployments retain their legacy hosting and
+Storage networking branch; ordinary updates do not migrate them to Flex.
 
 ## 2. Development Prerequisites
 
@@ -103,8 +223,8 @@ commits marked with `[skip ci]` are exempt.
 The updater preserves the current major/minor by default. Explicitly start a
 future release with `-Minor 4` (for 1.4) or `-Major 2 -Minor 0` (for 2.0).
 Release-line downgrades and backwards dates within a release line are rejected.
-On `dev`, only date/counter changes are allowed until a PR from `nextversion`
-promotes the future release line.
+Any development branch can prepare a new minor or major version. Promotion to
+`dev` must include the latest `dev` ancestry and must not decrease `VERSION`.
 
 After a change is committed, verify that the changelog, version, and history
 are consistent:
@@ -162,9 +282,10 @@ dependencies, test results, and TypeScript build metadata are also excluded by
 ### 4.1. Azure Function App
 
 The Azure Function App is located in `src/FunctionApp`. This directory is the
-Azure Functions deployment root. `host.json`, `profile.ps1`,
-`proxies.json`, and `requirements.psd1` must remain at this level because Azure
-Functions loads them relative to the Function App root.
+Azure Functions deployment root. `host.json`, `profile.ps1`, and
+`requirements.psd1` remain at this level. The legacy runtime ZIP includes
+`proxies.json`; the Flex ZIP instead includes `RootRedirect` and bundled
+PowerShell modules under `Modules`.
 
 | Path | Purpose |
 | --- | --- |
@@ -192,6 +313,7 @@ reference.
 | `Ensure-EntraApiApplication.ps1` | Creates or updates the Entra application used by the Autopilot import API. |
 | `Ensure-EntraWebApplication.ps1` | Creates or updates the Entra single-page application for the web frontend. |
 | `Grant-ManagedIdentityGraphPermission.ps1` | Grants the required Microsoft Graph application permissions to the Function managed identity. |
+| `Grant-ManagedIdentityAdministrativeUnitRole.ps1` | Creates the custom Entra role `Autopilot Import Device Attribute Writer` (device read and extension attribute sets 1-3) and assigns it to the Function managed identity scoped to restricted management administrative units so re-tagging can update member devices. |
 | `Import-AutopilotDevice.ps1` | Imports Windows Autopilot devices through the secured REST API. |
 | `Start-IntuneAutopilotImporter.ps1` | Creates a Windows Autopilot device hash and opens the web importer. This is the standalone PowerShell Gallery script. |
 | `Set-TagAuthorizationPolicy.ps1` | Compatibility wrapper for the `AutopilotImport.Client` tag policy commands. |
@@ -302,6 +424,7 @@ Graph error details are never returned to the client.
 | `api/devices/tags/assignments` | `GET`, `POST` | `ManageDeviceTags` | Lists eligible devices and queues authorized Group Tag changes. |
 | `api/management/imports` | `GET`, `POST` | `GetImportHistory` | Returns filtered import audit history. |
 | `api/management/tag-policy` | `GET`, `PUT` | `ManageTagPolicy` | Reads and replaces the Group Tag authorization policy. |
+| `api/management/policy-managers` | `GET`, `PUT` | `ManagePolicyManagers` | Reads/updates explicit managers using caller-delegated Azure RBAC; `search` looks up Entra users/groups; `backup=true` exports/restores rules and managers. |
 | `api/ui/{*path}` | `GET` | `WebFrontend` | Serves the compiled frontend and its runtime configuration. |
 
 ### 6.2. Device Import Interface
@@ -314,7 +437,7 @@ asynchronously.
 | Method | Request | Result |
 | --- | --- | --- |
 | `POST /api/devices/import` | JSON `{ "serialNumber": "<serial>", "hardwareIdentifier": "<Base64-hash>", "groupTag": "<requested-tag>" }` | `202` with `importId`, `serialNumber`, `groupTag`, `status`, and `correlationId`. |
-| `GET /api/devices/import?importId=<GUID>` | Authenticated request | `200` with `importId`, `serialNumber`, `groupTag`, `status`, `workflowStatus`, `deviceErrorCode`, `deviceErrorName`, `extensionAttributeName`, `extensionAttributeStatus`, `extensionAttributeValue`, `entraDeviceId`, and `correlationId`. |
+| `GET /api/devices/import?importId=<GUID>` | Authenticated request | `200` with `importId`, `serialNumber`, `groupTag`, `status` (Graph import state only), `workflowStatus`, `deviceErrorCode`, `deviceErrorName`, `extensionAttributeName`, `extensionAttributeStatus`, `extensionAttributeValue`, `entraDeviceId`, `processingStage` (`queued`, `processing`, `complete`, `error` or `null` without an audit record), the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 
 `ConvertTo-AutoPilotImportPayload` validates the required fields, the size
 limits, and the Base64 encoding before the Graph request is created. The
@@ -341,9 +464,9 @@ devices or accepting a new Group Tag. Only Autopilot devices with an
 
 | Method | Request | Result |
 | --- | --- | --- |
-| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `groups`, and `administrativeUnits`. |
+| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `groups`, and `administrativeUnits`. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
 | `POST /api/devices/tags/assignments` | JSON `{ "deviceId": "<GUID>", "groupTag": "<authorized-tag>" }` | `202` with `operationId`, `serialNumber`, `groupTag`, `status: "queued"`, and `correlationId`. |
-| `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `status`, `workflowStatus`, and `correlationId`. |
+| `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `previousGroupTag`, `status`, `workflowStatus`, `processingStage` (`queued`, `processing`, `complete`, `error`), `processingError`, `processingErrorStep`, the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 
 The POST operation validates the device state, verifies that the requested tag
 is authorized for the caller, records an audit entry, and queues the
@@ -372,7 +495,39 @@ Use `POST` when filter lists are too long for a query string. Hardware hashes
 are stored only as SHA-256 values, so the history exposes no reusable device
 hash.
 
+History adds `graphImportCompletedAtUtc`, `entraDeviceId`,
+`appliedExtensionAttributes`, `targetDeviceGroupIds`, `addedDeviceGroupIds`,
+`removedDeviceGroupIds`, `administrativeUnitName` and
+`removedAdministrativeUnits`. The worker writes action details only after
+successful Graph calls; explicit empty attribute maps identify skipped writes.
+An import's Group Tag completion timestamp is recorded only when the registered
+Autopilot device returns the expected tag. Import submission and completed
+registration are distinct events. No new history endpoint Graph calls are
+needed for these details: values come from the audit record.
+The web timeline orders recorded timestamps, explains background queueing and
+distinguishes membership reconciliation from newly added membership. Legacy
+records keep absent details as null and are never backfilled from current rules.
+PowerShell history output retains the same additive fields.
+
 ### 6.6. Group Tag Policy Management Interface
+
+Configuration backups use the separate Owner/Contributor-protected
+`ManagePolicyManagers` endpoint with `backup=true`, not the ordinary
+policy-manager authorization of `ManageTagPolicy`. GET returns a version-1
+`autopilot-importer-configuration` backup envelope plus destination concurrency
+values; PUT requires the backup object, `expectedRules` and `expectedPolicy`.
+See [the REST contract](#661-configuration-backup-and-restore-rest-api).
+The handler's blob input binding reads the same policy as `ManageTagPolicy`,
+including the deployment fallback before the first blob exists. Empty backup
+rules are permitted explicitly, without relaxing ordinary rule-save validation.
+Restore validates rules, action conflicts, directory references and the tenant
+before writes, retaining the destination installer and rule IDs. Storage's
+conditional write and fresh manager-setting comparisons reject detected
+concurrent edits. Requested/applied audit events use a shared operation ID.
+Rules are saved first; there is no cross-service transaction or automatic
+rollback. Partial/uncertain outcomes include separate write states and require
+configuration/history inspection. Azure's app-setting collection replacement
+still cannot protect against arbitrary external ARM writes after the last read.
 
 `ManageTagPolicy` serves `/api/management/tag-policy`. It requires a principal
 that is authorized by `MANAGER_AUTHORIZATION_POLICY` or, when that policy
@@ -390,6 +545,327 @@ is either the string form `<group-object-id>=<tag1>,<tag2>` or an object with
 each referenced administrative unit is resolved through Microsoft Graph before
 the policy is persisted. The policy is stored in the private blob
 `configuration/tag-authorization-policy.json`.
+
+Named device-action rules use this schema:
+
+```json
+{
+  "name": "Sales Berlin",
+  "groupId": "11111111-1111-1111-1111-111111111111",
+  "groupTag": "Sales",
+  "extensionAttributes": {
+    "extensionAttribute1": "Sales",
+    "extensionAttribute5": "Berlin"
+  },
+  "deviceGroupIds": ["22222222-2222-2222-2222-222222222222"],
+  "administrativeUnitName": "RMAU-Sales"
+}
+```
+
+`name` is required for action rules (1..128 characters). `groupId` identifies
+the **user authorization group**, not a device target group. `groupTag` is
+required. Deprecated `scopeTag` input is ignored as an action; older scope-only
+rules retain their effective Group Tag through migration. Normalized output
+does not contain `scopeTag`.
+Each rule has one Group Tag; several named rules may authorize the same user
+group. Identical Group Tags must have identical device actions across rules,
+otherwise saving fails before Graph writes. Tags are still exposed as
+`tags` for existing import clients. Legacy string/multi-tag rules receive a
+stable display name but do not start device-group assignment automatically.
+
+`extensionAttributes` supports string values for extensionAttribute1..15,
+up to 1024 characters each. Unspecified attributes are untouched. Omitting the
+map on a named device-action rule is normalized to an empty map and skips
+attribute writes. The web editor always persists explicit maps; no attribute
+rows means no writes. Only legacy authorization-only rules retain the old
+deployment-wide Group-Tag attribute behavior. Intune Scope Tags are not managed
+because this application targets pre-enrollment devices only.
+
+`deviceGroupIds` must reference cloud-managed, static, non-role-assignable Entra
+security groups. Target groups are validated on save and before membership
+changes. Import and re-tagging add the selected targets and remove memberships
+in other policy-managed targets, preserving unrelated groups. Durable
+`devicePolicies` entities in the existing audit table retain device ownership
+across the normal audit-retention period, including previous targets removed
+from the policy. Ownership is persisted before Graph writes to allow safe
+retries after partial updates. Do not use this partition as expiring import
+history.
+
+The hourly `RemoveExpiredImportHistory` timer only applies normal 30-day audit
+retention. It does not acquire a Graph token or perform post-enrollment work.
+Older pending Scope Tag records now expire under the same retention policy.
+Existing Intune tags and historical stored properties are not actively deleted,
+but scope progress is no longer exposed in API/client history output.
+The history API, PowerShell result and web trace expose pre-enrollment policy
+and group-sync progress. Import `workflowStatus=complete` means the
+pre-enrollment workflow has finished, not that enrollment has occurred.
+
+The web **TagPolicies** tab uses the same manager-authorized GET/PUT endpoint,
+but exposes per-rule saves. Before saving or deleting one rule it fetches the
+latest server policy, checks that the original rule has not changed, and merges
+only that rule. Other local drafts are never serialized. The API still replaces
+the whole blob, so this is not an atomic compare-and-swap across concurrent
+clients. Local writes are serialized; stale edits fail visibly. Deletions require
+confirmation, and the last server rule cannot be deleted. Save buttons appear
+only for changed/new rules; new entries are scrolled into view and focused.
+Non-managers receive the normal forbidden response and cannot load/edit rules.
+Successful saves show a localized modal confirmation. Import History is hidden
+on the policy page, and the import tag selector shows rule names only.
+Entering the policy tab reloads current rules via the no-cache manager endpoint,
+including keyboard navigation; unsaved drafts require discard confirmation.
+Reload and save are serialized, and load failures are shown in the editor.
+
+Rules preserve an optional `description` string (up to 2048 UTF-16 code units;
+multiline text is allowed, other control characters are rejected). The shared
+normalizer, client policy edit commands and updater preserve it.
+
+Both management endpoints support `GET ?history=true&continuation=<row-key>`,
+returning `{ events, continuation }` with up to 25 newest-first events. Policy
+history uses normal policy-manager authorization; manager history always
+requires delegated Owner/Contributor authorization, never eligibility alone.
+Policy history additionally requires `ruleId=<GUID>` (missing/invalid: 400).
+Rules expose persistent `ruleId`, preserved through renames, client edits and
+upgrades. Pre-ID rules derive a deterministic initial GUID from group/name;
+new web drafts receive a new GUID. Clients must retain returned IDs on edits.
+Filtering runs server-side and returns only changed before/after snapshots of
+the selected rule; unchanged rules in a bulk write never appear in its history.
+Applied policy events now also retain snapshots so confirmation is attributable.
+Older applied events lacking snapshots are omitted from rule history.
+Storage reads stay bounded at 25 events; a filtered empty page can still have
+a continuation. Consumers must continue until the token is empty.
+Each editor row owns its popup/button (disabled until first save); no global
+policy history button remains. `Get-AutoPilotTagPolicyHistory -RuleId` exposes
+the same paged API response in PowerShell. Normal policy output now also
+preserves Description and RuleId. Rule deletion removes the UI entry, not
+manager history or shared audit records.
+Each event includes `operationId`, `stage`, `atUtc`, `actorId`, optional
+`actorName`, and requested `before`/`after` snapshots. The UI uses text nodes
+for history values, including descriptions, not HTML.
+
+`Write-ManagementAuditEvent` inserts unique rows into `management-policies` or
+`management-managers` partitions of the existing audit table. No merge/delete
+operation exists for these events, and import cleanup queries only `imports`.
+Requested events must persist before mutation; applied events confirm its
+completion. Missing confirmation is reported as an uncertain save, not success.
+Snapshots are size-limited and chunked below Table property/entity limits;
+oversized changes fail before mutation. There is no time cutoff for reads.
+`Set-ManagementPolicyBlob` replaces the former output binding with synchronous
+UTF-8 Storage writes, an expected-content check and conditional ETag/create
+headers, so completion is not recorded before a deferred binding write.
+The PowerShell manager mutation command uses the same audited API, sending both
+API and delegated ARM tokens and the expected manager policy. No direct-write
+fallback bypasses auditing. Azure administrative edits outside the application
+are not captured; storage is not WORM-locked against administrators.
+
+The separate **Policy managers** tab is gated by
+`GET /api/management/policy-managers`, independently of policy-manager access.
+Except for the read-only visibility check described below, `ManagePolicyManagers`
+requires the platform-validated API principal plus a
+delegated ARM token in `x-autopilot-arm-token` for the same user/tenant.
+Decoded token claims only identify the caller; ARM must accept the token
+before any authorization is inferred. The endpoint queries effective
+`assignedTo` role assignments (including group/ancestor assignments), follows
+ARM pagination and uses the shared strict Owner/Contributor scope check.
+The target `FUNCTION_RESOURCE_ID` comes from Bicep, never from request input.
+Every manager-data request, including object searches and writes, repeats this
+delegated check. The identity's new role-assignment read permission is used
+only for the separate visibility check.
+
+GET returns `{ policy, expectedPolicy, correlationId }`, with the installer,
+additional principal IDs and existing Intune Role Administrator setting.
+PUT takes `{ additionalPrincipalIds: string[], expectedPolicy: string }`;
+the installer is retained server-side, new IDs must resolve to users/groups,
+and stale manager-policy snapshots return 409. Settings are read again after
+Graph validation and all unrelated settings are round-tripped using the
+caller's ARM token. ARM also enforces write/deny permissions. As with the
+existing PowerShell command, app-settings replacement is not an atomic ETag
+compare-and-swap against arbitrary simultaneous Azure settings changes.
+An app-settings update can restart the Function; the UI confirms before save
+and explicitly reports failures/uncertain outcomes rather than assuming success.
+
+`GET .../policy-managers?search=<text>` returns the shared picker response,
+combining bounded Graph user/group queries, with 25 total results and `hasMore`.
+User searches accept display-name/UPN prefixes or exact IDs. Existing Graph
+application permissions `User.ReadBasic.All` and `GroupMember.Read.All` suffice.
+Graph optimizes `id eq` to entity lookup, returning 404 for a user ID on
+`/groups` or group ID on `/users`. Only this exact-ID 404 becomes an empty
+type-specific result; prefix-search errors and other HTTP failures propagate.
+Names are display-only; unavailable/deleted objects retain visible IDs/errors.
+The SPA registration adds ARM delegated `user_impersonation`, preserving its
+other permissions. Before acquiring a delegated ARM token, the SPA calls
+`GET /api/management/policy-managers?access=true` with its normal API token.
+The server uses the Function identity to query ARM `assignedTo(callerOid)`
+at the fixed Function resource ID, follows pagination and checks only built-in
+Owner/Contributor at that scope or an ancestor. Caller identity comes only
+from Easy Auth, never a query parameter. This mode returns only a boolean and
+correlation ID; it cannot read manager settings, search the directory or write.
+The custom identity role grants only `Microsoft.Authorization/roleAssignments/read`,
+assigned at Function scope with an RG-scoped role definition. Bootstrap/update
+permission checks require `roleDefinitions/write` as well as assignment writes.
+Missing identity permissions/token/ARM failures return a logged 502, not a
+success-shaped negative result. No match returns a normal false result.
+
+Only after eligibility succeeds does MSAL silently probe existing ARM consent;
+when interaction is needed, the eligible user's sign-in button starts an ARM
+redirect. Non-Azure policy managers see neither button nor manager tab.
+Normal manager reads/searches/writes still require the caller's delegated ARM
+token and recheck roles, with no identity-token fallback. This does not grant
+Azure roles. Redirect ARM tokens are never cached as import API tokens.
+Normal import/policy access does not require ARM consent. Tabs reload on entry,
+including keyboard navigation, and both management tabs hide Import History.
+
+The PowerShell full-rule setter supports the same schema.
+Legacy group-based add/remove/update shortcuts preserve action fields
+or reject ambiguous multi-rule updates; use the full-rule setter for these.
+The regular updater preserves name, Group Tags, attribute maps (including
+explicit empty maps), device-group IDs and the per-rule AU. Installer policy
+serialization always uses an array and sufficient JSON depth, including when
+upgrading a deployment with only one rule.
+Its transient input may retain deprecated scope metadata for migration; the
+shared normalizer removes it before active policy storage. Required Graph roles
+are now `DeviceManagementRBAC.Read.All` for manager checks, with no
+`DeviceManagementManagedDevices.ReadWrite.All` requirement. The grant script
+does not revoke historical write grants: an administrator must explicitly
+review and remove permissions no longer needed.
+
+The authorized-user-group object picker calls
+`GET /api/management/tag-policy?groupSearch=<text>` after the same manager
+authorization checks. The search accepts 2..128 characters and returns
+`{ groups: [{ id, displayName }], hasMore, correlationId }`. It uses Graph v1.0
+`startswith(displayName,...)` or an exact GUID filter, escapes OData literals,
+and limits each request to 25 results with a prompt to refine the search.
+Only basic group properties are read using the existing `GroupMember.Read.All`
+application permission. Selecting a result writes its ID to `groupId`; group
+names are display-only, not policy identifiers.
+**Add group** opens a modal picker; selected lists show Graph-resolved names,
+with lookup errors explicitly reported. A shared remove button is enabled only
+when a list entry is selected. The same picker supports multiple device targets.
+`auSearch=<text>` on the same manager endpoint searches Administrative Units.
+Because the AU list API documents `eq`, not `startswith`, AU prefix matching is
+performed locally over its paginated collection; results are capped at 25.
+The existing `AdministrativeUnit.ReadWrite.All` permission covers this lookup.
+Only one AU is allowed, so adding is disabled while one is assigned; removal
+requires selection. The existing name-based policy schema is preserved.
+Rules use native `details`/`summary` disclosure controls, existing rules start
+collapsed, and invalid rules are expanded on save. Extension-attribute rows use
+unique selectors for slots 1..15 and always persist an explicit attribute map.
+No rows means no writes, with no deployment-default switch. Tag inputs use the same existing
+required Group Tag and 128-character/comma policy-format checks as the backend, with inline
+feedback and no invented Microsoft character whitelist. The editor omits a
+permanent validation-help paragraph; validation messages still appear for invalid input.
+Attribute values use single-line text inputs with a 1024 UTF-16 code-unit
+limit. Both the TypeScript parser and PowerShell normalizer reject Unicode
+categories Cc, Zl and Zp. Invalid pasted line breaks are reported rather than
+silently joined; invalid stored values require correction before saving.
+
+Before enabling these features on an existing deployment, an administrator must
+grant `DeviceManagementRBAC.Read.All` and `GroupMember.ReadWrite.All`
+to the Function managed identity using the updated permission script.
+Existing device, administrative-unit and user/group-read permissions remain
+required. No permissions are granted merely by editing code or policies.
+
+#### 6.6.1. Configuration Backup and Restore REST API
+
+For operator-facing PowerShell commands, see
+[Back Up and Restore Rules and Policy Managers](README.md#back-up-and-restore-rules-and-policy-managers).
+The contract below is for direct REST integrations. Routes are relative to
+the trusted Function App's HTTPS origin, including a configured custom domain.
+
+`GET /api/ui/config` exposes public integration metadata: `authority` identifies
+the tenant, `scope` contains the API application ID URI and delegated scope,
+and `policyManagersUrl` identifies the manager endpoint. These values do not
+replace authentication or authorization. The API token targets the Function
+API audience; the delegated ARM token targets `https://management.azure.com/`.
+
+Both requests use `Authorization: Bearer <Function-API-token>` and
+`x-autopilot-arm-token: <delegated-ARM-token>`. The tokens must belong to the
+same user and tenant; ARM verifies effective Owner/Contributor access.
+
+`GET /api/management/policy-managers?backup=true` returns:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Web/sites/<app>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<current-manager-policy-JSON-string>",
+  "correlationId": "<operation-GUID>"
+}
+```
+
+Save the `backup` object as the portable JSON file. To restore, first GET the
+**target** installation to obtain fresh concurrency values, then call
+`PUT /api/management/policy-managers?backup=true` with
+`Content-Type: application/json; charset=utf-8`:
+
+```json
+{
+  "backup": {
+    "format": "autopilot-importer-configuration",
+    "schemaVersion": 1,
+    "createdAtUtc": "2026-10-18T06:00:00.0000000Z",
+    "tenantId": "<tenant-GUID>",
+    "sourceResourceId": "<source-Function-resource-ID>",
+    "rules": [],
+    "managerPolicy": {
+      "installerPrincipalId": "<source-installer-GUID>",
+      "additionalPrincipalIds": [],
+      "allowIntuneRoleAdministrators": true
+    }
+  },
+  "expectedRules": [],
+  "expectedPolicy": "<unchanged JSON string returned by the target GET>"
+}
+```
+
+Supply the complete saved `backup` **object**, including its actual rules.
+`expectedRules` must be the target GET's complete rule array, not
+necessarily empty. A confirmed restore returns `restored: true`,
+`rulesState: "applied"`, `managersState: "applied"` and `correlationId`.
+Invalid schemas or tenants return `400`; stale initial configuration returns
+`409`. Persistence, directory-service or audit failures return `502`, with
+`rulesState` and `managersState` each set to `notStarted`, `unconfirmed`, or
+`applied`. These states describe confirmed configuration writes, not an atomic
+transaction or guaranteed audit confirmation. Invalid directory object
+references can return `400` before writes. A network error or Function restart
+can also prevent a response after a write has applied. Never infer rollback
+from an error response.
+
+Restore replaces all rules and additional managers, including the Intune Role
+Administrator access flag. It retains the destination installer; the source
+installer is not automatically added as a manager. Empty rule/manager arrays
+are supported, and an empty rule set disables policy-authorized imports.
+Cross-tenant restores are rejected.
+
+`expectedPolicy` is the exact JSON string returned by the target, not a
+re-serialized object. After a restore, export the target again and compare all
+rules and manager settings. Ignore JSON property order and the new export
+timestamp; another installation retains its own resource ID and installer.
+
+Rules are written conditionally first, followed by the manager app setting,
+which may restart the Function App. Both changes use permanent requested/applied
+audit events with a shared operation ID. There is no cross-service transaction
+or automatic rollback. Unrelated app settings are preserved with the existing
+ARM collection-replacement concurrency limitation.
+
+| Result | Integration action |
+| --- | --- |
+| HTTP 401/403 | Verify API access, delegated ARM authentication for the same user/tenant and effective Owner/Contributor rights. |
+| HTTP 404 or unsupported backup response | Verify the target URL and deploy a Function version containing this API. |
+| HTTP 400 | Correct the schema, tenant or directory-reference problem; do not remove validation fields to force a restore. |
+| HTTP 409 | Re-read and inspect current target configuration before deliberately retrying. |
+| HTTP 5xx, interrupted response or incomplete write states | Read configuration and both management histories first; preserve snapshots and the correlation ID. One store may already have changed. |
 
 ### 6.7. Web Frontend Interface
 
@@ -444,6 +920,7 @@ the following commands:
 | Retagging | `Get-AutoPilotDeviceTagAssignment`, `Set-AutoPilotDeviceGroupTag` |
 | Tag policy | `Get-AutoPilotTagPolicy`, `Add-AutoPilotTagPolicy`, `Remove-AutoPilotTagPolicy`, `Set-AutoPilotTagPolicy` |
 | Policy managers | `Get-AutoPilotTagPolicyManager`, `Update-AutoPilotTagPolicyManager`, `Add-AutoPilotTagPolicyManager`, `Remove-AutoPilotTagPolicyManager` |
+| Configuration backups | `Export-AutoPilotConfiguration`, `Restore-AutoPilotConfiguration` |
 
 ```powershell
 Get-AutoPilotDeviceTagAssignment
@@ -460,6 +937,19 @@ GUIDs, supports `-WhatIf`, and can poll with `-Wait`,
 `tenantId` from `client.settings.json` unless explicit parameters override
 them. The client acquires an Entra token for the configured API audience and
 does not bypass server-side authorization.
+
+The backup commands use both an API token and a caller-delegated ARM token
+against the configured hostname, including custom domains. Export writes only
+the standalone backup object as UTF-8 JSON and refuses existing files without
+`-Force`. Restore obtains fresh target concurrency values before PUT, requires
+confirmation by default and supports `-WhatIf` without network requests.
+Neither command exposes tokens in the backup. The API and updated client
+module must both be deployed before using this feature.
+
+See [Back Up and Restore Rules and Policy Managers](README.md#back-up-and-restore-rules-and-policy-managers)
+for the operational runbook: selecting a custom-domain target, exporting JSON,
+preserving a pre-restore snapshot, confirming a restore and verifying the
+result without mistaking `-WhatIf` or partial writes for success.
 
 ### 6.10. Shared Function Runtime Module Interface
 
@@ -486,7 +976,8 @@ actually consumes it, and cover authorization-relevant changes in
 The Function managed identity requires the Microsoft Graph application
 permissions `AdministrativeUnit.ReadWrite.All`,
 `DeviceManagementServiceConfig.ReadWrite.All`,
-`DeviceManagementRBAC.Read.All`, `Device.ReadWrite.All`,
+`DeviceManagementRBAC.Read.All`,
+`GroupMember.ReadWrite.All`, `Device.ReadWrite.All`,
 `GroupMember.Read.All`, and `User.ReadBasic.All`. The installer assigns these
 permissions. Clients receive only the delegated `DeviceHash.Import` scope and
 therefore cannot call Microsoft Graph on behalf of the Function.
@@ -601,7 +1092,7 @@ By default, the installer searches the selected tenant for an app registration n
 The installer compares the existing application with the desired configuration before writing. A user with read access can therefore reuse an already compliant application. Application ownership or an application administrator directory
 role is required only when the application actually needs to be created or updated.
 
-These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, and the read-only `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, and `User.ReadBasic.All` permissions.
+These delegated permissions apply only during installation. Function users do not receive them. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `Device.ReadWrite.All`, `AdministrativeUnit.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, and `User.ReadBasic.All`.
 
 The installer configures:
 
@@ -762,16 +1253,144 @@ The installer prompts for:
 - Azure region
 - Globally unique Function App name, with a generated name proposed by default
 - Destination directory for the operational PowerShell scripts
-- Entra device extension attribute for the authorized Group Tag; the default is `extensionAttribute1`
-- Optional display name of an Entra administrative unit (MAU or RMAU)
-- Entra group object IDs
-- Allowed Device Tags for each group
 
 Function App names must contain 2-60 letters, digits, or hyphens and must start and end with a letter or digit. The installer rejects an invalid `-FunctionAppName`; in interactive mode it asks again until the name is valid.
 
 The Client ID is taken automatically from the existing or newly created app registration.
 
-Group-to-tag rules are requested repeatedly in interactive mode. One group can receive multiple tags, and the same tag can be assigned to multiple groups.
+Rules are not part of installation or updates. Fresh installations use `[]`
+as the legacy `TAG_AUTHORIZATION_POLICY` fallback and leave the policy blob
+absent until a manager saves the first rule through the UI or client. An empty
+policy grants no import or device-tag permissions. The management API returns
+`policy: []` during initial setup; replacement policies still require at least
+one valid rule. First saves use conditional blob creation and retain auditing
+and concurrency protection.
+
+Updates never read or write the policy blob or call the Function management API.
+The installer forwards an existing legacy policy setting verbatim through ARM,
+preserving rules and unknown properties without normalization. Existing blob
+rules remain authoritative. The removed installer parameters
+`-TagAuthorizationRule`, `-AdministrativeUnitName`, and `-Mau` belong to the
+separate policy-management workflow. `-DeviceTagExtensionAttribute` remains a
+legacy default, set to `extensionAttribute1` without prompting.
+
+New apps use Linux Flex Consumption (`FC1`). The installer reads the actual
+hosting plan for existing apps: Windows `Y1` remains legacy Consumption, Linux
+`FC1` remains Flex, and unsupported combinations fail explicitly. No ordinary
+update changes an app's operating system, hosting plan, data or custom domains.
+Replacing a Windows app requires a separately approved new-app migration.
+
+The Flex template creates `vnet-<app>` with address space `172.16.0.0/24`, a
+`functions` subnet (`172.16.0.0/26`) delegated to `Microsoft.App/environments`,
+and a `private-endpoints` subnet (`172.16.0.64/27`). All three prefixes are
+within the private `172.16.0.0/12` range. These ranges are isolated
+defaults; review address overlap before adding any peering. Blob, Queue and
+Table each have a private endpoint, a corresponding
+`privatelink.<service>.core.windows.net` DNS zone, a VNet link and a DNS zone
+group. The app depends on these DNS resources before creation.
+
+For an existing Flex deployment using the former `10.80.0.0/24` address space,
+review the network changes before redeploying. Changing the template is not an
+in-place network migration: Azure can reject subnet address changes while
+Function integration or private endpoints still occupy those subnets. Plan
+any required migration and downtime explicitly.
+
+### Legacy Consumption to Private Flex Migration
+
+Ordinary updates deliberately preserve the existing hosting model. To migrate a
+Windows Y1 installation to Linux Flex while retaining its Function App name,
+run the dedicated migration script from a complete repository checkout.
+The deployment package does not contain the migration script or its required
+repository layout:
+
+```powershell
+pwsh .\src\Scripts\Migrate-AutopilotImportToPrivate.ps1 `
+    -SubscriptionId '<subscription-guid>' `
+    -TenantId '<tenant-guid>' `
+    -ResourceGroupName 'rg-autopilot-import' `
+    -FunctionAppName 'func-autopilot-contoso' `
+    -VirtualNetworkAddressPrefix '192.168.0.0/24' `
+    -AcceptCustomDomainCertificateReissue
+```
+
+The script validates the source app and plan, saves a metadata-only backup,
+deletes the Windows app and its Y1 plan, and calls the regular installer to
+create a Linux Flex app with the same name. The deterministic Storage account
+name is unchanged. Its policy blob, processing queues and `importaudit` table
+are retained in place while the installer adds private endpoints, disables
+public Storage access and reassigns runtime roles to the new system identity.
+The API and SPA application IDs and policy settings are preserved. Choose an
+aligned, private IPv4 `/24` that does not overlap existing subscription VNets;
+the script checks visible VNet prefixes before deleting the source app. Its
+Functions subnet is derived as `/26` and its private-endpoint subnet as `/27`.
+
+This is a destructive, staged migration with downtime between app deletion and
+the new app's successful deployment. A migration backup can be passed with
+`-BackupPath` to resume if the app has already been deleted. Do not remove the
+Storage account or its data. The migration script removes only the old Function
+identity's three account-scoped Storage data-role assignments before the
+installer assigns them to the new identity. If deployment fails after the
+Linux Flex app has been created, rerun the migration script with the original
+`-BackupPath`; it preserves the existing Flex app and plan while finishing the
+deployment.
+
+The operator procedure is in
+[HOWTO-Migrate-To-Private-Endpoints.md](HOWTO-Migrate-To-Private-Endpoints.md).
+Technical details:
+
+- **Backup.** Written before any deletion; contains resource IDs, hostnames,
+  app settings relevant to the policy and `sourceManagedIdentityObjectId`, but
+  no secrets. `-BackupPath` selects resume mode: an existing Flex app and plan
+  are never deleted, and the installer is re-run against them.
+- **Role-assignment conflict.** `main.bicep` uses deterministic role-assignment
+  names for the Storage data roles (Blob Data Owner, Queue Data Contributor,
+  Table Data Contributor). Assignments owned by the deleted app's identity
+  would make ARM fail with `RoleAssignmentUpdateNotPermitted`, so the script
+  first removes exactly those three assignments at the account scope for the
+  old principal. The principal comes from the backup, or else from the single
+  service principal holding all three roles at that scope. Other users' roles
+  are untouched.
+- **Networking.** `-VirtualNetworkAddressPrefix` must be a private /24 and is
+  checked against visible subscription VNets. The template derives the /26 and
+  /27 subnets with `cidrSubnet`, which needs target prefix lengths (not
+  additional bits). `Update-AutopilotImport.ps1` reads the address space of
+  `vnet-<app>` and passes it on, so later updates do not fall back to the
+  default range.
+- **Graph permissions.** The installer forwards `-ForceGraphSignIn` and
+  `-GraphAccessToken` (SecureString, in memory only) through updater, installer
+  and `Grant-ManagedIdentityGraphPermission.ps1`; the helper checks the token's
+  tenant, and combining both parameters is rejected. WAM fails in embedded
+  terminals ("window handle"), hence device code or a token from
+  `az account get-access-token --resource-type ms-graph`. Azure CLI tokens
+  cannot carry `RoleManagement.ReadWrite.Directory` (AADSTS65002), so the
+  AU-scoped role uses `Grant-ManagedIdentityAdministrativeUnitRole.ps1`.
+- **Result object.** The manager authorization policy may come from the backup
+  rather than the deployment; the installer result handles both sources.
+- **Tests.** `src/Tests/PrivateEndpointMigration.Tests.ps1` covers parameter
+  validation, VNet overlap, resume, role cleanup, token forwarding and VNet
+  preservation.
+
+Custom hostnames are recorded, but their bindings and certificates are not
+automatically transferred. Microsoft documents that apps created before
+site-scoped certificates have no automatic certificate migration path. After
+the new app passes its smoke test, add the custom hostname and create/bind a
+site-scoped certificate in Azure Portal; keep the DNS CNAME pointed at the
+same `<app-name>.azurewebsites.net` hostname. Until that is complete, use the
+default Azure hostname. See [Flex Consumption site-scoped certificates](https://learn.microsoft.com/azure/azure-functions/flex-consumption-how-to#configure-site-scoped-certificates).
+
+Storage has `publicNetworkAccess: Disabled`, `allowSharedKeyAccess: false`,
+anonymous blobs disabled and TLS 1.2. Both host and deployment storage use the
+system-assigned identity; the `deployment-packages` container requires no
+Azure Files share or connection string. Existing Storage data roles also cover
+deployment access. No installer data-plane upload is needed.
+
+Flex uses PowerShell 7.4, 2,048 MB instances, a maximum of 40 instances and no
+always-ready instances. The installer verifies regional Flex availability and
+registers `Microsoft.Network` and `Microsoft.App` when needed. The deploying
+account needs network write/join permissions and Storage private-endpoint
+connection approval in addition to existing
+resource, publishing and role-assignment permissions. Provider registration
+requires subscription permissions, or providers must be registered beforehand.
 
 For a non-interactive installation, pass all values as parameters:
 
@@ -784,10 +1403,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
     -DeviceTagExtensionAttribute 'extensionAttribute1' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk', `
-        '22222222-2222-2222-2222-222222222222=Autopilot-Privileged' `
-    -AdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '33333333-3333-3333-3333-333333333333' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -806,8 +1421,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard' `
     -WhatIf
 ```
 
@@ -830,7 +1443,6 @@ Create a variable group named `autopilot-import-deployment` with these values:
 | `entraClientId` | `22222222-2222-2222-2222-222222222222` | Client ID of the preconfigured API app registration |
 | `webClientId` | `55555555-5555-5555-5555-555555555555` | Client ID of the preconfigured SPA app registration |
 | `installerPrincipalId` | `33333333-3333-3333-3333-333333333333` | Object ID of the user or group that remains a permanent Group Tag manager |
-| `tagAuthorizationRulesJson` | `["44444444-4444-4444-4444-444444444444=Standard,Kiosk"]` | JSON array containing the complete group-to-tag policy |
 | `tagManagerPrincipalIdsJson` | `[]` | JSON array of additional manager user or group object IDs |
 
 Authorize the pipeline to use this variable group. None of these values is a credential; authentication is provided by workload identity federation.
@@ -936,16 +1548,22 @@ When the client module and configuration are not installed on the update compute
     -InstallMissingModules
 ```
 
-In this mode, and when using `-FunctionUrl`, the API audience is read from the deployed Function App and the management endpoint is derived from its hostname. Use `-ApiAudience` or `-ManagementUrl` only when the deployed values require an explicit override.
+In this mode, and when using `-FunctionUrl`, the API audience is read from the
+deployed Function App. Use `-ApiAudience` only when an explicit override is
+required. The updater no longer accepts `-ManagementUrl`, because it does not
+call the policy management endpoint.
 
-The script preserves the existing Function App name, region, API application, Group Tag authorization rules, configured Group Tag managers, client tools path, Device Tag extension attribute, and optional MAU. It then reuses the idempotent
+The script preserves the existing Function App name, region, API application,
+configured Group Tag managers, client tools path, and Device Tag extension
+attribute. Rules, including their per-rule administrative units, remain untouched.
+It then reuses the idempotent
 installer to update Azure resources, required permissions, Function code, and the versioned client package.
 
 Each invocation creates a new log file. An update writes its activity to `Intune-Autopilotimport-update-<timestamp>-<unique-id>.log`, and the installer invoked by the update writes its own `Intune-Autopilotimport-install-<timestamp>-<unique-id>.log` in the current user's temporary directory. If either script stops with an error, its transcript is closed before detailed error and stack information is appended to avoid file-lock conflicts.
 
-The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `Role Based Access Control Administrator` or `User Access Administrator`, because the Bicep template also maintains Storage role assignments. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
+The updating administrator needs the same Azure and Entra permissions as an installer. Before prompting for confirmation, the update and installation scripts query effective ARM permissions at the target resource group or subscription scope. Deployment requires `Owner`, or `Contributor` together with `User Access Administrator`, including custom role definition writes, because the Bicep template maintains Storage role assignments and the Function-scoped manager-access reader role. Missing actions produce a concise console error; the complete permission lookup or deployment error remains in the temporary setup log.
 
-Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. The caller must also be authorized to read the Group Tag policy through the Function management API. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
+Reading and preserving the Function configuration requires `Microsoft.Web/sites/config/list/action`, which is included in Azure `Contributor` and `Owner`. No Function management API permission is required for updating. Use `-InstallMissingModules` when local prerequisites may be missing. The installer skip switches are also available for separated administrative workflows.
 
 #### 9.2.3. Deployment Package
 
@@ -1040,7 +1658,7 @@ exposed through these paths.
 
 ### 9.3. Assign the Graph Permission
 
-This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
+This action requires an administrator who can assign app roles. The managed identity receives `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementRBAC.Read.All`, `GroupMember.ReadWrite.All`, `GroupMember.Read.All`, `User.ReadBasic.All`, `Device.ReadWrite.All`, and `AdministrativeUnit.ReadWrite.All`.
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
@@ -1051,34 +1669,43 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 
 ### 9.4. Publish the Function Code
 
-The ZIP archive must contain `host.json` at its root:
+The ZIP archive must contain `host.json` at its root. Use the shared
+`FunctionDeployment.psm1` helpers rather than a hand-written archive allowlist:
 
 Rebuild the web frontend first only when files under `src/Web` changed. For
 documentation, PowerShell module, installer, or backend Function changes, use
 the existing bundle under `src/FunctionApp/WebFrontend/wwwroot`.
 
 ```powershell
-Push-Location .\src\Web
-npm ci
-npm run build
-Pop-Location
-
+Import-Module .\src\Scripts\FunctionDeployment.psm1 -Force
+$app = Get-AzWebApp -ResourceGroupName $resourceGroupName -Name $functionAppName
+$hostingMode = Get-AutopilotDeploymentHostingMode -ExistingFunctionApp $app
 $package = Join-Path $PWD 'autopilot-import.zip'
-Push-Location .\src\FunctionApp
-Compress-Archive `
-    -Path .\host.json, .\proxies.json, .\requirements.psd1, .\profile.ps1, .\ImportDevice, .\GetAuthorizedTags, .\ManageTagPolicy, .\ProcessDeviceAttribute, .\WebFrontend, .\src `
-    -DestinationPath $package `
-    -Force
-Pop-Location
-
-Publish-AzWebApp `
-    -ResourceGroupName $resourceGroupName `
-    -Name $functionAppName `
-    -ArchivePath $package `
-    -Force
+New-AutopilotFunctionPackage -FunctionAppRoot .\src\FunctionApp `
+    -DestinationPath $package -HostingMode $hostingMode
+if ($hostingMode -eq 'FlexConsumption') {
+    Publish-AutopilotFlexPackage -ResourceGroupName $resourceGroupName `
+        -FunctionAppName $functionAppName -ArchivePath $package
+} else {
+    Publish-AzWebApp -ResourceGroupName $resourceGroupName `
+        -Name $functionAppName -ArchivePath $package -Force
+}
 ```
 
-Managed Dependencies can take several minutes to make `Az.Accounts` available after the first start.
+Flex does not support PowerShell Managed Dependencies. Its ZIP contains the
+compatible module version declared by `requirements.psd1` under `Modules`;
+the builder copies a compatible installed module or saves it from PSGallery.
+Only the staged Flex `host.json` disables managed dependencies. The source
+configuration and legacy Windows ZIP retain the existing startup behavior.
+
+Flex publication uses the app's actual SCM hostname and
+`POST /api/publish?RemoteBuild=false&Deployer=AutopilotImport-<unique-id>`, authenticated
+with an Azure management bearer token. It polls the deployment status until
+confirmed success; HTTP acceptance, failure, cancellation and timeout are not
+reported as successful publication. The operator does not need a direct
+network path to private Storage. Public application ingress is intentional;
+only the Storage data plane is private. A fresh Azure deployment and DNS/runtime
+connectivity test still require a separate deployment approval.
 
 ## 10. Local Build
 
@@ -1271,38 +1898,64 @@ The `Enforce dev promotion` workflow validates PR routes and the prospective
 merged `VERSION`, using trusted protected-dev code without executing PR source.
 Both PR event types are supported so initial setup works before the new
 workflow reaches the default branch. Their checks execute the same policy.
-`main` requires `Require dev as source branch` and `Dev release version`: the
+`main` requires `Require dev as source branch`, `Branch and version policy`,
+`Validation and tests`, and `Dev release version`: the
 latter runs on every `dev` push and requires a full version higher than `main`.
 Prepare that version in `dev` before promotion; never push a version bump
 directly to `main`.
 
-`dev` requires a PR and `Branch and version policy`. Feature/fix PRs must keep
-its major/minor. Only a same-repository PR from `nextversion` may increase that
-release line, and it must include the latest `dev` commit. Use merge commits
-for these long-lived branches so subsequent syncs retain their ancestry.
+`dev` requires a PR, `Branch and version policy`, and `Validation and tests`.
+Every incoming branch must include the latest `dev` commit and retain or
+increase its full version. Any branch can introduce a new major/minor; there is
+no special `nextversion` route. Use merge commits for protected branches so
+their ancestry is retained.
 
-`nextversion` starts from `dev` at least one minor (or a major) ahead. It may
-only be promoted to `dev`, never directly to `main`. Its required PR check
-rejects a dev sync that changes its major/minor. After promoting to `dev`,
-explicitly advance `nextversion` for the next cycle through a PR before further
-syncs; the automation never silently chooses a new release line.
+Create development and bugfix branches from current `dev`. Only `main` and
+`dev` are protected; names such as `feature/*`, `fix/*`, `release/*`, and
+`nextversion` permit direct commits and pushes. Local installation ZIP creation
+works on any branch and does not publish a release. The promotion path is
+always `<development branch> -> dev -> main`, including urgent bug fixes.
 
-The `Sync dev to nextversion` workflow creates/updates the separate
-`sync/dev-to-nextversion` branch and opens a PR to `nextversion`. This branch
-contains dev ancestry, adopts nextversion's release line and advances only
-date/counter. It rebuilds the versioned frontend. It never modifies `dev` or
-force-pushes over conflict resolutions. Subsequent conflicting dev merges fail
-explicitly: resolve them on the sync branch and rerun the workflow. Conflicts
-between the sync branch and nextversion must also be resolved on the sync
-branch, preserving nextversion's major/minor and consolidating same-day history.
+The package workflow runs on branch pushes and PRs targeting `dev` or `main`.
+Its `Validation and tests` job runs the full Pester suite, frontend tests and
+TypeScript/Vite build, validates history/version metadata and creates an
+installation ZIP. PRs test the prospective merged tree. Packages are retained
+as Actions artifacts for 30 days. A successful **push to main** additionally
+publishes a GitHub Release tagged `v<VERSION>`, with the main installation ZIP
+as a downloadable asset and generated release notes. PRs, feature pushes and
+manual builds never publish releases. Existing version tags must point to the
+exact main commit; a different commit cannot overwrite a published version.
+Failed builds publish no release; fix the failure and rerun the main workflow.
+
+Every `dev` update runs `Sync dev to development branches`. It opens a sync PR
+for each other branch that does not yet contain current `dev`. Protected
+branches and generated `sync/dev/*`/legacy `sync/dev-to-*` refs are excluded.
+The source is an isolated `sync/dev/<target-hash>/<dev-SHA>` ref pointing to
+trusted `dev`, not code checked out from a development branch.
+
+Sync never writes the target, auto-merges, changes a version or force-pushes.
+Resolve PR conflicts on the generated sync branch, preserving a target's
+newer release line and consolidating history/version metadata. Reruns reuse
+the same PR, including deliberate closures. A newer `dev` commit creates a
+new isolated sync PR; it never overwrites manual conflict resolutions. When
+several sync PRs exist, merge the newest applicable one and close superseded
+ones after checking for unmerged manual work. Delete retired development
+branches when they should no longer receive fix PRs.
 
 Enable **Allow GitHub Actions to create and approve pull requests** in the
 repository's Actions settings. PRs created using `GITHUB_TOKEN` do not trigger
 other workflows: a maintainer must close/reopen the generated PR (or push a
 conflict resolution) to start its required checks. Never bypass the checks.
-Generated sync commits use `[skip ci]`; regular human commits retain the
-normal version/changelog/history requirements. Main is never merged or released
-automatically.
+The automation creates refs/PRs, not new commits. Manual conflict-resolution
+commits retain normal version/changelog/history requirements. Main is never
+auto-merged; release publication is automatic only after a successful main push.
+
+To introduce changed required checks, first push the workflow/policy change on
+a same-release-line branch from protected `dev` and open its PR. Require the
+new test check only once that PR actually produces it. Keep all existing
+main/dev protections during rollout. The protected-dev policy becomes active
+after that PR is merged into `dev`; release publication becomes active after
+the ordinary `dev -> main` PR carries the new workflow to `main`.
 
 ## 18. Operations and Security
 

@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -92,6 +92,7 @@ $moduleManifest = @(
         -LiteralPath (Join-Path $PSScriptRoot '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1') `
         -ErrorAction SilentlyContinue
 ) | Select-Object -First 1
+# Ensure that the AutopilotImport.Client module is located and imported before proceeding.
 if (-not $moduleManifest) {
     throw 'AutopilotImport.Client is not installed beside this script.'
 }
@@ -100,6 +101,7 @@ Import-Module $moduleManifest.FullName -Force
 # Forward only the parameters the caller actually supplied. Unbound parameters
 # stay absent, so the module resolves them from the client configuration file.
 $parameters = @{}
+# Collect only the parameters that the caller explicitly supplied.
 foreach ($name in $PSBoundParameters.Keys) {
     $parameters[$name] = $PSBoundParameters[$name]
 }

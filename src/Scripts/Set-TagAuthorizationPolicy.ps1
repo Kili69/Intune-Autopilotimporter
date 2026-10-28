@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -23,8 +23,10 @@ group display names without changing it.
 
 .PARAMETER TagAuthorizationRule
 Complete set of authorization rules as <group-object-id>=<tag1>,<tag2> strings
-or objects with groupId, tags, and an optional
-administrativeUnitName. This parameter replaces the
+or named objects with name, groupId, groupTag, optional
+extensionAttributes (attribute/value map), deviceGroupIds (target security-group
+IDs), and administrativeUnitName. Legacy objects with groupId and tags remain
+supported. This parameter replaces the
 existing policy and is required unless List is specified.
 
 .PARAMETER AdministrativeUnitName
@@ -117,6 +119,7 @@ $moduleManifest = @(
         -LiteralPath (Join-Path $PSScriptRoot '..\src\AutopilotImport.Client\AutopilotImport.Client.psd1') `
         -ErrorAction SilentlyContinue
 ) | Select-Object -First 1
+# Ensure that the AutopilotImport.Client module is located and imported before proceeding.
 if (-not $moduleManifest) {
     throw 'AutopilotImport.Client is not installed beside this script.'
 }
@@ -125,11 +128,13 @@ Import-Module $moduleManifest.FullName -Force
 # Forward only the connection parameters the caller supplied. Unbound values
 # stay absent, so the module resolves them from the client configuration file.
 $parameters = @{}
+# Collect only the connection parameters that the caller explicitly supplied.
 foreach ($name in @('ManagementUrl', 'ApiApplicationIdUri', 'TenantId', 'ConfigPath')) {
     if ($PSBoundParameters.ContainsKey($name)) {
         $parameters[$name] = $PSBoundParameters[$name]
     }
 }
+# Execute the appropriate cmdlet based on the specified parameter set.
 if ($List) {
     AutopilotImport.Client\Get-AutoPilotTagPolicy @parameters
 }

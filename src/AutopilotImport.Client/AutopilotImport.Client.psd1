@@ -1,9 +1,9 @@
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 @{
     RootModule        = 'AutopilotImport.Client.psm1'
-    ModuleVersion     = '1.3.20261016.3'
+    ModuleVersion     = '1.4.20261022.1'
     GUID              = '83797727-048b-4db2-9480-2cd31aeb3f2e'
     Author            = 'andreas.lucas@outlook.com (aka Kili)'
     Description       = 'Client commands for secured Windows Autopilot imports and Group Tag changes.'
@@ -17,6 +17,7 @@
         'Get-AutoPilotImportStatus'
         'Get-AutoPilotImportHistory'
         'Get-AutoPilotTagPolicy'
+        'Get-AutoPilotTagPolicyHistory'
         'Add-AutoPilotTagPolicy'
         'Remove-AutoPilotTagPolicy'
         'Set-AutoPilotTagPolicy'
@@ -24,6 +25,8 @@
         'Update-AutoPilotTagPolicyManager'
         'Add-AutoPilotTagPolicyManager'
         'Remove-AutoPilotTagPolicyManager'
+        'Export-AutoPilotConfiguration'
+        'Restore-AutoPilotConfiguration'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

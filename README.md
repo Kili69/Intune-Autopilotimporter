@@ -12,7 +12,7 @@
 
 ## In this article
 
-<p align="center"><a href="#overview">Overview</a> &bull; <a href="#the-solution">How it works</a> &bull; <a href="#how-to-use-the-autopilot-importer">Usage</a> &bull; <a href="#re-tag-existing-autopilot-devices">Re-Tagging</a> &bull; <a href="#installation">Installation</a> &bull; <a href="#rest-api-reference">REST API</a> &bull; <a href="#troubleshooting">Troubleshooting</a></p>
+<p align="center"><a href="#overview">Overview</a> &bull; <a href="#the-solution">How it works</a> &bull; <a href="#how-to-use-the-autopilot-importer">Usage</a> &bull; <a href="#re-tag-existing-autopilot-devices">Re-Tagging</a> &bull; <a href="#back-up-and-restore-rules-and-policy-managers">Backup &amp; Restore</a> &bull; <a href="#installation">Installation</a> &bull; <a href="#rest-api-reference">REST API</a> &bull; <a href="#troubleshooting">Troubleshooting</a></p>
 
 ## Overview
 
@@ -119,6 +119,13 @@ The frontend performs the first status request immediately after submission.
 While at least one device is pending, it refreshes the status every 15 seconds.
 Polling stops when every device has reached `complete` or `error`. Temporary
 status-request errors are displayed and retried during the next polling cycle.
+While a device is pending, **Details** shows the latest recorded step and what
+the operation is waiting for, for example the Autopilot import of the device
+hash, the start of background processing, or the Entra device (with the retry
+attempt). The Graph import state alone is not shown, because Autopilot reports
+`complete` before the Entra configuration has run. **Changed at** shows when
+the row's status or step last changed; it uses the recorded worker step time
+where available, and hovering shows the full date.
 
 Import IDs and status rows are kept only in the current page's memory. Closing
 or reloading the page ends monitoring and clears the displayed results. The
@@ -319,8 +326,15 @@ or policy scope.
 
 Devices with an empty current Group Tag or a tag different from the authorized
 target tag can be selected. Devices that already use the selected target tag
-are not submitted. The frontend processes up to three selected devices in
-parallel and refreshes pending operations every 15 seconds.
+are not submitted; a notice lists their serial numbers. The frontend processes up to three selected devices in
+parallel and refreshes running Group Tag changes every 5 seconds. While the
+queue worker processes a change, the result shows **Processing** with the most
+recent recorded step, such as the applied Group Tag or extension attributes.
+Import History is reloaded when re-tagging starts and whenever an operation
+finishes; its **Operation ID** column matches the `operationId` returned by the
+API. The live status list shows only running operations: a finished row is
+removed as soon as Import History lists its operation, and the list is hidden
+when nothing remains. Rejected submissions without an operation ID stay visible.
 
 ### Change Group Tags with the PowerShell Module
 
@@ -427,6 +441,16 @@ do {
 The service validates the target Group Tag and device eligibility for every
 request. Submit one POST request per device.
 
+While `workflowStatus` is `pending`, `processingStage` distinguishes `queued`
+from `processing` (the queue worker has started). The response also contains
+`previousGroupTag`, `processingAttempt` and the step timestamps
+`requestReceivedAtUtc`, `queuedAtUtc`, `processingStartedAtUtc`,
+`autopilotGroupTagUpdatedAtUtc`, `entraDeviceResolvedAtUtc`,
+`extensionAttributeUpdatedAtUtc`, `deviceGroupsUpdatedAtUtc`,
+`administrativeUnitAssignedAtUtc`, `processingErrorAtUtc` and
+`processingCompletedAtUtc` as ISO 8601 UTC strings (`null` until recorded).
+Only the user who submitted the change can read its status.
+
 ### Re-Tagging Workflow
 
 For every selected device, the Function:
@@ -447,6 +471,17 @@ available in the import history with their previous and new Group Tags.
 
 Closing or reloading the page stops live polling but does not cancel queued
 changes. Sign in again and use the history view to inspect the final result.
+
+The operation trace lists recorded steps chronologically: request accepted,
+Device Hash submitted, Entra work queued/started, Autopilot import completed,
+Group Tag confirmed, Entra device found, Extension Attributes written, device
+groups reconciled, AU membership reconciled, and completion. Queueing only
+schedules the background worker; it does not mean the device or its assignments
+are ready. Details include written attribute values, target/added/removed group
+object IDs and the target/removed AU names. Already-existing memberships and
+rules without attributes are not reported as new writes. Older records show
+only the timestamps/details actually stored; missing details are not reconstructed
+from today's policy.
 
 ## Autopilot Importer Management
 
@@ -556,6 +591,11 @@ principal name, and Entra object ID. UTC timestamps record when the request was
 received, the Graph import was created, processing was queued and started, the
 Entra device was resolved, its extension attribute was updated, optional
 administrative-unit membership was confirmed, and processing completed.
+Microsoft Graph's error name `None` with error code `0` means no import error:
+the web overview and trace do not display it as a failure. Actual error names,
+nonzero codes and failed statuses remain visible even if a completion timestamp
+exists. A successful Graph import remains pending until its queued processing
+has completed.
 Audit metadata is stored for 30 days in the deployment's private Azure Table
 Storage. The raw DeviceHash and its SHA-256 search index are stored with the
 audit record; product keys are not stored. Neither value is returned in history
@@ -658,8 +698,8 @@ Remove-AutoPilotTagPolicy `
 
 If multiple Entra groups have the same display name, use the object ID. The
 last tag cannot be removed from a group rule. Omit `-GroupTag` to remove that
-complete rule instead. The last policy rule cannot be removed because the
-Function requires at least one group-to-tag rule. Run the command without
+complete rule instead. Policy edits must retain at least one rule; only a
+fresh installation starts without rules. Run the command without
 `-WhatIf` to apply the removal.
 
 After a successful complete-rule removal, the command prints a concise message
@@ -703,7 +743,239 @@ updated policy is saved. Both units with and without
 `isMemberManagementRestricted` enabled are supported. Without a configured
 unit on the matching rule, imports continue without automatic membership.
 
+Members of a restricted management administrative unit (RMAU) can only be
+modified by principals with a role scoped to that unit; tenant-wide Graph
+application permissions are not sufficient. The first import still works
+because the extension attributes are written before the device joins the unit,
+but a later re-tagging fails with HTTP 403. None of the built-in roles that can
+be scoped to an administrative unit may update device extension attributes
+(Cloud Device Administrator, for example, can only enable, disable and delete
+devices). `Install-AutopilotImport.ps1` and `Update-AutopilotImport.ps1`
+therefore read the current rules, create or update the custom Entra role
+**Autopilot Import Device Attribute Writer** (device read and
+`extensionAttributeSet1`-`3` update, covering `extensionAttribute1` to
+`extensionAttribute15`) and assign it to the Function managed identity scoped
+to each restricted unit used by a rule. Custom roles require Microsoft Entra ID
+P1, which restricted administrative units already require. Use
+`-RestrictedAdministrativeUnitName`
+for additional units, for example units that contain devices from a removed
+rule, or `-SkipAdministrativeUnitRole` to skip the assignment. The assignment
+requires a Privileged Role Administrator; if it fails, the installer prints a
+warning with the manual command:
+
+```powershell
+.\scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1 `
+    -ManagedIdentityObjectId '<managed-identity-object-id>' `
+    -AdministrativeUnitName 'RMAU-Privileged' `
+    -TenantId '<tenant-id>' `
+    -ForceGraphSignIn
+```
+
+Managed identity tokens can cache role assignments for up to 24 hours, so a
+newly assigned scoped role may not take effect immediately. Failed processing
+steps are recorded in the import history with the Graph error, the failed step
+and the queue attempt.
+
+#### Named Device Policies and Web Editor
+
+Use the **TagPolicies** tab after signing in as a configured policy manager.
+The tab stays hidden until the server confirms manager access; users without
+that permission do not see it, including in keyboard tab navigation. Authorization
+and dependency failures other than the expected permission-denied response are
+reported rather than silently ignored.
+Load the existing rules, edit their names, tags, attribute/value pairs and Entra
+device target groups. Each new or changed rule has its own **Save rule** button.
+If required fields are empty, saving is blocked with a popup listing all missing
+fields: policy name, authorized user group and Autopilot Group Tag. Other local
+validation failures also explain why the rule cannot be saved in a popup.
+Saving one rule leaves other local drafts unsaved. Removing a rule requires
+confirmation and persists its deletion immediately; the last rule cannot be
+deleted. Adding a rule scrolls to and focuses the new entry.
+
+Rules are initially collapsed; select the rule name to expand its fields.
+**Authorized user group** is a single-line selection with **Change group** to
+open the Entra object picker. Exactly one successfully resolved group is required
+before saving; it can be replaced but not removed.
+For **Entra device target groups**, select **Add group**.
+Enter at least two
+characters from the start of the group name (or an exact object ID), select
+**Search**, then choose a result. Selected groups display their Entra names;
+IDs remain the stored identifiers. Search input is limited to 2–128 characters;
+control characters, line breaks and invisible formatting characters are rejected
+in the dialog. Unicode names and punctuation remain supported.
+Select a device target list entry to enable **Remove group**.
+Searches return up to 25 groups; refine the name
+prefix if more results are available. The search uses the managed identity's
+existing `GroupMember.Read.All` permission and is restricted to policy managers.
+Device target groups support multiple selections and individual removal.
+Administrative Units use the same dialog pattern: **Add AU** is available only
+when no AU is assigned, and **Remove AU** requires selecting the assigned entry.
+The API still stores one AU display name and rejects ambiguous AU names on save.
+
+Extension attributes use individual rows: select `extensionAttribute1` through
+`extensionAttribute15`, enter the value, and add or remove rows as needed.
+Already-selected attributes cannot be selected again. No rows means no extension
+attributes are written: new/edited device-action rules persist an explicit empty
+map and never automatically copy the Group Tag into an attribute. Previously
+existing legacy authorization-only rules retain their compatibility behavior
+until explicitly converted to a device-action rule.
+Attribute values are single-line strings of at most 1024 UTF-16 code units
+(the Microsoft Graph limit). Line breaks, Unicode line/paragraph separators and
+control characters are rejected by both editor and backend. Unicode and
+punctuation are otherwise allowed; Microsoft publishes no narrower character
+whitelist for these string properties. Empty values remain supported.
+
+The required Group Tag validates the existing project limits (128 characters
+and no comma) before saving. These are project/format constraints, not a
+Microsoft character whitelist. The Graph property documentation for
+[Autopilot groupTag](https://learn.microsoft.com/en-us/graph/api/resources/intune-enrollment-windowsautopilotdeviceidentity?view=graph-rest-1.0)
+does not publish a complete allowed-character list. No additional ASCII-only or
+punctuation whitelist is imposed; service-side validation errors are surfaced.
+Successful rule saves display a localized confirmation dialog. The TagPolicies
+page hides Import History; the import selector displays rule names, not group
+object IDs.
+Switching to TagPolicies automatically fetches the current server rules.
+Unsaved local edits require confirmation before they are discarded; load
+failures remain visible. The manual reload button is still available.
+
+Each rule has an optional multiline **Description** immediately below its name
+(maximum 2048 characters). It is persisted with the rule, including through
+PowerShell edits and deployment upgrades.
+
+Each saved rule in **TagPolicies** provides its own **Policy changes** button.
+The popup contains only changes to that rule, including after a rename.
+The button is disabled for new, unsaved rules. Saving shows **Rule updated**.
+**Policy managers** retains its separate **Policy changes** popup.
+It shows the timestamp, authenticated caller, operation ID and before/after
+values. Policy history is visible to policy managers; manager history requires
+Azure Owner/Contributor on the Function App, just like manager administration.
+The backend inserts a requested event before changing configuration and a
+separate confirmation after saving. An unconfirmed request is **not** proof
+that a change was applied; reload the configuration to check uncertain results.
+If the initial audit write fails, the configuration is not changed.
+History summaries show **Information** for normal events and **Error** for
+recorded failures; the request/completion phase remains in the event details.
+Save or confirmation failures produce a separate failure event when audit storage
+is available. A failure event does not imply that a partially completed save was
+rolled back; reload the configuration to verify its actual state.
+
+Management histories are retained indefinitely and are not deleted by the import
+history retention job. There is no application delete action. This is not locked
+immutable storage against Azure administrators: direct Azure/Storage edits,
+including edits outside the application, are outside this audit trail. Changes
+made before auditing was enabled cannot be reconstructed.
+
+Rule IDs are stable and exposed as `ruleId` in REST and `RuleId` in normal
+PowerShell output; descriptions are also present in normal output, not just
+`-Raw`. Preserve the ID when replacing or renaming a rule through REST or
+`Set-AutoPilotTagPolicy`. Client add/remove edits and deployment upgrades retain
+existing IDs. For example:
+
+```powershell
+$rule = Get-AutoPilotTagPolicy | Where-Object Name -eq 'Sales Berlin'
+$page = Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId
+$page.events
+# If continuation is nonempty, request the next page with the same RuleId:
+# Get-AutoPilotTagPolicyHistory -RuleId $rule.RuleId -Continuation $page.continuation
+```
+
+REST uses `GET /api/management/tag-policy?history=true&ruleId=<GUID>`.
+An invalid/missing ID returns 400. History contains only the selected rule's
+before/after values, not other rules from the same save. Filtered pages can be
+empty with a continuation; continue until the token is empty. Existing pre-ID
+snapshots are matched by their initial name/group identity; old confirmation
+events without snapshots cannot be attributed to a rule and are omitted.
+Deleting a rule removes its history button. Existing audit records remain
+retained; deleting rule history is not required for deleting the rule and
+does not affect the permanently retained manager history.
+
+In **Re-Tagging**, **Load devices** manually refreshes the serial-number list.
+The button is disabled while a refresh is running; errors remain visible.
+Import results/history panels are hidden on both management tabs.
+
+The same configuration can be supplied through PowerShell:
+
+```powershell
+Set-AutoPilotTagPolicy -TagAuthorizationRule @(
+    @{
+        name = 'Sales Berlin'
+        description = 'Pre-enrollment settings for Sales devices in Berlin.'
+        groupId = '11111111-1111-1111-1111-111111111111'
+        groupTag = 'Sales'
+        extensionAttributes = @{
+            extensionAttribute1 = 'Sales'
+            extensionAttribute5 = 'Berlin'
+        }
+        deviceGroupIds = @(
+            '22222222-2222-2222-2222-222222222222'
+            '33333333-3333-3333-3333-333333333333'
+        )
+    }
+) -WhatIf
+```
+
+Supply a Group Tag. Intune Scope Tags are not managed: this workflow is limited
+to pre-enrollment devices, which have no Intune managed-device record.
+Existing rules remain readable; a deprecated scope-only rule's effective Group
+Tag is preserved on migration, but its Scope Tag action is discarded. No
+existing Intune tags are deleted. The authorization group
+(`groupId`) and device target groups (`deviceGroupIds`) have different purposes.
+Only static, cloud-managed Entra security groups can be device targets.
+
+On import/re-tagging, configured attribute values are applied and policy-owned
+device group memberships are synchronized; unrelated groups remain untouched.
+No post-enrollment work is scheduled. The hourly history timer only applies
+the normal audit retention, including to older pending Scope Tag records.
+Legacy authorization-only rules keep the deployment-wide extension-attribute
+behavior; named action rules without an attribute map write no attributes.
+
+Existing rules remain compatible. For named rules, prefer full-rule replacement
+over group-based shortcuts, particularly if one user group has several rules.
+These features require the additional Graph application permissions documented
+in [the developer policy interface](./DEVELOPER.md#66-group-tag-policy-management-interface);
+upgrading application code alone does not grant them.
+
 ### Change Group Tag Managers
+
+The web **Policy managers** tab appears only after the server verifies an
+effective Azure `Owner` or `Contributor` assignment on the Function App or an
+ancestor scope. Merely being a policy manager does not expose this tab.
+Current managers are loaded each time the tab is opened. The installing user
+is displayed separately and cannot be removed. Additional users and groups
+are shown by their Entra names; select an entry to enable **Remove manager**.
+**Add manager** opens a live Entra object picker supporting name prefixes,
+user principal name prefixes and exact object IDs. Click **Save managers** to
+apply changes; unsaved edits require discard confirmation before reloading.
+The existing Intune Role Administrator access setting is preserved and shown
+separately; it is not an explicit manager that can be deleted in this list.
+
+Manager administration uses a separate delegated Azure Resource Manager
+`user_impersonation` token for the signed-in user, not elevated Function
+managed-identity write permissions. Before showing either the tab or its
+sign-in button, the server checks the authenticated user's effective Azure
+Owner/Contributor assignments, including group and inherited assignments.
+An explicit policy-manager entry alone never enables either control.
+If an eligible Azure administrator needs ARM consent or another sign-in,
+use **Check Azure sign-in for manager administration**. Until delegated
+authorization succeeds, the tab remains hidden. The normal import and TagPolicies tabs do
+not require this additional consent. The regular installer/updater registers
+this delegated ARM permission on the SPA; tenant policy may require admin
+consent. No new Graph application permissions are required for the picker
+(`User.ReadBasic.All` and `GroupMember.Read.All` are already used).
+
+This visibility check uses a custom role with only
+`Microsoft.Authorization/roleAssignments/read`, assigned to the Function's
+managed identity at the Function App scope. It cannot read app settings,
+change Azure roles or administer managers. The role definition is scoped to
+the resource group. Installation/upgrades require
+`Microsoft.Authorization/roleDefinitions/write` in addition to role-assignment
+writes (for example Owner, or Contributor plus User Access Administrator);
+Role Based Access Control Administrator alone does not create custom roles.
+Verification failures are reported and leave both controls hidden.
+
+Saving manager changes updates the Function App's application settings and
+can restart it. A confirmation is shown first. Concurrent manager-list edits
+are rejected with a reload request; unrelated settings are preserved.
 
 List the installing manager and all additionally configured managers:
 
@@ -741,23 +1013,168 @@ Remove-AutoPilotTagPolicyManager `
 
 The installing user cannot be removed. Authorization for current Intune Role Administrators remains enabled.
 
+## Back Up and Restore Rules and Policy Managers
+
+### 1. Load the PowerShell Commands
+
+Use **PowerShell 7.2 or newer** and the `AutopilotImport.Client` module installed
+by the current installer/updater. Update the Function App as well as the local
+client before using this feature.
+
+Export and restore require the same effective Azure **Owner** or
+**Contributor** rights as Policy Manager administration. Ordinary
+policy-manager rights are not enough. The commands handle authentication,
+reusing a matching Azure sign-in or prompting for one.
+
+```powershell
+Import-Module AutopilotImport.Client -Force
+Get-Command Export-AutoPilotConfiguration, Restore-AutoPilotConfiguration
+```
+
+Both commands use the installed `client.settings.json` by default. Check that
+it selects the intended installation. Use `-ConfigPath` to select a specific
+client-settings file, as shown below.
+
+### 2. Export Rules and Policy Managers
+
+`Export-AutoPilotConfiguration` saves the current rules and policy managers
+to a standalone UTF-8 JSON file. Create a timestamped backup in a protected
+directory:
+
+```powershell
+$backupDirectory = Join-Path $env:LOCALAPPDATA 'Intune-Autopilotimporter\Backups'
+New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+$backupPath = Join-Path $backupDirectory (
+    'autopilot-configuration-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $backupPath
+```
+
+The command returns the created file. An existing file is protected; specify
+`-Force` only when you deliberately want to overwrite it:
+
+```powershell
+Export-AutoPilotConfiguration -Path $backupPath -Force
+```
+
+The backup contains all rules, including their IDs, names, descriptions,
+group/tag assignments, extension attributes and device actions, as well as
+the policy-manager configuration and source metadata.
+It does **not** contain credentials, other app settings,
+device data, audit history or Azure infrastructure. It is a configuration
+backup, not a complete deployment backup.
+
+Protect the file because it contains tenant object IDs and authorization
+configuration. Do not commit it to Git. Keep a protected copy outside the
+machine used for administration.
+
+### 3. Import a Backup and Restore the Configuration
+
+`Restore-AutoPilotConfiguration` imports a previously exported JSON file.
+There is no separate `Import-AutoPilotConfiguration` command.
+Choose the intended backup file explicitly. Before restoring, export the
+current target to a **different** file and arrange a maintenance window:
+restore replaces configuration and can restart the Function App.
+
+```powershell
+$backupPath = 'C:\Backups\autopilot-configuration-to-restore.json'
+$backupDirectory = Join-Path $env:LOCALAPPDATA 'Intune-Autopilotimporter\Backups'
+New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+$beforeRestorePath = Join-Path $backupDirectory (
+    'before-restore-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $beforeRestorePath
+
+# Preview the target and operation without network requests or writes.
+Restore-AutoPilotConfiguration -Path $backupPath -WhatIf
+
+# Apply after checking the destination and accepting the confirmation.
+$result = Restore-AutoPilotConfiguration -Path $backupPath
+$result
+```
+
+The command asks for confirmation and returns a result only for a confirmed
+complete restore. A cancelled confirmation or `-WhatIf` does not import data.
+`-WhatIf` does not contact Azure, so it does **not** validate live permissions,
+directory objects or the server's current configuration.
+
+Restore **replaces**, rather than merges, all rules and additional managers.
+It also restores whether Intune Role Administrators have access, but retains the
+**target installation's protected installer**. The source installer is not
+automatically added as a manager. Empty rule/manager arrays are supported;
+empty rules disable all policy-authorized imports. Cross-tenant restores are
+rejected.
+
+To use another installation in the same tenant, select its settings file
+consistently for the safety backup and restore:
+
+```powershell
+Export-AutoPilotConfiguration -Path '.\target-before-restore.json' `
+    -ConfigPath '.\target-client.settings.json'
+Restore-AutoPilotConfiguration -Path $backupPath `
+    -ConfigPath '.\target-client.settings.json'
+```
+
+For the same configured installation, a custom-domain URL can be selected
+without changing the saved tenant or API application settings:
+
+```powershell
+Export-AutoPilotConfiguration -Path '.\custom-domain-backup.json' `
+    -ManagementUrl 'https://autopilot.contoso.com'
+
+Restore-AutoPilotConfiguration -Path '.\custom-domain-backup.json' `
+    -ManagementUrl 'https://autopilot.contoso.com'
+```
+
+### 4. Verify and Handle Errors
+
+After the Function App is available again, export a separate verification file:
+
+```powershell
+$verificationPath = Join-Path $backupDirectory (
+    'after-restore-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.json'
+)
+Export-AutoPilotConfiguration -Path $verificationPath
+```
+
+Compare the rules and manager settings with the original backup, not just
+their counts. Check descriptions, group/tag assignments, attributes, device
+actions, additional managers and Intune Role Administrator access. Export
+timestamps change, and another installation retains its own source metadata
+and protected installer. Also check the configuration and Policy changes
+histories in the web UI.
+
+A restore is **not atomic**: an error or interrupted connection can occur
+after some data has already changed. There is no automatic rollback. Do not
+retry blindly; preserve the backups and error details, then inspect the
+current configuration and histories first.
+
+Developer integrations are documented separately in the
+[backup/restore REST API contract](DEVELOPER.md#661-configuration-backup-and-restore-rest-api).
+
 ## Installation
 
 ### Prerequisites
 
 - An Azure subscription and an active Intune tenant
 - For the simplest end-to-end installation, the installing administrator needs the Azure `Owner` role at subscription scope and the Entra ID `Global Administrator` role. For a least-privilege installation, see [Required Roles and Permissions](#required-roles-and-permissions).
-- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
+- For a least-privilege Azure installation, the installing administrator needs at least `Reader` at subscription scope and, on the target resource group, `Contributor` plus `User Access Administrator` (including custom role definition writes); alternatively, `Owner` on the target resource group. Resource-group write permissions without subscription-level read access are not sufficient.
 - For a least-privilege Entra installation, the installing administrator needs the `Application Administrator`, `Privileged Role Administrator`, and `Global Reader` directory roles.
 - PowerShell 7.2 or later on the importing computer
 - An Autopilot CSV containing `Device Serial Number` and `Hardware Hash`
 - For deployment: `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.Websites`, and the Bicep CLI; `-InstallMissingModules` installs missing components. See [Appendix: Bicep CLI in Restricted Environments](#appendix-bicep-cli-in-restricted-environments) when automatic downloads are blocked.
 - For the one-time permission assignment: `Microsoft.Graph.Authentication`
 
+Installer and updater install missing PowerShell modules for the current user;
+local administrator rights are not required for these dependencies. They prefer
+`Install-PSResource` when available and otherwise use `Install-Module`. A failed
+dependency installation stops setup immediately, preserving the original error
+instead of continuing into a misleading module-import failure.
+
 ### Quick Installation Guide
 
 1. Obtain the Azure, Entra ID, and delegated Microsoft Graph permissions listed under [Required Roles and Permissions](#required-roles-and-permissions). The installing administrator needs all applicable permissions for the complete setup.
-2. Download `Intune-autopilotImporter-<branch><version>.zip` and extract it. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
+2. Download `Intune-autopilotImporter-main<version>.zip` from the [latest GitHub Release](https://github.com/Kili69/Intune-Autopilotimporter/releases/latest) and extract it. Choose the installation ZIP asset, not GitHub's automatically generated source archive. Open PowerShell 7 in the extracted package directory containing `Install-AutopilotImport.ps1`.
 3. Start the interactive installation. Missing PowerShell modules and the Bicep CLI are installed when required:
 
 ```powershell
@@ -790,8 +1207,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westus2' `
     -FunctionAppName 'func-autopilot-contoso' `
-    -TagAuthorizationRule `
-        '22222222-2222-2222-2222-222222222222=Standard,Kiosk' `
     -InstallMissingModules `
     -Confirm:$false
 ```
@@ -801,6 +1216,37 @@ examples. Entra application internals, manual alternatives, Graph permission
 assignment, Azure deployment, Function publishing, pipeline, update, package,
 and Bicep details are documented in the
 [Developer Guide](DEVELOPER.md#deployment-and-installation-internals).
+
+Installation and updates deploy the Function and its Azure/Entra dependencies
+and install the local Client Tools. They do not ask for rules, groups, tags, or
+administrative units. New installations start with no rules and grant no import
+access until a manager creates the first valid rule in **TagPolicies** or with
+the client policy commands. Updates leave the policy blob untouched and preserve
+the legacy `TAG_AUTHORIZATION_POLICY` application setting without reformatting
+its rules. The installer no longer accepts `-TagAuthorizationRule`,
+`-AdministrativeUnitName`, or `-Mau`; use the policy-management commands instead.
+The updater also no longer accepts `-ManagementUrl`, since it does not access
+the policy management endpoint.
+
+New installations use **Linux Flex Consumption (FC1)** with private Storage.
+The installer creates an isolated VNet, separate Function/private-endpoint
+subnets, and three private endpoints with linked DNS zones for **Blob, Queue
+and Table**. Storage public network access, anonymous blobs and shared-key
+authentication are disabled. The UI remains publicly reachable; protected API
+routes still require Entra authentication.
+
+Windows Consumption installations are not converted by regular updates; a
+regular update preserves the existing hosting model. To migrate an existing
+installation to private endpoints, follow
+[HOWTO-Migrate-To-Private-Endpoints.md](HOWTO-Migrate-To-Private-Endpoints.md).
+
+Flex runtime ZIPs include the compatible `Az.Accounts` version from
+`requirements.psd1` under `Modules`; automatic PowerShell Managed Dependencies
+are disabled for that ZIP only. If the compatible module is not installed
+locally, packaging downloads it from PSGallery. Publishing uses **OneDeploy**
+with Azure bearer authentication, not legacy ZIP Deploy or direct Storage
+uploads. Private endpoints and DNS have additional Azure charges; no
+always-ready Flex instances are configured.
 
 ##### Distribute the Import Client to Additional PCs
 
@@ -899,8 +1345,8 @@ For a standard installation, one installing administrator performs the complete 
 
 | Identity | Scope | Required role or permission | Purpose |
 | --- | --- | --- | --- |
-| Installing administrator | Azure subscription | `Contributor` plus `Role Based Access Control Administrator` or `User Access Administrator`; alternatively `Owner` | Creates the resource group and resources, then assigns the scoped Storage data roles required for keyless access. |
-| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `Role Based Access Control Administrator` or `User Access Administrator` on the resource group; alternatively `Owner` on the resource group | Deploys and manages resources in the existing resource group while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
+| Installing administrator | Azure subscription | `Contributor` plus `User Access Administrator` including custom role definition writes; alternatively `Owner` | Creates the resource group and resources, the manager-access reader custom role, and scoped identity role assignments. |
+| Installing administrator | Existing Azure resource group and Azure subscription | At least `Reader` at subscription scope, plus `Contributor` and `User Access Administrator` including custom role definition writes on the resource group; alternatively `Owner` on the resource group | Deploys resources, custom role and assignments while retaining the subscription-level read access required by the installer. Resource-group write permissions alone are not sufficient. |
 | Installing administrator | Deployed Storage Account | `Storage Blob Data Contributor` | Uploads the initial Group Tag authorization policy using the signed-in Entra identity. Assigned automatically by the installer. |
 | Installing administrator | Entra ID | Application owner, `Application Administrator`, or `Cloud Application Administrator` | Required when the app registration or enterprise application must be created or changed. An already compliant application is reused without a write. |
 | Installing administrator | Entra ID | `Global Reader` | Reads tenant and directory configuration required during installation. |
@@ -908,7 +1354,8 @@ For a standard installation, one installing administrator performs the complete 
 | Installing administrator | Entra ID | `Privileged Role Administrator` or `Global Administrator` | Assigns the Microsoft Graph application permission to the Function App managed identity. |
 | Installing administrator | Microsoft Graph, delegated | `Application.Read.All`, `AppRoleAssignment.ReadWrite.All` | Resolves the Microsoft Graph service principal and creates the app-role assignment for the managed identity. Admin consent is required. |
 | Function App managed identity | Microsoft Graph, application | `DeviceManagementServiceConfig.ReadWrite.All` | Imports Windows Autopilot device identities. |
-| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks current membership of the Intune RBAC role `Intune Role Administrator` for Group Tag management requests. |
+| Function App managed identity | Microsoft Graph, application | `DeviceManagementRBAC.Read.All` | Checks Intune role membership for policy-manager authorization. |
+| Function App managed identity | Microsoft Graph, application | `GroupMember.ReadWrite.All` | Synchronizes policy-owned Entra device group memberships. |
 | Function App managed identity | Microsoft Graph, application | `GroupMember.Read.All`, `User.ReadBasic.All` | Checks the importing user's current membership in the Entra groups configured by the Group Tag policy. |
 | Function App managed identity | Microsoft Graph, application | `Device.ReadWrite.All` | Writes the authorized Group Tag to the configured Entra device extension attribute after the device is created. |
 | Function App managed identity | Microsoft Graph, application | `AdministrativeUnit.ReadWrite.All` | Resolves the optional MAU and adds the imported Entra device as a member. |
@@ -924,16 +1371,25 @@ and assign an authorized Group Tag. The same queued post-processing used after i
 the configured Entra extension attribute, removes memberships from other
 administrative units managed by the Tag policy, and adds the target rule's
 administrative unit. Current Entra group and administrative-unit memberships
-are shown for each eligible device.
+are shown for each eligible device. After a successful change the list shows
+the new Group Tag immediately, even while Intune still reports the previous
+tag for a short propagation delay.
 | Group Tag manager | Function API | Installer, configured manager user/group, or `Intune Role Administrator` | Reads and replaces the group-to-tag policy without Azure resource permissions. |
 | Manager-list administrator | Azure Function App | `Owner` or `Contributor` at Function or ancestor scope | Adds or removes explicitly configured manager users and groups. The management script rejects other roles. |
 
-The standard installer creates three role assignments scoped to the deployed Storage Account. The installing user receives `Storage Blob Data Contributor`, and the Function managed identity receives `Storage Blob Data Owner` and
-`Storage Queue Data Contributor`. The installer therefore needs both resource deployment permissions and
+The Function managed identity receives Storage-scoped `Storage Blob Data Owner`,
+`Storage Queue Data Contributor` and `Storage Table Data Contributor` roles.
+New private installations do not grant the installing user direct Storage data
+access. The legacy Windows update path retains the existing installer blob
+role. The installer therefore needs both resource deployment permissions and
 `Microsoft.Authorization/roleAssignments/write`. If organizational policy uses custom Azure roles, they must also allow Function ZIP publishing for the resource types defined in `src/Infrastructure/main.bicep`.
 
-The Consumption-plan deployment requires the Storage Account data endpoint to permit public network access. Blob public access and shared-key authentication remain disabled; both the installer and Function authenticate with Entra ID.
-If Azure Policy requires `PublicNetworkAccess=Disabled`, this architecture requires a VNet-integrated hosting plan, Storage Private Endpoints, and private DNS instead of the standard Consumption template.
+The legacy Windows Consumption update path still requires public Storage network
+reachability. If policy disables it, the installer stops rather than bypassing
+policy or silently changing hosting. Use a separately planned new Flex
+installation with private Storage instead. The Flex path also requires network
+resource creation and subnet-join permissions, and registered `Microsoft.Network`
+and `Microsoft.App` providers.
 
 Importing users require no Azure subscription role, Entra directory role, Microsoft Graph permission, or direct Intune administrative role. Authorization is provided by the configured group-to-tag rule. The Function's managed
 identity holds the Intune-related Graph permissions independently of the user.
@@ -954,9 +1410,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -Location 'westeurope' `
     -FunctionAppName '<globally-unique-name>' `
     -DeviceTagExtensionAttribute 'extensionAttribute1' `
-    -TagAuthorizationRule `
-        '11111111-1111-1111-1111-111111111111=Autopilot-Standard,Autopilot-Kiosk' `
-    -AdministrativeUnitName 'MAU-Autopilot-Devices' `
     -TagManagerPrincipalId `
         '22222222-2222-2222-2222-222222222222' `
     -ClientToolsPath 'C:\Tools\AutopilotImport' `
@@ -968,11 +1421,9 @@ The most commonly used options are:
 
 - `-SubscriptionId`, `-TenantId`, `-ResourceGroupName`, `-Location`, and
   `-FunctionAppName` select the Azure deployment target.
-- `-TagAuthorizationRule` defines one or more Entra group-to-Group Tag rules.
-- `-AdministrativeUnitName` assigns the default administrative unit used by
-  the configured Group Tag policy.
 - `-DeviceTagExtensionAttribute` selects the Entra device extension attribute
-  that stores the authorized Group Tag.
+  that stores the authorized Group Tag for legacy rules; it defaults to
+  `extensionAttribute1` without an installation prompt.
 - `-TagManagerPrincipalId` adds an initial user or group that can manage the
   Group Tag policy.
 - `-EntraClientId` selects an existing API application instead of searching by
@@ -1066,6 +1517,11 @@ errors with Application Insights logs.
 | `GET` | `/api/management/imports?top=<count>` | Group Tag manager | Read recent import operations |
 | `GET` | `/api/management/tag-policy` | Group Tag manager | Read the complete Group Tag policy |
 | `PUT` | `/api/management/tag-policy` | Group Tag manager | Replace the complete Group Tag policy |
+| `GET`, `PUT` | `/api/management/policy-managers` | Azure Owner/Contributor, API and delegated ARM authentication | Read/update explicit managers; `?search=<text>` searches users/groups |
+| `GET` | `/api/management/policy-managers?access=true` | API authentication | Check only the caller's Azure Owner/Contributor eligibility; no ARM browser consent or manager data |
+
+For configuration export/import integrations, see the
+[backup/restore REST API contract](DEVELOPER.md#661-configuration-backup-and-restore-rest-api).
 
 ### Get Authorized Group Tags
 
@@ -1140,7 +1596,18 @@ device attribute and RMAU processing state:
 ```
 
 Only `workflowStatus: complete` confirms completion of both the Intune import
-and the configured Entra post-processing.
+and the configured Entra post-processing. `workflowStatus: error` with
+`processingError` and `processingErrorStep` reports a background processing
+failure that needs administrator action, such as a missing role for a
+restricted management administrative unit. The queue still retries the
+operation, so a later successful attempt changes the status to `complete`.
+The Group Tag change status endpoint (`GET /api/devices/tags?operationId=...`)
+reports the same error fields. Import history records additionally expose
+`processingErrorAtUtc`, `processingFailedAtUtc`, `processingError`,
+`processingErrorStep`, `processingErrorStatusCode`, `processingAttempt` and
+`processingMaxAttempts`; `Get-AutoPilotImportHistory` returns them as
+`ProcessingError*`, `ProcessingFailedAtUtc`, `ProcessingAttempt` and
+`ProcessingMaxAttempts`.
 
 ### Get Import History
 
@@ -1167,7 +1634,9 @@ Content-Type: application/json
 ```
 
 `top` is optional, defaults to `100`, and must be between `1` and `1000`. Only
-records from the last 30 days are returned. The response intentionally excludes
+records from the last 30 days are returned. All `*AtUtc` timestamps are ISO
+8601 UTC strings. For Group Tag changes, `importId` is the `operationId`
+returned by the tag assignment API. The response intentionally excludes
 raw DeviceHashes, their indexes, and product keys:
 
 ```json
@@ -1435,8 +1904,9 @@ sufficient:
 
 Keep the native `https://<function-app-name>.azurewebsites.net` hostname active
 during and after the migration. It remains useful for diagnostics and is
-required when `Update-AutopilotImport.ps1 -FunctionUrl` discovers the Azure
-deployment.
+also supported when `Update-AutopilotImport.ps1 -FunctionUrl` discovers the Azure
+deployment. The updater accepts a custom domain once it is bound to the
+Function App in Azure; a DNS alias alone is not enough.
 
 ### 1. Create the Company DNS Records
 
@@ -1484,6 +1954,9 @@ https://autopilot.contoso.com/api/ui/index.html
 https://autopilot.contoso.com/api/ui/auth.html
 ```
 
+Enter each URL as a separate SPA redirect entry. Concatenating `index.html`
+and `auth.html` into one entry causes sign-in error `AADSTS50011`.
+
 Redirect URIs are case-sensitive and must match the complete URL returned by
 `https://autopilot.contoso.com/api/ui/config`. Keep the existing
 `index.html` and `auth.html` redirect URIs for the native
@@ -1517,14 +1990,21 @@ The OOBE helper can then open the company URL directly:
 
 The endpoint values in `client.settings.json` may continue to use the native
 `azurewebsites.net` hostname. Change them to the company hostname only when the
-PowerShell client must also call the APIs through that hostname. For deployment
-discovery and updates, continue to use the native hostname:
+PowerShell client must also call the APIs through that hostname. For deployment discovery and updates, use either the native hostname or the
+bound company hostname:
 
 ```powershell
 .\Update-AutopilotImport.ps1 `
-    -FunctionUrl 'https://<function-app-name>.azurewebsites.net' `
+    -FunctionUrl 'https://autopilot.contoso.com' `
     -WhatIf
 ```
+
+Remove `-WhatIf` to perform the update. The signed-in Azure account must be
+able to read the Function App and its hostname metadata/bindings. Discovery
+searches accessible subscriptions and requires exactly one match; use
+`-SubscriptionId '<subscription-id>'` to narrow the search. The updater
+reports inaccessible subscriptions or bindings instead of silently skipping
+them. It does not use DNS to guess an Azure resource.
 
 For current platform details, see the Microsoft guidance for
 [mapping an existing custom domain](https://learn.microsoft.com/azure/app-service/app-service-web-tutorial-custom-domain),

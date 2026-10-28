@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -67,17 +67,17 @@ function Invoke-GitCommand {
         [Parameter(Mandatory)]
         [string[]] $ArgumentList
     )
-
+    # Run the git command and capture its output.
     $output = @(& git @ArgumentList 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "git $($ArgumentList -join ' ') failed: $($output -join [Environment]::NewLine)"
     }
     return $output
 }
-
+# Validate that the head commit exists in the Git repository.
 Invoke-GitCommand -ArgumentList @('rev-parse', '--verify', $HeadCommit) |
     Out-Null
-
+# Validate that the base commit exists in the Git repository, unless it is an all-zero SHA.
 $commits = @(
     # Git reports an all-zero SHA as the base when a branch is pushed for the
     # first time. There is no predecessor to compare against, so only the head

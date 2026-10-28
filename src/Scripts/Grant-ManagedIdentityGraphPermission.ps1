@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 #Requires -Modules Microsoft.Graph.Authentication
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -56,8 +56,14 @@ param(
 
     [guid] $TenantId,
 
-    [switch] $ForceGraphSignIn
+    [switch] $ForceGraphSignIn,
+
+    [securestring] $GraphAccessToken
 )
+
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
 $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 # Application permissions required by the Function App at runtime. The managed
@@ -67,8 +73,8 @@ $graphApplicationId = '00000003-0000-0000-c000-000000000000'
 #   and adds the imported device as a member.
 # - DeviceManagementServiceConfig.ReadWrite.All imports the Autopilot device
 #   identity into Intune.
-# - DeviceManagementRBAC.Read.All checks Intune role membership before a Group
-#   Tag change is accepted.
+# - DeviceManagementRBAC.Read.All checks Intune role assignments.
+# - GroupMember.ReadWrite.All synchronizes static security-group memberships.
 # - Device.ReadWrite.All writes the authorized Group Tag to the configured
 #   Entra device extension attribute.
 # - GroupMember.Read.All and User.ReadBasic.All evaluate the calling user's
@@ -77,34 +83,47 @@ $permissionNames = @(
     'AdministrativeUnit.ReadWrite.All'
     'DeviceManagementServiceConfig.ReadWrite.All'
     'DeviceManagementRBAC.Read.All'
+    'GroupMember.ReadWrite.All'
     'Device.ReadWrite.All'
     'GroupMember.Read.All'
     'User.ReadBasic.All'
 )
-
+# Connect to Microsoft Graph with the appropriate authentication method.
 if ($ForceGraphSignIn) {
     Disconnect-MgGraph -SignOutFromBroker -ErrorAction SilentlyContinue | Out-Null
 }
-
-$connectParameters = @{
-    Scopes    = @('Application.Read.All', 'AppRoleAssignment.ReadWrite.All')
-    NoWelcome = $true
+# Prepare the connection parameters for Microsoft Graph.
+$connectParameters = @{ NoWelcome = $true }
+# This hashtable will store the parameters used to connect to Microsoft Graph.
+if ($GraphAccessToken) {
+    $connectParameters.AccessToken = $GraphAccessToken
 }
-if ($TenantId -ne [guid]::Empty) {
-    $connectParameters.TenantId = $TenantId
-}
-if ($ForceGraphSignIn) {
-    $connectParameters.UseDeviceCode = $true
-    Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+else {
+    # Use device code authentication if no access token is provided and force sign-in is not requested.
+    $connectParameters.Scopes = @('Application.Read.All', 'AppRoleAssignment.ReadWrite.All')
+    # Specify the scopes required for device code authentication.
+    if ($TenantId -ne [guid]::Empty) {
+        $connectParameters.TenantId = $TenantId
+    }
+    # If a tenant ID is specified, include it in the connection parameters.
+    if ($ForceGraphSignIn) {
+        $connectParameters.UseDeviceCode = $true
+        Write-Host "Sign in with the Entra administrator for tenant '$TenantId'."
+    }
 }
 Connect-MgGraph @connectParameters
-
+# Retrieve the current Microsoft Graph context to verify the tenant and account.
 $graphContext = Get-MgContext
+# Verify that the tenant ID of the current context matches the expected tenant ID.
+if ($TenantId -ne [guid]::Empty -and [string] $graphContext.TenantId -ne $TenantId.ToString()) {
+    throw "The Microsoft Graph token belongs to a different tenant than '$TenantId'."
+}
 Write-Host "Microsoft Graph account: $($graphContext.Account)"
 
 # Microsoft Graph exposes its application permissions as app roles on its own
 # service principal. Read them to translate permission names into role IDs.
 $filter = [uri]::EscapeDataString("appId eq '$graphApplicationId'")
+# Retrieve the service principal for Microsoft Graph to translate permission names into role IDs.
 $graphResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=$filter&`$select=id,appRoles"
@@ -114,10 +133,11 @@ $graphServicePrincipal = @($graphResponse['value']) | Select-Object -First 1
 $assignmentResponse = Invoke-MgGraphRequest `
     -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments?`$select=resourceId,appRoleId"
+# Filter the existing assignments to include only those for the Microsoft Graph service principal.
 $existingAssignments = @($assignmentResponse['value']) | Where-Object {
         [string] $_.resourceId -eq [string] $graphServicePrincipal.id
     }
-
+# Iterate over the requested permission names and assign them if not already assigned.
 foreach ($permissionName in $permissionNames) {
     # Restrict the lookup to application roles. Graph publishes delegated
     # permissions under the same name, but those cannot be assigned to a
@@ -125,14 +145,15 @@ foreach ($permissionName in $permissionNames) {
     $permission = $graphServicePrincipal.appRoles | Where-Object {
         $_.value -eq $permissionName -and $_.allowedMemberTypes -contains 'Application'
     } | Select-Object -First 1
-
+    # Throw an error if the requested permission is not found among the application roles.
     if (-not $permission) {
         throw "Microsoft Graph application permission '$permissionName' was not found."
     }
-
+    # Check if the permission is already assigned to avoid duplicate assignments.
     $existingAssignment = @($existingAssignments | Where-Object {
         [string] $_.appRoleId -eq [string] $permission.id
     }) | Select-Object -First 1
+    # If an existing assignment is found, skip to the next permission.
     if ($existingAssignment) {
         Write-Output "Permission '$permissionName' is already assigned."
         continue
@@ -141,6 +162,7 @@ foreach ($permissionName in $permissionNames) {
     try {
         # principalId is the managed identity, resourceId is Microsoft Graph,
         # and appRoleId is the granted application permission.
+        # Attempt to assign the application permission to the managed identity.
         Invoke-MgGraphRequest `
             -Method POST `
             -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ManagedIdentityObjectId/appRoleAssignments" `

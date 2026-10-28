@@ -1,4 +1,4 @@
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -15,6 +15,13 @@ GET returns the complete normalized policy. PUT accepts the replacement rules
 in either a top-level "policy" or "rules" property, normalizes and validates the
 rules, verifies referenced administrative units through Microsoft Graph, and
 writes the resulting JSON to configuration/tag-authorization-policy.json.
+GET with groupSearch instead returns up to 25 Entra groups whose names start
+with the supplied text, or an exact object-ID match. Requires 2..128 characters.
+GET with auSearch performs the equivalent lookup for Administrative Units.
+GET with history=true and ruleId=<GUID> returns only that rule's changed
+snapshots. continuation scans the next page of 25 stored events; a filtered
+page may be empty with a continuation. Manager authorization applies to all
+reads. ruleId must be retained in replacement rules, including renames.
 
 The current policy is read from the blob input binding. If the blob is empty,
 TAG_AUTHORIZATION_POLICY is used as the fallback for reads. Responses include
@@ -37,8 +44,9 @@ configuration/tag-authorization-policy.json.
 
 .OUTPUTS
 Writes an HTTP response to the Response output binding. Successful responses
-contain "policy", "functionVersion", and "correlationId". A successful PUT also
-writes the normalized policy JSON to the UpdatedTagPolicyBlob output binding.
+contain "policy", "functionVersion", and "correlationId". PUT inserts a requested
+audit event, conditionally writes the blob synchronously, then inserts an applied
+event. A missing confirmation is reported as an error, not a successful save.
 
 .NOTES
 The HTTP trigger uses anonymous function-level authentication because Microsoft
@@ -202,7 +210,7 @@ None.
 
 .NOTES
 Resolution errors are intentionally allowed to propagate so the complete PUT
-request fails before the blob output binding is written.
+request fails before the policy blob is written.
 #>
 function Assert-SubmittedAdministrativeUnitsExist {
     param(
@@ -292,6 +300,57 @@ if (-not $isManager) {
     return
 }
 
+if ($Request.Method -ieq 'GET' -and $Request.Query -and $Request.Query['history'] -eq 'true') {
+    $ruleId = [guid]::Empty
+    if (-not [guid]::TryParse([string] $Request.Query['ruleId'], [ref] $ruleId) -or $ruleId -eq [guid]::Empty) {
+        Send-JsonResponse -StatusCode BadRequest -Body @{ error = 'ruleIdRequired'; correlationId = $correlationId }
+        return
+    }
+    try {
+        $history = Get-ManagementAuditHistory -Kind policies -RuleId $ruleId -Continuation ([string] $Request.Query['continuation'])
+        $history.ruleId = $ruleId.ToString()
+        Send-JsonResponse -StatusCode OK -Body $history
+    } catch [ArgumentException] {
+        Send-JsonResponse -StatusCode BadRequest -Body @{ error = 'invalidHistoryContinuation'; correlationId = $correlationId }
+    } catch {
+        Write-Error "[$correlationId] Policy history read failed: $($_.Exception.Message)" -ErrorAction Continue
+        Send-JsonResponse -StatusCode BadGateway -Body @{ error = 'policyHistoryUnavailable'; correlationId = $correlationId }
+    }
+    return
+}
+$searchKey = if ($null -ne $Request.Query -and $null -ne $Request.Query['auSearch']) { 'auSearch' } else { 'groupSearch' }
+if ($Request.Method -ieq 'GET' -and $null -ne $Request.Query -and $null -ne $Request.Query[$searchKey]) {
+    $searchText = ([string] $Request.Query[$searchKey]).Trim()
+    if ($searchText.Length -lt 2 -or $searchText.Length -gt 128) {
+        Send-JsonResponse -StatusCode BadRequest -Body @{
+            error = 'invalidGroupSearch'
+            correlationId = $correlationId
+        }
+        return
+    }
+    try {
+        $tokenResult = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com/' -ErrorAction Stop
+        $graphToken = if ($tokenResult.Token -is [Security.SecureString]) { $tokenResult.Token } else {
+            ConvertTo-SecureString ([string] $tokenResult.Token) -AsPlainText -Force
+        }
+        $objectType = if ($searchKey -eq 'auSearch') { 'administrativeUnits' } else { 'groups' }
+        $result = Find-EntraPolicyGroups -SearchText $searchText -ObjectType $objectType -AccessToken $graphToken
+        Send-JsonResponse -StatusCode OK -Body @{
+            groups = @($result.groups)
+            hasMore = $result.hasMore
+            correlationId = $correlationId
+        }
+    }
+    catch {
+        Write-Error "[$correlationId] Entra group search failed: $($_.Exception.Message)"
+        Send-JsonResponse -StatusCode BadGateway -Body @{
+            error = 'groupSearchFailed'
+            correlationId = $correlationId
+        }
+    }
+    return
+}
+
 $currentPolicyJson = ConvertFrom-BlobBindingContent -Value $TagPolicyBlob
 if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
     # Preserve the deployment-provided policy until the first successful PUT
@@ -299,10 +358,13 @@ if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
     $currentPolicyJson = $env:TAG_AUTHORIZATION_POLICY
 }
 
-# GET is read-only and returns the policy exactly as stored or deployed.
+# GET is read-only and returns the normalized policy.
 if ($Request.Method -ieq 'GET') {
     try {
-        $currentPolicy = @($currentPolicyJson | ConvertFrom-Json)
+        if ([string]::IsNullOrWhiteSpace($currentPolicyJson)) {
+            throw 'Tag authorization policy is missing.'
+        }
+        $currentPolicy = ConvertTo-TagAuthorizationPolicy -Rules @($currentPolicyJson | ConvertFrom-Json -ErrorAction Stop) -AllowEmpty
     }
     catch {
         Send-JsonResponse -StatusCode InternalServerError -Body @{
@@ -335,7 +397,13 @@ try {
         -not [string]::IsNullOrWhiteSpace(
             [string] $_.administrativeUnitName)
     })
-    if ($configuredAdministrativeUnits.Count -gt 0) {
+    $deviceGroupIds = @($updatedPolicy | ForEach-Object {
+        if ($_.PSObject.Properties['deviceGroupIds']) { $_.deviceGroupIds }
+    } | Sort-Object -Unique)
+    foreach ($tag in @($updatedPolicy | ForEach-Object { $_.tags } | Sort-Object -Unique)) {
+        $null = Get-DevicePolicyActions -Policy $updatedPolicy -GroupTag $tag
+    }
+    if ($configuredAdministrativeUnits.Count -gt 0 -or $deviceGroupIds.Count -gt 0) {
         # Az.Accounts versions differ in whether Token is already a
         # SecureString; downstream Graph helpers consistently require one.
         $tokenResult = Get-AzAccessToken `
@@ -349,13 +417,15 @@ try {
                 -AsPlainText `
                 -Force
         }
-        Assert-SubmittedAdministrativeUnitsExist `
-            -Policy $updatedPolicy `
-            -AccessToken $graphToken
+        if ($configuredAdministrativeUnits.Count -gt 0) {
+            Assert-SubmittedAdministrativeUnitsExist -Policy $updatedPolicy -AccessToken $graphToken
+        }
+        Assert-DevicePolicyGroups -GroupIds $deviceGroupIds -AccessToken $graphToken
     }
-    $updatedPolicyJson = $updatedPolicy | ConvertTo-Json -Depth 4 -Compress
+    $updatedPolicyJson = ConvertTo-Json -InputObject @($updatedPolicy) -Depth 8 -Compress
 }
 catch {
+    Write-Error "[$correlationId] Policy validation or Graph setup failed: $($_.Exception.Message)" -ErrorAction Continue
     Send-JsonResponse -StatusCode BadRequest -Body @{
         error         = 'invalidTagPolicy'
         message       = $_.Exception.Message
@@ -364,11 +434,35 @@ catch {
     return
 }
 
-# Bind the blob only after the complete policy and all external references have
-# passed validation, preventing partial or unusable configuration updates.
-Push-OutputBinding -Name UpdatedTagPolicyBlob -Value $updatedPolicyJson
+$auditRequested = $false
+try {
+    $before = @($currentPolicyJson | ConvertFrom-Json -ErrorAction Stop)
+    Write-ManagementAuditEvent -Kind policies -OperationId $correlationId -Stage requested `
+        -Principal $principal -Before $before -After $updatedPolicy
+    $auditRequested = $true
+    Set-ManagementPolicyBlob -ExpectedJson $currentPolicyJson -Json $updatedPolicyJson
+    Write-ManagementAuditEvent -Kind policies -OperationId $correlationId -Stage applied `
+        -Principal $principal -Before $before -After $updatedPolicy
+} catch {
+    Write-Error "[$correlationId] Policy persistence/audit failed: $($_.Exception.Message)" -ErrorAction Continue
+    if ($auditRequested) {
+        try {
+            Write-ManagementAuditEvent -Kind policies -OperationId $correlationId -Stage failed `
+                -Principal $principal -Before $before -After $updatedPolicy
+        } catch {
+            Write-Error "[$correlationId] Policy failure audit could not be recorded: $($_.Exception.Message)" -ErrorAction Continue
+        }
+    }
+    Send-JsonResponse -StatusCode BadGateway -Body @{
+        error = 'policySaveUnconfirmed'
+        message = 'Policy save or audit confirmation failed. Reload policies and history to verify the current state.'
+        correlationId = $correlationId
+    }
+    return
+}
 Send-JsonResponse -StatusCode OK -Body @{
     policy          = $updatedPolicy
     functionVersion = $functionVersion
     correlationId   = $correlationId
+    message         = 'Policy rules updated.'
 }

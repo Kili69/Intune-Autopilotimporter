@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.3.20261016.3
+# Project-Version: 1.4.20261022.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -12,14 +12,23 @@ Deploys the Autopilot import Azure Function and publishes its code.
 
 .DESCRIPTION
 Prompts for missing deployment values, selects the Azure subscription, creates
-or updates the resource group and Entra application, deploys infra/main.bicep,
-grants the managed identity its Microsoft Graph application permission,
+or updates the resource group and Entra applications, deploys the Bicep template,
+grants the managed identity its Microsoft Graph application permissions,
 publishes the Function package, and verifies that Easy Auth rejects anonymous
 requests.
+
+An existing target Function App normally delegates to the updater, which reads
+and preserves deployed configuration. SkipExistingDeploymentDetection bypasses
+that delegation; it does not itself delete resources or reset stored data.
 
 The installer also installs AutopilotImport.Client with client.settings.json.
 The Function and management URLs, API Application ID URI, tenant, subscription,
 resource group, and Function App name are then available as command defaults.
+Rules are configured after installation through the management UI or client.
+Deployment does not read or overwrite the stored policy blob.
+New installations use Linux Flex Consumption with private Storage endpoints.
+Existing Windows Consumption apps retain their hosting model; moving them to
+Flex requires an explicit migration to a new app, not a regular update.
 
 .PARAMETER SubscriptionId
 Azure subscription GUID that will contain the Function resources. The current
@@ -74,22 +83,23 @@ non-interactive deployments do not need a delegated Microsoft Graph login.
 Optional token audience accepted by Easy Auth. The default is api:// followed
 by the Entra application Client ID.
 
-.PARAMETER TagAuthorizationRule
-One or more group-to-tag rules as <Entra-group-object-ID>=<tag1>,<tag2>
-strings or objects with groupId, tags, and an optional
-administrativeUnitName. Missing rules are requested
-interactively.
+.PARAMETER TagAuthorizationPolicyFallback
+Optional legacy Group Tag policy JSON to use as the application-setting
+fallback. The policy blob remains authoritative and is not modified.
 
-.PARAMETER AdministrativeUnitName
-Optional fallback administrative unit applied to string rules. Rule objects
-can specify an individual regular or restricted management administrative
-unit. Imported devices are added to the matching rule's unit after Intune
-creates their Entra device.
+.PARAMETER ManagerAuthorizationPolicyJson
+Optional manager authorization policy JSON to preserve during a controlled
+deployment migration.
+
+.PARAMETER VirtualNetworkAddressPrefix
+Private, aligned IPv4 /24 for the Flex VNet. Function integration and private
+endpoint subnets are derived from this prefix. Review for overlap with peered
+and on-premises networks before deployment.
 
 .PARAMETER DeviceTagExtensionAttribute
 Entra device extension attribute that receives the authorized Group Tag.
 Supported values are extensionAttribute1 through extensionAttribute15. The
-interactive default is extensionAttribute1.
+default is extensionAttribute1.
 
 .PARAMETER TagManagerPrincipalId
 Optional Entra user or group object IDs that may manage Group Tags in addition
@@ -109,24 +119,42 @@ Signs out the cached Microsoft Graph account before Entra configuration and
 uses device-code authentication to select an account explicitly. The Azure
 PowerShell account is not changed.
 
+.PARAMETER GraphAccessToken
+Short-lived, in-memory Graph delegated token for the managed-identity
+application permission grant. Use instead of ForceGraphSignIn when the
+terminal cannot display a device-code prompt.
+
 .PARAMETER SkipExistingDeploymentDetection
 Prevents delegation to Update-AutopilotImport.ps1 when the target Function App
 already exists. This internal switch is used by the updater to avoid recursive
 installer invocation.
 
 .PARAMETER SkipEntraAppConfiguration
-Skips app registration and API scope management.
-EntraClientId must be supplied when this switch is used.
+Skips app registration and API scope management. EntraClientId, WebClientId
+and a nonempty InstallerPrincipalId must be supplied when this switch is used.
 
 .PARAMETER SkipGraphPermission
 Skips assignment of the required Microsoft Graph application permissions to
 the Function managed identity, including GroupMember.Read.All and
 User.ReadBasic.All.
+
+.PARAMETER RestrictedAdministrativeUnitName
+Additional administrative unit names for which the Function managed identity
+receives the custom role 'Autopilot Import Device Attribute Writer' scoped to the unit when the unit
+is a restricted management administrative unit. Administrative units used by
+the current Group Tag rules are detected automatically.
+
+.PARAMETER SkipAdministrativeUnitRole
+Skips the scoped custom role assignment for restricted
+management administrative units. Without this role, devices that are already
+members of such a unit cannot be re-tagged.
+
 .PARAMETER SkipPublish
 Deploys infrastructure without publishing the Function source package.
 
 .PARAMETER SkipSmokeTest
-Skips the final anonymous HTTP request that expects an HTTP 401 response.
+Skips both the anonymous API request expecting HTTP 401 and the frontend
+readiness check expecting HTTP 200. Both are also skipped with SkipPublish.
 
 .EXAMPLE
 pwsh .\Install-AutopilotImport.ps1 -InstallMissingModules
@@ -141,12 +169,10 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupTags @{ Environment = 'Production'; Owner = 'Endpoint Team' } `
     -Location 'westus2' `
     -FunctionAppName 'func-autopilot-contoso' `
-    -TagAuthorizationRule `
-        '22222222-2222-2222-2222-222222222222=Standard,Kiosk' `
     -InstallMissingModules `
     -Confirm:$false
 
-Runs a non-interactive deployment with one authorized Entra group.
+Deploys the Function without configuring import rules.
 
 .EXAMPLE
 pwsh .\Install-AutopilotImport.ps1 `
@@ -155,8 +181,6 @@ pwsh .\Install-AutopilotImport.ps1 `
     -ResourceGroupName 'rg-autopilot-import' `
     -Location 'westus2' `
     -FunctionAppName 'func-autopilot-contoso' `
-    -TagAuthorizationRule `
-        '22222222-2222-2222-2222-222222222222=Standard' `
     -WhatIf
 
 Displays the requested configuration without changing Azure or Entra.
@@ -164,13 +188,23 @@ Displays the requested configuration without changing Azure or Entra.
 .OUTPUTS
 PSCustomObject containing the subscription and tenant IDs and display names,
 resource group, Function URL, API audience, managed identity object ID,
-authorization policy, and local and installed client settings paths and client
+manager policy, and local and installed client settings paths and client
 tools directory.
 
 .NOTES
 The installing administrator requires Azure resource deployment permissions
 and delegated Graph permissions for application management. End
 users receive no Intune or Microsoft Graph permissions from this installer.
+
+WhatIf still performs prerequisite discovery, authentication, read-only Azure/
+Graph preflight checks and transcript logging. InstallMissingModules may install
+local prerequisites before the main ShouldProcess gate. Do not treat WhatIf as
+an offline or completely side-effect-free check.
+
+Installation is staged, not transactional. A failure after Entra, infrastructure
+or local client changes does not roll those changes back. The outer error
+handler records diagnostics in SetupLogPath and rethrows, with structured
+metadata retained for Azure deployment and Entra permission failures.
 #>
 
 #region Parameters
@@ -204,13 +238,15 @@ param(
 
     [string] $ApiAudience,
 
-    [object[]] $TagAuthorizationRule,
+    [string] $TagAuthorizationPolicyFallback,
 
-    [Alias('Mau')]
-    [string] $AdministrativeUnitName,
+    [string] $ManagerAuthorizationPolicyJson,
+
+    [ValidatePattern('^(?:10|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)\.\d{1,3}\.0/24$')]
+    [string] $VirtualNetworkAddressPrefix = '172.16.0.0/24',
 
     [ValidatePattern('^extensionAttribute(?:[1-9]|1[0-5])$')]
-    [string] $DeviceTagExtensionAttribute,
+    [string] $DeviceTagExtensionAttribute = 'extensionAttribute1',
 
     [guid[]] $TagManagerPrincipalId,
 
@@ -220,11 +256,17 @@ param(
 
     [switch] $ForceGraphSignIn,
 
+    [securestring] $GraphAccessToken,
+
     [switch] $SkipExistingDeploymentDetection,
 
     [switch] $SkipEntraAppConfiguration,
 
     [switch] $SkipGraphPermission,
+
+    [string[]] $RestrictedAdministrativeUnitName,
+
+    [switch] $SkipAdministrativeUnitRole,
 
     [switch] $SkipPublish,
 
@@ -237,7 +279,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ForceGraphSignIn -and $GraphAccessToken) {
+    throw 'Specify either -ForceGraphSignIn or -GraphAccessToken, not both.'
+}
 
+# Log even WhatIf/preflight failures. Track transcript ownership so delegation,
+# catch and finally do not try to stop the same transcript twice.
 $setupLogPath = Join-Path ([IO.Path]::GetTempPath()) `
     "Intune-Autopilotimport-install-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N')).log"
 Start-Transcript `
@@ -249,6 +296,8 @@ $setupTranscriptActive = $true
 Write-Host "Setup log: $setupLogPath"
 
 try {
+# The source checkout and extracted release ZIP have different layouts. Resolve
+# every downstream path once so both entry points use the same installer logic.
 $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $isRepositoryLayout = Test-Path `
     -LiteralPath (Join-Path $repositoryRoot 'VERSION') `
@@ -285,11 +334,13 @@ else {
     Join-Path $projectRoot 'Update-AutopilotImport.ps1'
 }
 $grantScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityGraphPermission.ps1'
+$grantAdministrativeUnitRoleScriptPath = Join-Path $scriptsRoot 'Grant-ManagedIdentityAdministrativeUnitRole.ps1'
 $ensureEntraAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraApiApplication.ps1'
 $ensureEntraWebAppScriptPath = Join-Path $scriptsRoot 'Ensure-EntraWebApplication.ps1'
 $autopilotImportModulePath = Join-Path $functionAppRoot `
     'src\AutopilotImport\AutopilotImport.psm1'
 Import-Module $autopilotImportModulePath -Force
+Import-Module (Join-Path $scriptsRoot 'FunctionDeployment.psm1') -Force -ErrorAction Stop
 
 #endregion Initialization
 
@@ -319,6 +370,12 @@ function Read-DeploymentValue {
     .OUTPUTS
     System.String. The resolved value with leading and trailing whitespace
     removed.
+
+    .EXAMPLE
+    Read-DeploymentValue -CurrentValue $SubscriptionId `
+        -Prompt 'Azure Subscription ID' -DefaultValue $defaultSubscriptionId
+
+    Uses the supplied value or prompts with the current subscription as default.
     #>
     param(
         [string] $CurrentValue,
@@ -354,6 +411,23 @@ function Test-BuiltWebFrontend {
     <#
     .SYNOPSIS
     Tests whether the packaged web frontend contains all referenced assets.
+
+    .DESCRIPTION
+    Locates wwwroot in source or extracted-package layout, reads index.html
+    and checks every assets/ reference recognized by its src/href pattern.
+    Does not rebuild assets or compare their version with frontend sources.
+
+    .PARAMETER ProjectRoot
+    Repository root or extracted installation-package root.
+
+    .OUTPUTS
+    System.Boolean. False for a missing index, no recognized references or any
+    missing referenced file. File-reading errors propagate.
+
+    .EXAMPLE
+    $ready = Test-BuiltWebFrontend -ProjectRoot $projectRoot
+
+    Checks whether publishing can use bundled files without Node.js.
     #>
     param(
         [Parameter(Mandatory)]
@@ -374,6 +448,8 @@ function Test-BuiltWebFrontend {
     }
 
     $index = Get-Content -LiteralPath $indexPath -Raw
+    # Vite hashes asset names; an existing index alone does not prove that
+    # all files referenced by that particular build are present.
     $assetMatches = [regex]::Matches(
         $index,
         '(?:src|href)=["''](?:/api/ui/)?(?<path>assets/[^"'']+)["'']'
@@ -397,6 +473,34 @@ function Invoke-WebReadinessRequest {
     <#
     .SYNOPSIS
     Waits for a newly published HTTP endpoint to become ready.
+
+    .DESCRIPTION
+    Repeats GET for transient HTTP status codes or request exceptions. Returns
+    immediately for the expected status, a nontransient status, or the last
+    HTTP response. The caller must verify that returned status is acceptable.
+
+    .PARAMETER Uri
+    Absolute endpoint URL to probe.
+
+    .PARAMETER ExpectedStatusCode
+    Status treated as ready. Defaults to 200.
+
+    .PARAMETER MaximumAttempts
+    Number of requests, 1..60. Defaults to 24.
+
+    .PARAMETER RetryDelaySeconds
+    Delay between attempts, 0..60 seconds. Defaults to 5.
+
+    .OUTPUTS
+    Invoke-WebRequest response object. A final request exception is rethrown.
+
+    .EXAMPLE
+    $response = Invoke-WebReadinessRequest -Uri $webUrl -ExpectedStatusCode 200
+
+    Allows for worker startup after ZIP publication before checking readiness.
+
+    .NOTES
+    Warns before retries. Does not set a per-request timeout or authenticate.
     #>
     param(
         [Parameter(Mandatory)]
@@ -411,6 +515,8 @@ function Invoke-WebReadinessRequest {
         [int] $RetryDelaySeconds = 5
     )
 
+    # A newly published Function can briefly return 404/5xx during warmup.
+    # Other statuses (for example 401) should fail the caller's check promptly.
     $transientStatusCodes = @(404, 408, 429, 500, 502, 503, 504)
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
@@ -451,6 +557,11 @@ function Test-FunctionAppName {
     .OUTPUTS
     System.Boolean. True when Name satisfies the supported naming rules.
 
+    .EXAMPLE
+    Test-FunctionAppName -Name 'func-autopilot-contoso'
+
+    Validates local naming syntax without checking global name availability.
+
     .LINK
     https://learn.microsoft.com/azure/azure-resource-manager/management/resource-name-rules#microsoftweb
     #>
@@ -484,6 +595,12 @@ function Read-FunctionAppName {
 
     .OUTPUTS
     System.String. The trimmed, validated Function App name.
+
+    .EXAMPLE
+    Read-FunctionAppName -CurrentValue $FunctionAppName `
+        -DefaultValue 'func-autopilot-contoso'
+
+    Validates supplied input or prompts until an acceptable name is entered.
     #>
     param(
         [string] $CurrentValue,
@@ -512,61 +629,45 @@ function Read-FunctionAppName {
     }
 }
 
-function ConvertTo-TagAuthorizationPolicy {
+function Get-DeploymentTagPolicyFallback {
     <#
     .SYNOPSIS
-    Resolves and validates the group-to-tag authorization policy.
+    Preserves the legacy policy setting without interpreting its rules.
 
     .DESCRIPTION
-    Uses the supplied Rules when at least one non-whitespace rule is present.
-    Otherwise, interactively requests Entra group object IDs and their allowed
-    Device Tags until the user finishes the input. At least one rule is
-    required. Parsing, consolidation, and validation are delegated to the
-    AutopilotImport module.
-
-    .PARAMETER Rules
-    Optional authorization rules in the format
-    <Entra-group-object-ID>=<tag1>,<tag2>, or rule objects with an optional
-    administrativeUnitName. Multiple entries for the same
-    group are consolidated by the AutopilotImport module.
-
-    .OUTPUTS
-    System.Object[]. Authorization policy entries containing a groupId and the
-    corresponding collection of allowed tags.
+    Fresh deployments start with no rules. Existing application settings are
+    read through ARM and forwarded unchanged; the authoritative policy blob
+    is never read or written by deployment.
     #>
     param(
-        [object[]] $Rules,
-
-        [string] $AdministrativeUnitName
+        [AllowNull()]
+        [object] $ExistingFunctionApp
     )
 
-    $enteredRules = @($Rules | Where-Object {
-        $null -ne $_ -and
-        ($_ -isnot [string] -or -not [string]::IsNullOrWhiteSpace($_))
-    })
-    if ($enteredRules.Count -eq 0) {
-        Write-Host "`nConfigure which Entra groups may assign which Device Tags." -ForegroundColor Cyan
-        Write-Host 'Use the Entra group Object ID, not its display name.'
-
-        while ($true) {
-            $groupId = Read-Host 'Entra group Object ID (leave empty when finished)'
-            if ([string]::IsNullOrWhiteSpace($groupId)) {
-                if ($enteredRules.Count -eq 0) {
-                    Write-Warning 'At least one group and tag rule is required.'
-                    continue
-                }
-                break
-            }
-
-            $tags = Read-Host 'Allowed Device Tags for this group (comma-separated)'
-            $enteredRules += "$groupId=$tags"
-        }
+    if ($null -eq $ExistingFunctionApp) {
+        return '[]'
+    }
+    if ([string]::IsNullOrWhiteSpace([string] $ExistingFunctionApp.Id)) {
+        throw 'The existing Function App is missing its ARM resource ID.'
     }
 
-    return ,(AutopilotImport\ConvertTo-TagAuthorizationPolicy `
-        -Rules $enteredRules `
-        -AdministrativeUnitName `
-            $AdministrativeUnitName)
+    $response = Invoke-AzRestMethod -Method POST `
+        -Path "$($ExistingFunctionApp.Id)/config/appsettings/list?api-version=2023-12-01" `
+        -WhatIf:$false -ErrorAction Stop
+    if ($response.StatusCode -ne 200) {
+        throw 'Unable to preserve the existing policy setting. Reading Function App settings requires Microsoft.Web/sites/config/list/action.'
+    }
+    $settings = $response.Content | ConvertFrom-Json -ErrorAction Stop
+    if ($null -eq $settings -or
+        $null -eq $settings.PSObject.Properties['properties'] -or
+        $null -eq $settings.properties) {
+        throw 'The Function App settings response is missing its properties.'
+    }
+    $policy = $settings.properties.PSObject.Properties['TAG_AUTHORIZATION_POLICY']
+    if ($null -eq $policy -or [string]::IsNullOrWhiteSpace([string] $policy.Value)) {
+        return '[]'
+    }
+    return [string] $policy.Value
 }
 
 function ConvertTo-AdditionalManagerPrincipalIds {
@@ -589,6 +690,12 @@ function ConvertTo-AdditionalManagerPrincipalIds {
 
     .OUTPUTS
     System.String[]. Unique additional manager principal IDs.
+
+    .EXAMPLE
+    $ids = @(ConvertTo-AdditionalManagerPrincipalIds `
+        -PrincipalIds $TagManagerPrincipalId -InstallingUserObjectId $installerId)
+
+    Produces the additional-only allowlist used by manager policy JSON.
     #>
     param(
         [AllowNull()]
@@ -609,6 +716,13 @@ function Install-AutoPilotClientTools {
     .SYNOPSIS
     Installs the client module, compatibility scripts, and local dependencies.
 
+    .DESCRIPTION
+    Copies the versioned client and shared runtime module plus operational
+    scripts into DestinationPath. Writes configuration via a temporary file,
+    removes other module-version directories when possible, and creates a
+    portable module ZIP in PackageDestinationPath. Supports source/package
+    paths for scripts and the shared runtime dependency.
+
     .PARAMETER DestinationPath
     Root directory for the portable client package.
 
@@ -623,6 +737,18 @@ function Install-AutoPilotClientTools {
 
     .OUTPUTS
     System.String. Full path to the installed client.settings.json file.
+
+    .EXAMPLE
+    $settingsPath = Install-AutoPilotClientTools -DestinationPath $ClientToolsPath `
+        -ProjectRoot $projectRoot -ClientSettingsJson $clientSettings `
+        -PackageDestinationPath $documentsPath
+
+    Installs the client with deployment-derived defaults and creates its ZIP.
+
+    .NOTES
+    Overwrites current-version files/configuration and the same-version ZIP.
+    IOException while removing an older module is reported as a warning;
+    other file/package errors propagate. No changes are rolled back.
     #>
     param(
         [Parameter(Mandatory)]
@@ -653,6 +779,8 @@ function Install-AutoPilotClientTools {
     }
     $clientModuleManifest = Import-PowerShellDataFile `
         -LiteralPath (Join-Path $clientModuleSource 'AutopilotImport.Client.psd1')
+    # Use the manifest's version, not a separately maintained folder version,
+    # so module autoloading and the portable archive identify the same release.
     $moduleDestination = Join-Path $destinationRoot `
         "Modules\AutopilotImport.Client\$($clientModuleManifest.ModuleVersion)"
     [void] (New-Item -Path $scriptDestination -ItemType Directory -Force)
@@ -683,6 +811,7 @@ function Install-AutoPilotClientTools {
         -Force
 
     $settingsPath = Join-Path $moduleDestination 'client.settings.json'
+    # Stage complete settings before replacing the file used by client calls.
     $settingsTemporaryPath = "$settingsPath.tmp"
     Set-Content `
         -LiteralPath $settingsTemporaryPath `
@@ -695,6 +824,8 @@ function Install-AutoPilotClientTools {
 
     $clientModuleRoot = Split-Path $moduleDestination -Parent
     $normalizedModuleDestination = [IO.Path]::GetFullPath($moduleDestination).TrimEnd('\')
+    # Keep only the installed version to avoid accidental autoloading of a
+    # different release. Locked older versions are left with a warning.
     Get-ChildItem -LiteralPath $clientModuleRoot -Directory |
         Where-Object {
             [IO.Path]::GetFullPath($_.FullName).TrimEnd('\') -ne `
@@ -736,13 +867,24 @@ function Import-DeploymentModule {
     the installer was started with InstallMissingModules, installs it from the
     PowerShell Gallery for the current user. Otherwise, throws a terminating
     error that instructs the user to enable dependency installation. The
-    resolved module is imported with terminating error handling.
+    modern PSResourceGet installer is preferred when available, with
+    PowerShellGet retained for older hosts. Installation failures terminate
+    before importing the module.
 
     .PARAMETER Name
     Name of the PowerShell module to locate, optionally install, and import.
 
     .OUTPUTS
     None.
+
+    .EXAMPLE
+    Import-DeploymentModule -Name 'Az.Resources'
+
+    Imports the dependency, installing it only when InstallMissingModules allows.
+
+    .NOTES
+    Uses the enclosing InstallMissingModules switch. Gallery installation and
+    module import failures propagate; dependencies are not version-pinned here.
     #>
     param(
         [Parameter(Mandatory)]
@@ -755,7 +897,14 @@ function Import-DeploymentModule {
         }
 
         Write-Host "Installing PowerShell module '$Name'..."
-        Install-Module -Name $Name -Scope CurrentUser -Repository PSGallery -Force -AllowClobber
+        if (Get-Command Install-PSResource -ErrorAction SilentlyContinue) {
+            Install-PSResource -Name $Name -Scope CurrentUser `
+                -Repository PSGallery -TrustRepository -ErrorAction Stop
+        }
+        else {
+            Install-Module -Name $Name -Scope CurrentUser `
+                -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
+        }
     }
 
     Import-Module $Name -ErrorAction Stop
@@ -765,6 +914,28 @@ function Install-BicepStandaloneCli {
     <#
     .SYNOPSIS
     Installs the official standalone Bicep CLI for the current user.
+
+    .DESCRIPTION
+    Downloads the latest Windows executable from Azure/bicep on GitHub for the
+    OS architecture (X64 or Arm64). Checks that the download is nonempty, moves
+    it to DestinationPath and attempts to remove the downloaded-file block.
+
+    .PARAMETER DestinationPath
+    Full target executable path; its parent directory is created if necessary.
+
+    .OUTPUTS
+    None. Progress is written to the host.
+
+    .EXAMPLE
+    Install-BicepStandaloneCli `
+        -DestinationPath "$env:LOCALAPPDATA\Programs\Bicep CLI\bicep.exe"
+
+    Downloads the standalone fallback for a Windows host without winget.
+
+    .NOTES
+    Overwrites the destination. Does not pin the release or independently check
+    a checksum/signature. Unsupported architectures and download/install errors
+    throw; temporary download cleanup runs in finally.
     #>
     param(
         [Parameter(Mandatory)]
@@ -781,6 +952,8 @@ function Install-BicepStandaloneCli {
     }
     $downloadUri = "https://github.com/Azure/bicep/releases/latest/download/$assetName"
     $destinationDirectory = Split-Path $DestinationPath -Parent
+    # Download separately so an incomplete request does not directly overwrite
+    # the installed executable. Destination is replaced only after the size check.
     $temporaryPath = Join-Path `
         ([IO.Path]::GetTempPath()) `
         "bicep-$([guid]::NewGuid().ToString('N')).exe"
@@ -832,6 +1005,15 @@ function Initialize-BicepCli {
 
     .OUTPUTS
     None.
+
+    .EXAMPLE
+    Initialize-BicepCli
+
+    Resolves the compiler or installs it when InstallMissingModules is enabled.
+
+    .NOTES
+    Reads the enclosing InstallMissingModules switch and changes PATH only for
+    this process. winget failure is terminating, not a standalone fallback.
 
     .LINK
     https://learn.microsoft.com/azure/azure-resource-manager/bicep/install
@@ -893,6 +1075,15 @@ function Format-AzureDeploymentError {
 
     .OUTPUTS
     System.String. A readable representation of the complete Azure error.
+
+    .EXAMPLE
+    $details = Format-AzureDeploymentError -ErrorObject $validationErrors
+
+    Preserves nested validation details for the installer's error output.
+
+    .NOTES
+    Prefers Exception.Body when available. If JSON serialization fails, uses
+    a full property listing of the original error object instead.
     #>
     param(
         [Parameter(Mandatory)]
@@ -919,6 +1110,29 @@ function Format-AzureDeploymentError {
 }
 
 function Test-AzurePermissionPattern {
+    <#
+    .SYNOPSIS
+    Matches an Azure action against a wildcard permission pattern.
+
+    .DESCRIPTION
+    Escapes regular-expression metacharacters, translates * to any characters
+    and anchors the whole string. Comparison is case-insensitive.
+
+    .PARAMETER Action
+    Concrete Azure management action being checked.
+
+    .PARAMETER Pattern
+    Azure actions/notActions pattern, for example Microsoft.Web/*.
+
+    .OUTPUTS
+    System.Boolean indicating whether the entire action matches.
+
+    .EXAMPLE
+    Test-AzurePermissionPattern -Action 'Microsoft.Web/sites/write' `
+        -Pattern 'Microsoft.Web/*'
+
+    Returns true. Wildcards other than * are not expanded.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $Action,
@@ -932,6 +1146,40 @@ function Test-AzurePermissionPattern {
 }
 
 function Assert-AzureDeploymentPermissions {
+    <#
+    .SYNOPSIS
+    Verifies management-plane actions required by the infrastructure deployment.
+
+    .DESCRIPTION
+    Queries effective permissions at the resource group when it exists, or at
+    the subscription when it must be created. Each required action must match
+    actions and not match notActions within at least one returned permission set.
+
+    .PARAMETER SubscriptionId
+    Target Azure subscription GUID as a string.
+
+    .PARAMETER ResourceGroupName
+    Resource group to deploy into or create.
+
+    .PARAMETER ResourceGroupExists
+    Selects group-scope checks. Without it, checks subscription scope and also
+    requires resourceGroups/write.
+
+    .OUTPUTS
+    None on success.
+
+    .EXAMPLE
+    Assert-AzureDeploymentPermissions -SubscriptionId $SubscriptionId `
+        -ResourceGroupName $ResourceGroupName -ResourceGroupExists
+
+    Validates prerequisites for a deployment into an existing group.
+
+    .NOTES
+    Read-only; does not grant roles or prove Storage data-plane/Graph access.
+    Lookup failures throw. Missing actions throw UnauthorizedAccessException
+    with AutopilotDeploymentPermissionError, MissingActions and CheckedScope
+    in Exception.Data for the outer diagnostic handler.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $SubscriptionId,
@@ -939,9 +1187,13 @@ function Assert-AzureDeploymentPermissions {
         [Parameter(Mandatory)]
         [string] $ResourceGroupName,
 
-        [switch] $ResourceGroupExists
+        [switch] $ResourceGroupExists,
+
+        [switch] $PrivateNetworking
     )
 
+    # A group that does not exist cannot provide the scope needed to verify
+    # permission to create it; that check must occur at subscription level.
     $scope = if ($ResourceGroupExists) {
         "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
     }
@@ -961,7 +1213,22 @@ function Assert-AzureDeploymentPermissions {
         'Microsoft.Web/sites/write'
         'Microsoft.Web/sites/config/write'
         'Microsoft.Authorization/roleAssignments/write'
+        'Microsoft.Authorization/roleDefinitions/write'
     )
+    if ($PrivateNetworking) {
+        $requiredActions += @(
+            'Microsoft.Network/virtualNetworks/write'
+            'Microsoft.Network/virtualNetworks/join/action'
+            'Microsoft.Network/virtualNetworks/subnets/write'
+            'Microsoft.Network/virtualNetworks/subnets/join/action'
+            'Microsoft.Network/privateEndpoints/write'
+            'Microsoft.Network/privateEndpoints/privateDnsZoneGroups/write'
+            'Microsoft.Network/privateDnsZones/write'
+            'Microsoft.Network/privateDnsZones/join/action'
+            'Microsoft.Network/privateDnsZones/virtualNetworkLinks/write'
+            'Microsoft.Storage/storageAccounts/privateEndpointConnectionsApproval/action'
+        )
+    }
     if (-not $ResourceGroupExists) {
         $requiredActions += 'Microsoft.Resources/subscriptions/resourceGroups/write'
     }
@@ -973,14 +1240,16 @@ function Assert-AzureDeploymentPermissions {
     }
     catch {
         Write-Verbose "Azure permission lookup failed: $($_ | Format-List * -Force | Out-String)"
-        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
     if ($permissionsResponse.StatusCode -ge 400) {
         Write-Verbose "Azure permission lookup failed: $($permissionsResponse.Content)"
-        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with Role Based Access Control Administrator, at the target scope.'
+        throw 'Azure deployment permissions could not be verified. Ensure the account has Owner, or Contributor together with User Access Administrator, at the target scope (including custom role definition writes).'
     }
 
     $permissionSets = @(($permissionsResponse.Content | ConvertFrom-Json).value)
+    # notActions removes permissions only from its own permission set. Another
+    # returned set can still grant the same action.
     $missingActions = @($requiredActions | Where-Object {
         $requiredAction = $_
         -not ($permissionSets | Where-Object {
@@ -1026,6 +1295,8 @@ function Assert-AzureDeploymentPermissions {
                 'Create or update Function App configuration'
             'Microsoft.Authorization/roleAssignments/write' = `
                 'Create or update Azure role assignments'
+            'Microsoft.Authorization/roleDefinitions/write' = `
+                'Create or update the manager access reader custom role'
         }
         $missingActionDetails = @($missingActions | ForEach-Object {
             "  - $_ ($($actionDescriptions[$_]))"
@@ -1034,7 +1305,10 @@ function Assert-AzureDeploymentPermissions {
             'Microsoft.Authorization/roleAssignments/write'
         $resourceGroupWriteMissing = $missingActions -contains `
             'Microsoft.Resources/subscriptions/resourceGroups/write'
-        $requiredRoles = if ($roleAssignmentWriteMissing) {
+        $requiredRoles = if ($missingActions -contains 'Microsoft.Authorization/roleDefinitions/write') {
+            'Assign Owner, or assign both Contributor and User Access Administrator, including permission to create custom role definitions.'
+        }
+        elseif ($roleAssignmentWriteMissing) {
             'Assign Owner, or assign both Contributor and Role Based Access Control Administrator (alternatively User Access Administrator).'
         }
         else {
@@ -1081,6 +1355,15 @@ function Register-AzureResourceProvider {
 
     .OUTPUTS
     None.
+
+    .EXAMPLE
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+
+    Ensures the subscription can create the integrated monitoring workspace.
+
+    .NOTES
+    Uses the current Az subscription context. Polls every five seconds;
+    timeout or Azure lookup/registration errors terminate installation.
     #>
     param(
         [Parameter(Mandatory)]
@@ -1136,6 +1419,16 @@ function Set-ResourceGroupTags {
 
     .OUTPUTS
     None.
+
+    .EXAMPLE
+    Set-ResourceGroupTags -ResourceId $resourceGroup.ResourceId `
+        -Tags @{ Environment = 'Production' }
+
+    Sets Environment without removing other tag names.
+
+    .NOTES
+    Rejects blank tag names and converts names/values to strings. Calls Azure
+    directly without its own ShouldProcess gate; errors propagate.
     #>
     param(
         [Parameter(Mandatory)]
@@ -1186,6 +1479,16 @@ function Initialize-AzureResourceGroup {
 
     .OUTPUTS
     The Azure resource group.
+
+    .EXAMPLE
+    $group = Initialize-AzureResourceGroup -Name 'rg-autopilot-import' `
+        -Location 'westeurope' -Tags @{ Environment = 'Production' }
+
+    Returns the existing group or creates a new tagged group.
+
+    .NOTES
+    An existing group's location is not changed. Existing-group output comes
+    from the initial lookup and is not refreshed after tag merging.
     #>
     param(
         [Parameter(Mandatory)]
@@ -1220,6 +1523,29 @@ function Initialize-AzureResourceGroup {
 }
 
 function Get-CustomWebRedirectUri {
+    <#
+    .SYNOPSIS
+    Converts custom Function hostnames into SPA redirect URLs.
+
+    .DESCRIPTION
+    Trims names, excludes blank and *.azurewebsites.net entries, appends the
+    HTTPS /api/ui/index.html path, and removes duplicate URLs.
+
+    .PARAMETER HostName
+    Optional hostname collection discovered on the Function App.
+
+    .OUTPUTS
+    System.String redirect URLs emitted to the pipeline; wrap with @() when
+    collecting zero/one/many results.
+
+    .EXAMPLE
+    $redirects = @(Get-CustomWebRedirectUri -HostName @('import.example.com'))
+
+    Returns https://import.example.com/api/ui/index.html.
+
+    .NOTES
+    Pure formatting: does not validate DNS, TLS or hostname ownership.
+    #>
     param(
         [AllowNull()]
         [object[]] $HostName
@@ -1238,6 +1564,26 @@ function Get-CustomWebRedirectUri {
 }
 
 function Get-WebAppHostName {
+    <#
+    .SYNOPSIS
+    Extracts hostnames from Azure Web App object representations.
+
+    .DESCRIPTION
+    Inspects the root plus SiteConfig/Properties containers for HostNames,
+    EnabledHostNames and HostNameSslStates.Name. Handles Az and ARM shapes.
+
+    .PARAMETER WebApp
+    Optional Azure site object. Null produces no hostnames.
+
+    .OUTPUTS
+    Hostname values on the pipeline. Duplicates/default hostnames are retained;
+    Get-CustomWebRedirectUri performs subsequent filtering and deduplication.
+
+    .EXAMPLE
+    $names = @(Get-WebAppHostName -WebApp $existingFunctionApp)
+
+    Collects candidates without making additional Azure requests.
+    #>
     param(
         [AllowNull()]
         [object] $WebApp
@@ -1281,6 +1627,30 @@ function Get-WebAppHostName {
 }
 
 function Get-WebAppHostNameBinding {
+    <#
+    .SYNOPSIS
+    Reads hostname bindings directly from the Azure site resource.
+
+    .DESCRIPTION
+    GETs hostNameBindings using API version 2023-12-01 and extracts the final
+    hostname segment from each resource name. Complements object-property
+    discovery when an Az site object omits custom bindings.
+
+    .PARAMETER ResourceId
+    Full ARM resource ID of the existing Function App.
+
+    .OUTPUTS
+    Nonblank hostname strings on the pipeline; callers normally wrap with @().
+
+    .EXAMPLE
+    $bindings = @(Get-WebAppHostNameBinding -ResourceId $functionResourceId)
+
+    Reads custom/default hostname binding names for redirect preservation.
+
+    .NOTES
+    Requires site read access in the current Az context. HTTP error statuses,
+    REST errors and invalid response JSON throw. Does not change bindings.
+    #>
     param(
         [Parameter(Mandatory)]
         [string] $ResourceId
@@ -1305,6 +1675,8 @@ function Get-WebAppHostNameBinding {
 
 #region Prerequisites
 
+# These checks run before the deployment confirmation. A release ZIP can carry
+# prebuilt frontend assets, but Azure modules and Bicep are still required.
 if (-not (Test-Path $templatePath -PathType Leaf)) {
     throw "Bicep template not found: $templatePath"
 }
@@ -1319,6 +1691,8 @@ Initialize-BicepCli
 
 #region Deployment input and validation
 
+# Reuse the current context only as an input suggestion, then explicitly select
+# the requested subscription/tenant to avoid deploying into an unrelated session.
 $currentContext = Get-AzContext -ErrorAction SilentlyContinue
 $defaultSubscriptionId = if ($currentContext) { $currentContext.Subscription.Id } else { $null }
 $defaultTenantId = if ($currentContext) { $currentContext.Tenant.Id } else { $null }
@@ -1367,6 +1741,8 @@ try {
         -TenantId $TenantId
 }
 catch {
+    # A persisted Az context can exist even after its cached credentials expire.
+    # Retry once with an explicit sign-in rather than changing the target.
     Write-Host 'The stored Azure session is unavailable or expired. Sign in again.'
     Connect-AzAccount `
         -Tenant $TenantId `
@@ -1400,10 +1776,23 @@ else {
     $TenantId
 }
 
-$existingFunctionApp = Get-AzWebApp `
-    -ResourceGroupName $ResourceGroupName `
-    -Name $FunctionAppName `
-    -ErrorAction SilentlyContinue
+# Detect upgrades before requesting fresh-install location values. The
+# updater reads deployed settings and returns through this installer with
+# SkipExistingDeploymentDetection to prevent an installer/updater recursion.
+try {
+    $existingFunctionApp = Get-AzWebApp `
+        -ResourceGroupName $ResourceGroupName `
+        -Name $FunctionAppName `
+        -ErrorAction Stop
+}
+catch {
+    $responseProperty = $_.Exception.PSObject.Properties['Response']
+    if ($null -eq $responseProperty -or $null -eq $responseProperty.Value -or
+        [int] $responseProperty.Value.StatusCode -ne 404) {
+        throw
+    }
+    $existingFunctionApp = $null
+}
 if ($null -ne $existingFunctionApp -and
     -not $SkipExistingDeploymentDetection) {
     if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
@@ -1439,6 +1828,7 @@ if ($null -ne $existingFunctionApp -and
         ClientToolsPath           = $updateClientToolsPath
         InstallMissingModules     = $InstallMissingModules
         ForceGraphSignIn          = $ForceGraphSignIn
+        GraphAccessToken          = $GraphAccessToken
         SkipEntraAppConfiguration = $SkipEntraAppConfiguration
         SkipGraphPermission       = $SkipGraphPermission
         SkipPublish               = $SkipPublish
@@ -1453,6 +1843,7 @@ if ($null -ne $existingFunctionApp -and
         'Switching to update mode and preserving its application configuration.'
     ) -ForegroundColor Cyan
     if ($setupTranscriptActive) {
+        # The updater owns its own transcript; end this one before delegation.
         Stop-Transcript -WhatIf:$false | Out-Null
         $setupTranscriptActive = $false
     }
@@ -1476,31 +1867,33 @@ $ClientToolsPath = Read-DeploymentValue `
     -CurrentValue $ClientToolsPath `
     -Prompt 'Operational PowerShell scripts directory' `
     -DefaultValue $defaultClientToolsPath
-$DeviceTagExtensionAttribute = Read-DeploymentValue `
-    -CurrentValue $DeviceTagExtensionAttribute `
-    -Prompt 'Entra Device Tag extension attribute' `
-    -DefaultValue 'extensionAttribute1'
 if ($DeviceTagExtensionAttribute -notmatch '^extensionAttribute(?:[1-9]|1[0-5])$') {
     throw 'DeviceTagExtensionAttribute must be extensionAttribute1 through extensionAttribute15.'
 }
-if (-not $PSBoundParameters.ContainsKey(
-        'AdministrativeUnitName')) {
-    $AdministrativeUnitName = Read-Host `
-        'Administrative unit display name (optional, MAU or RMAU)'
+$vnetAddress = [System.Net.IPAddress]::Parse(($VirtualNetworkAddressPrefix -split '/')[0])
+if ($vnetAddress.GetAddressBytes().Length -ne 4 -or
+    [int] ($VirtualNetworkAddressPrefix -split '/')[1] -ne 24 -or
+    @($vnetAddress.GetAddressBytes() | Where-Object { $_ -gt 255 }).Count -gt 0) {
+    throw 'VirtualNetworkAddressPrefix must be a valid private IPv4 /24.'
 }
-$AdministrativeUnitName = if (
-    [string]::IsNullOrWhiteSpace(
-        $AdministrativeUnitName)) {
-    ''
+$tagAuthorizationPolicyJson = if ($PSBoundParameters.ContainsKey('TagAuthorizationPolicyFallback')) {
+    $TagAuthorizationPolicyFallback
 }
 else {
-    $AdministrativeUnitName.Trim()
+    Get-DeploymentTagPolicyFallback -ExistingFunctionApp $existingFunctionApp
 }
-$tagAuthorizationPolicy = ConvertTo-TagAuthorizationPolicy `
-    -Rules $TagAuthorizationRule `
-    -AdministrativeUnitName `
-        $AdministrativeUnitName
-$tagAuthorizationPolicyJson = $tagAuthorizationPolicy | ConvertTo-Json -Depth 4 -Compress
+$hostingMode = Get-AutopilotDeploymentHostingMode -ExistingFunctionApp $existingFunctionApp
+if ($hostingMode -eq 'FlexConsumption') {
+    $regionResponse = Invoke-AzRestMethod -Method GET `
+        -Path "/subscriptions/$SubscriptionId/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=FlexConsumption" `
+        -WhatIf:$false -ErrorAction Stop
+    if ($regionResponse.StatusCode -ne 200) { throw 'Unable to check Flex Consumption region availability.' }
+    $flexRegions = @(($regionResponse.Content | ConvertFrom-Json -ErrorAction Stop).value |
+        ForEach-Object { ([string] $_.name).ToLowerInvariant().Replace(' ', '') })
+    if ($Location.ToLowerInvariant().Replace(' ', '') -notin $flexRegions) {
+        throw "Flex Consumption is not available in region '$Location'. Choose a supported region."
+    }
+}
 
 $parsedGuid = [guid]::Empty
 if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)) {
@@ -1514,39 +1907,13 @@ if ($EntraClientId -and -not [guid]::TryParse($EntraClientId, [ref] $parsedGuid)
 $npmCommand = $null
 $builtWebFrontendAvailable = $false
 if (-not $SkipPublish) {
+    # A complete packaged frontend avoids an unnecessary npm install/build.
+    # Source builds need npm only when those referenced assets are unavailable.
     $builtWebFrontendAvailable = Test-BuiltWebFrontend `
         -ProjectRoot $projectRoot
     $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npmCommand -and -not $builtWebFrontendAvailable) {
         throw 'Publishing requires Node.js and npm, or a deployment package containing a complete prebuilt WebFrontend\wwwroot bundle. Install Node.js 22 or download the release deployment package.'
-    }
-}
-
-$administrativeUnitNames = @($tagAuthorizationPolicy | ForEach-Object {
-    if ($_.PSObject.Properties[
-            'administrativeUnitName'] -and
-        -not [string]::IsNullOrWhiteSpace(
-            [string] $_.administrativeUnitName)) {
-        ([string] $_.administrativeUnitName).Trim()
-    }
-} | Sort-Object -Unique)
-if ($administrativeUnitNames.Count -gt 0) {
-    Write-Host 'Validating configured Entra administrative units...'
-    $tokenResult = Get-AzAccessToken `
-        -ResourceUrl 'https://graph.microsoft.com/' `
-        -ErrorAction Stop
-    $graphToken = if ($tokenResult.Token -is [Security.SecureString]) {
-        $tokenResult.Token
-    }
-    else {
-        ConvertTo-SecureString ([string] $tokenResult.Token) `
-            -AsPlainText `
-            -Force
-    }
-    foreach ($administrativeUnitName in $administrativeUnitNames) {
-        AutopilotImport\Resolve-EntraAdministrativeUnit `
-            -AdministrativeUnitName $administrativeUnitName `
-            -AccessToken $graphToken | Out-Null
     }
 }
 
@@ -1557,7 +1924,8 @@ $existingResourceGroup = Get-AzResourceGroup `
 Assert-AzureDeploymentPermissions `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
-    -ResourceGroupExists:($null -ne $existingResourceGroup)
+    -ResourceGroupExists:($null -ne $existingResourceGroup) `
+    -PrivateNetworking:($hostingMode -eq 'FlexConsumption')
 
 Write-Host "`nRequested installation" -ForegroundColor Cyan
 Write-Host "  Subscription : $subscriptionName ($SubscriptionId)"
@@ -1572,17 +1940,16 @@ if ($ResourceGroupTags -and $ResourceGroupTags.Count -gt 0) {
 }
 Write-Host "  Region       : $Location"
 Write-Host "  Function     : $FunctionAppName"
+Write-Host "  Hosting      : $hostingMode"
 Write-Host "  Entra app    : $EntraApplicationName"
 Write-Host "  Entra web app: $EntraWebApplicationName"
 Write-Host "  Client tools : $ClientToolsPath"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
-Write-Host "  Administrative unit: $AdministrativeUnitName"
-Write-Host '  Group to Device Tag rules:'
-foreach ($rule in $tagAuthorizationPolicy) {
-    Write-Host "    $($rule.groupId) -> $($rule.tags -join ', ')"
-}
+Write-Host '  Rules        : managed separately; existing rules remain unchanged'
 Write-Host
 
+# Main write gate: Azure/Entra deployment starts only after approval. Read-only
+# preflight, sign-in, local dependency setup and transcript logging ran above.
 if (-not $PSCmdlet.ShouldProcess(
         "$ResourceGroupName and Entra application '$EntraApplicationName'",
         'Configure Entra and deploy Autopilot import Azure Function'
@@ -1591,6 +1958,10 @@ if (-not $PSCmdlet.ShouldProcess(
 }
 
 Register-AzureResourceProvider -ProviderNamespace 'Microsoft.OperationalInsights'
+if ($hostingMode -eq 'FlexConsumption') {
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.Network'
+    Register-AzureResourceProvider -ProviderNamespace 'Microsoft.App'
+}
 
 #endregion Azure context and confirmation
 
@@ -1601,6 +1972,8 @@ $resourceGroup = Initialize-AzureResourceGroup `
     -Location $Location `
     -Tags $ResourceGroupTags
 
+# Include direct ARM bindings as well as Az object properties so a preserved
+# custom domain remains a valid browser redirect after Entra reconciliation.
 $existingFunctionAppHostNames = @(
     Get-WebAppHostName -WebApp $existingFunctionApp
 )
@@ -1617,6 +1990,8 @@ $discoveredWebRedirectUris = @(
 )
 
 if (-not $SkipEntraAppConfiguration) {
+    # Graph and Az sessions are distinct: the account configuring Entra may be
+    # different from the account deploying Azure resources.
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
     $entraApplication = & $ensureEntraAppScriptPath `
         -TenantId $TenantId `
@@ -1624,11 +1999,15 @@ if (-not $SkipEntraAppConfiguration) {
         -DisplayName $EntraApplicationName `
         -ForceGraphSignIn:$ForceGraphSignIn `
         -Confirm:$false
+    # Use the helper's resolved IDs/scope, not guessed identifiers from display
+    # names. The Graph installing user becomes the permanent manager principal.
     $EntraClientId = $entraApplication.ClientId
     $ApiAudience = $entraApplication.ApplicationIdUri
     $installingUserObjectId = [guid] $entraApplication.InstallingUserObjectId
     Write-Host "Microsoft Graph account: $($entraApplication.InstallingUserPrincipalName)"
 
+    # Configure the SPA against the API scope, preserving explicit/discovered
+    # custom-domain redirects in addition to the default Azure hostname.
     $webApplicationParameters = @{
         TenantId               = $TenantId
         ApiApplicationObjectId = $entraApplication.ApplicationObjectId
@@ -1653,6 +2032,8 @@ if (-not $SkipEntraAppConfiguration) {
     $webApplication = & $ensureEntraWebAppScriptPath @webApplicationParameters
     $WebClientId = [guid] $webApplication.ClientId
 }
+# Skipping Entra writes still needs stable IDs for Easy Auth, SPA settings,
+# manager authorization and the installer's Storage role assignment.
 elseif ([string]::IsNullOrWhiteSpace($EntraClientId)) {
     throw 'EntraClientId is required when SkipEntraAppConfiguration is used.'
 }
@@ -1684,18 +2065,38 @@ Write-Host "  Function     : $FunctionAppName"
 Write-Host "  API audience : $ApiAudience"
 Write-Host "  Web client ID: $WebClientId"
 Write-Host "  Device Tag attribute: $DeviceTagExtensionAttribute"
-Write-Host "  Administrative unit: $AdministrativeUnitName"
-Write-Host "  Allowed Tags : $(@($tagAuthorizationPolicy.tags) -join ', ')"
 $additionalManagerPrincipalIds = @(ConvertTo-AdditionalManagerPrincipalIds `
     -PrincipalIds $TagManagerPrincipalId `
     -InstallingUserObjectId $installingUserObjectId)
-$managerAuthorizationPolicy = [ordered]@{
-    installerPrincipalId          = $installingUserObjectId.ToString()
-    additionalPrincipalIds        = $additionalManagerPrincipalIds
-    allowIntuneRoleAdministrators = $true
+# Separate policy administration from group-to-tag authorization: being allowed
+# to import with a tag does not automatically grant policy-management rights.
+if (-not [string]::IsNullOrWhiteSpace($ManagerAuthorizationPolicyJson)) {
+    $preservedManagerPolicy = $ManagerAuthorizationPolicyJson |
+        ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    if ($preservedManagerPolicy -isnot [System.Collections.IDictionary] -or
+        [guid]::Empty -eq [guid] $preservedManagerPolicy.installerPrincipalId -or
+        $preservedManagerPolicy.additionalPrincipalIds -isnot [array] -or
+        $preservedManagerPolicy.allowIntuneRoleAdministrators -isnot [bool]) {
+        throw 'ManagerAuthorizationPolicyJson is missing a valid installerPrincipalId, additionalPrincipalIds array, or allowIntuneRoleAdministrators boolean.'
+    }
+    if ([guid] $preservedManagerPolicy.installerPrincipalId -ne $installingUserObjectId) {
+        throw 'ManagerAuthorizationPolicyJson installerPrincipalId must match InstallerPrincipalId.'
+    }
+    $managerAuthorizationPolicy = $preservedManagerPolicy
+    $managerAuthorizationPolicyJson = $ManagerAuthorizationPolicyJson
+    $additionalManagerPrincipalIds = @($preservedManagerPolicy.additionalPrincipalIds)
 }
-$managerAuthorizationPolicyJson = $managerAuthorizationPolicy |
-    ConvertTo-Json -Depth 4 -Compress
+else {
+    # Separate policy administration from group-to-tag authorization: being allowed
+    # to import with a tag does not automatically grant policy-management rights.
+    $managerAuthorizationPolicy = [ordered]@{
+        installerPrincipalId          = $installingUserObjectId.ToString()
+        additionalPrincipalIds        = $additionalManagerPrincipalIds
+        allowIntuneRoleAdministrators = $true
+    }
+    $managerAuthorizationPolicyJson = $managerAuthorizationPolicy |
+        ConvertTo-Json -Depth 4 -Compress
+}
 Write-Host "  Installing manager: $installingUserObjectId"
 Write-Host "  Additional managers: $($additionalManagerPrincipalIds -join ', ')"
 Write-Host '  Intune Role Administrators: allowed'
@@ -1705,6 +2106,8 @@ $deploymentParameters = @{
     TemplateFile      = $templatePath
     functionAppName   = $FunctionAppName
     location          = $Location
+    hostingMode       = $hostingMode
+    virtualNetworkAddressPrefix = $VirtualNetworkAddressPrefix
     entraClientId     = $EntraClientId
     webClientId       = $WebClientId.ToString()
     apiAudience       = $ApiAudience
@@ -1715,6 +2118,8 @@ $deploymentParameters = @{
 }
 
 Write-Host 'Validating Bicep deployment...'
+# Validate ARM/Bicep with exactly the parameters used for deployment. Keep
+# nested policy/error details rather than reducing them to a generic failure.
 $validationErrors = try {
     Test-AzResourceGroupDeployment @deploymentParameters
 }
@@ -1739,6 +2144,8 @@ if ($deployment.ProvisioningState -ne 'Succeeded') {
 
 #region Client configuration
 
+# Take endpoint/resource identifiers from successful deployment outputs so
+# client defaults and permission grants target the same resources.
 $functionUrl = [string] $deployment.Outputs.functionUrl.Value
 $managementUrl = [string] $deployment.Outputs.managementUrl.Value
 $webUrl = [string] $deployment.Outputs.webUrl.Value
@@ -1773,61 +2180,37 @@ Write-Host "Installed AutopilotImport.Client, compatibility scripts, and default
 Write-Host "Created portable PowerShell module package '$clientModulePackagePath'."
 Write-Host 'Extract the archive into a directory listed in $env:PSModulePath to use its commands through module autoloading.'
 
+# Some Azure policies alter networking during provisioning. Fail explicitly if
+# this Consumption design can no longer reach its Storage data endpoints.
 $storageAccount = Get-AzStorageAccount `
     -ResourceGroupName $ResourceGroupName `
     -Name $storageAccountName
-if ($storageAccount.PublicNetworkAccess -ne 'Enabled') {
+if ($hostingMode -eq 'Consumption' -and $storageAccount.PublicNetworkAccess -ne 'Enabled') {
     throw @"
 Storage Account '$storageAccountName' has PublicNetworkAccess='$($storageAccount.PublicNetworkAccess)'.
 The deployed Azure Functions Consumption architecture requires access to the Storage data endpoint. Azure Policy appears to disable public network access after deployment.
 Request a policy exemption that permits public network access for this Storage Account while shared-key access remains disabled, or deploy a VNet-integrated hosting plan with Private Endpoints and private DNS.
 "@
 }
-$storageContext = New-AzStorageContext `
-    -StorageAccountName $storageAccountName `
-    -UseConnectedAccount
-$policyTemporaryPath = Join-Path ([IO.Path]::GetTempPath()) "tag-policy-$([guid]::NewGuid()).json"
-try {
-    Set-Content `
-        -LiteralPath $policyTemporaryPath `
-        -Value $tagAuthorizationPolicyJson `
-        -Encoding utf8NoBOM
-    $maximumUploadAttempts = 12
-    for ($uploadAttempt = 1; $uploadAttempt -le $maximumUploadAttempts; $uploadAttempt++) {
-        try {
-            Set-AzStorageBlobContent `
-                -Context $storageContext `
-                -Container 'configuration' `
-                -File $policyTemporaryPath `
-                -Blob 'tag-authorization-policy.json' `
-                -Force | Out-Null
-            break
-        }
-        catch {
-            $isAuthorizationDelay = $_.Exception.Message -match `
-                '403|AuthorizationPermissionMismatch|not authorized'
-            if (-not $isAuthorizationDelay -or $uploadAttempt -eq $maximumUploadAttempts) {
-                throw
-            }
-
-            Write-Warning "Storage RBAC is not active yet. Retrying policy upload in 10 seconds ($uploadAttempt/$maximumUploadAttempts)."
-            Start-Sleep -Seconds 10
-        }
-    }
+if ($hostingMode -eq 'FlexConsumption' -and (
+        $storageAccount.PublicNetworkAccess -ne 'Disabled' -or
+        $storageAccount.AllowSharedKeyAccess -ne $false -or
+        $storageAccount.AllowBlobPublicAccess -ne $false)) {
+    throw "Flex Storage '$storageAccountName' must disable public network access, shared-key access and anonymous blobs. Deployment did not produce the required private configuration."
 }
-finally {
-    Remove-Item $policyTemporaryPath -Force -ErrorAction SilentlyContinue
-}
-
 #endregion Client configuration
 
 #region Permissions and Function publishing
 
 if (-not $SkipGraphPermission) {
+    # Azure Storage roles do not grant Graph access. Assign the separate Graph
+    # application permissions to the deployed Function's managed identity.
     Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
     & $grantScriptPath `
         -ManagedIdentityObjectId $managedIdentityObjectId `
-        -TenantId $TenantId
+        -TenantId $TenantId `
+        -ForceGraphSignIn:$ForceGraphSignIn `
+        -GraphAccessToken $GraphAccessToken
 }
 
 if (-not $SkipPublish) {
@@ -1854,32 +2237,21 @@ if (-not $SkipPublish) {
 
     $packagePath = Join-Path ([IO.Path]::GetTempPath()) "autopilot-import-$([guid]::NewGuid()).zip"
     try {
-        Compress-Archive `
-            -Path @(
-                (Join-Path $functionAppRoot 'host.json'),
-                (Join-Path $functionAppRoot 'proxies.json'),
-                (Join-Path $functionAppRoot 'requirements.psd1'),
-                (Join-Path $functionAppRoot 'profile.ps1'),
-                (Join-Path $functionAppRoot 'ImportDevice'),
-                (Join-Path $functionAppRoot 'ProcessDeviceAttribute'),
-                (Join-Path $functionAppRoot 'ManageTagPolicy'),
-                (Join-Path $functionAppRoot 'GetAuthorizedTags'),
-                (Join-Path $functionAppRoot 'ManageDeviceTags'),
-                (Join-Path $functionAppRoot 'GetImportHistory'),
-                (Join-Path $functionAppRoot 'RemoveExpiredImportHistory'),
-                (Join-Path $functionAppRoot 'WebFrontend'),
-                (Join-Path $functionAppRoot 'src')
-            ) `
-            -DestinationPath $packagePath `
-            -CompressionLevel Optimal `
-            -Force
+        New-AutopilotFunctionPackage -FunctionAppRoot $functionAppRoot `
+            -DestinationPath $packagePath -HostingMode $hostingMode | Out-Null
 
         Write-Host 'Publishing Function code...'
-        Publish-AzWebApp `
-            -ResourceGroupName $ResourceGroupName `
-            -Name $FunctionAppName `
-            -ArchivePath $packagePath `
-            -Force | Out-Null
+        if ($hostingMode -eq 'FlexConsumption') {
+            Publish-AutopilotFlexPackage -ResourceGroupName $ResourceGroupName `
+                -FunctionAppName $FunctionAppName -ArchivePath $packagePath
+        }
+        else {
+            Publish-AzWebApp `
+                -ResourceGroupName $ResourceGroupName `
+                -Name $FunctionAppName `
+                -ArchivePath $packagePath `
+                -Force | Out-Null
+        }
     }
     finally {
         Remove-Item $packagePath -Force -ErrorAction SilentlyContinue
@@ -1891,6 +2263,8 @@ if (-not $SkipPublish) {
 #region Smoke test
 
 if (-not $SkipSmokeTest -and -not $SkipPublish) {
+    # Exercise the public boundary without a token; an accepted import here
+    # would indicate broken Easy Auth protection. No real device is submitted.
     Write-Host 'Running Easy Auth smoke test...'
     $smokeResponse = Invoke-WebRequest `
         -Method Post `
@@ -1903,6 +2277,8 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
         throw "Smoke test expected HTTP 401 without a token, but received $($smokeResponse.StatusCode)."
     }
 
+    # The public SPA must remain reachable while the API rejects anonymous
+    # requests. Allow a short worker warmup after code publication.
     $webSmokeResponse = Invoke-WebReadinessRequest -Uri $webUrl
     if ($webSmokeResponse.StatusCode -ne 200) {
         throw "Web frontend smoke test expected HTTP 200, but received $($webSmokeResponse.StatusCode)."
@@ -1911,8 +2287,64 @@ if (-not $SkipSmokeTest -and -not $SkipPublish) {
 
 #endregion Smoke test
 
+#region Restricted administrative unit roles
+
+if (-not $SkipAdministrativeUnitRole) {
+    # Tenant-wide Device.ReadWrite.All cannot modify members of a restricted
+    # management administrative unit. Rules that add devices to such a unit
+    # therefore need a role scoped to it, or later re-tagging fails with 403.
+    $ruleAdministrativeUnitNames = @()
+    if (-not $SkipPublish) {
+        try {
+            $policyTokenResult = Get-AzAccessToken -ResourceUrl $ApiAudience -ErrorAction Stop
+            $policyToken = if ($policyTokenResult.Token -is [Security.SecureString]) {
+                $policyTokenResult.Token
+            }
+            else {
+                ConvertTo-SecureString ([string] $policyTokenResult.Token) -AsPlainText -Force
+            }
+            $policyResponse = Invoke-RestMethod `
+                -Method Get `
+                -Uri $managementUrl.TrimEnd('/') `
+                -Authentication Bearer `
+                -Token $policyToken `
+                -ErrorAction Stop
+            $ruleAdministrativeUnitNames = @($policyResponse.policy | ForEach-Object {
+                    if ($_.PSObject.Properties['administrativeUnitName']) {
+                        [string] $_.administrativeUnitName
+                    }
+                })
+        }
+        catch {
+            Write-Warning "The Group Tag rules could not be read to detect restricted administrative units: $($_.Exception.Message)"
+        }
+    }
+    $administrativeUnitNames = @(@($RestrictedAdministrativeUnitName) + $ruleAdministrativeUnitNames |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
+        ForEach-Object { ([string] $_).Trim() } |
+        Sort-Object -Unique)
+    if ($administrativeUnitNames.Count -gt 0) {
+        Write-Host "Checking scoped roles for administrative units: $($administrativeUnitNames -join ', ')"
+        try {
+            Import-DeploymentModule -Name 'Microsoft.Graph.Authentication'
+            & $grantAdministrativeUnitRoleScriptPath `
+                -ManagedIdentityObjectId $managedIdentityObjectId `
+                -AdministrativeUnitName $administrativeUnitNames `
+                -TenantId $TenantId | ForEach-Object { Write-Host $_ }
+        }
+        catch {
+            $quotedNames = ($administrativeUnitNames | ForEach-Object { "'$($_.Replace("'", "''"))'" }) -join ', '
+            Write-Warning "The scoped role for restricted administrative units could not be assigned: $($_.Exception.Message) Devices in these units cannot be re-tagged until a Privileged Role Administrator runs: .\scripts\Grant-ManagedIdentityAdministrativeUnitRole.ps1 -ManagedIdentityObjectId '$managedIdentityObjectId' -AdministrativeUnitName $quotedNames -TenantId '$TenantId' -ForceGraphSignIn"
+        }
+    }
+}
+
+#endregion Restricted administrative unit roles
+
 #region Result
 
+# Keep machine-readable output separate from host progress. The updater uses
+# these paths/IDs to continue local module installation and report the result.
 $result = [pscustomobject]@{
     SubscriptionId          = $SubscriptionId
     SubscriptionName        = $subscriptionName
@@ -1920,15 +2352,13 @@ $result = [pscustomobject]@{
     TenantName              = $tenantName
     ResourceGroupName       = $ResourceGroupName
     FunctionAppName         = $FunctionAppName
+    HostingMode             = $hostingMode
     FunctionUrl             = $functionUrl
     ManagementUrl           = $managementUrl
     WebUrl                  = $webUrl
     WebClientId             = $WebClientId.ToString()
     ApiApplicationIdUri     = $ApiAudience
     ManagedIdentityObjectId = $managedIdentityObjectId
-    TagAuthorizationPolicy  = $tagAuthorizationPolicy
-    AdministrativeUnitName = `
-        $AdministrativeUnitName
     DeviceTagExtensionAttribute = $DeviceTagExtensionAttribute
     ManagerAuthorizationPolicy = $managerAuthorizationPolicy
     ClientSettingsPath      = $clientSettingsPath
@@ -1945,6 +2375,8 @@ $result
 #endregion Result
 }
 catch {
+    # Preserve diagnostic categories for the updater. Azure resource roles and
+    # Entra application-management roles are separate permission boundaries.
     $isDeploymentPermissionError = `
         $_.Exception.Data['AutopilotDeploymentPermissionError'] -eq $true
     $isMicrosoftGraphAuthorizationError =
@@ -1983,6 +2415,8 @@ catch {
             '3. Complete the device-code sign-in with the account that has the Entra role.'
         ) -join [Environment]::NewLine
     }
+    # Stop transcription before appending detailed error records so the final
+    # diagnostic block is written directly and does not depend on transcript IO.
     $errorDetails = @(
         "Timestamp: $(Get-Date -Format 'o')"
         "Script: $PSCommandPath"
@@ -2015,6 +2449,8 @@ catch {
         throw
     }
     if ($isMicrosoftGraphPermissionError) {
+        # Carry actionable account/role guidance across the installer/updater
+        # boundary without relying on parsing human-readable progress output.
         $permissionException = [InvalidOperationException]::new(
             'Microsoft Entra permission is required to update the app registrations.'
         )
@@ -2028,7 +2464,7 @@ catch {
         -ErrorAction Continue
     if ($errorDetails -match `
         'AuthorizationFailed|does not have (?:permission|authorization)|Forbidden') {
-        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with Role Based Access Control Administrator, at the target resource group or subscription scope.'
+        throw 'Azure deployment permissions are insufficient. Assign Owner, or Contributor together with User Access Administrator (including custom role definition writes), at the target resource group or subscription scope.'
     }
     throw
 }
