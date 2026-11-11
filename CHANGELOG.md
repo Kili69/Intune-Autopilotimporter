@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261111.1] - 2026-11-11
+
+### Fixed
+
+- Re-tagging only lists and accepts devices with enrollment state `notContacted` and **Last contacted = Never**. Recorded contacts and missing, empty or invalid contact data are rejected during listing, submission and asynchronous processing for all clients.
+
+### Changed
+
+- Rename the English selectors to **Tagging Policy** on Import and **New tagging policy** on Re-Tagging.
+- Show separate **Intune Order ID/Tag** and **Entra.ID Extension Attributes** columns, with current Entra attribute names and populated values read directly from the device rather than policy targets.
+- Document contact eligibility and the new device-list response, extend regression tests, and rebuild the versioned frontend and installation package. Existing configuration and permissions remain compatible; no additional Graph permissions are required.
+
 ## [1.4.20261022.1] - 2026-10-22
 
 ### Changed
