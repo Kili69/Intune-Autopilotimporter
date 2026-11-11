@@ -4,6 +4,16 @@ export interface CompletedTagChange {
   groupTag: string;
 }
 
+export function formatDeviceExtensionAttributes(
+  attributes: Record<string, string | null> | null | undefined,
+): string {
+  return Object.entries(attributes ?? {})
+    .filter(([, value]) => value != null && value !== '')
+    .sort(([left], [right]) => left.localeCompare(right, 'en', { numeric: true }))
+    .map(([name, value]) => `${name} = ${value}`)
+    .join('; ');
+}
+
 // Intune reports a changed Autopilot groupTag only after a delay. Show the
 // confirmed destination while the device still reports the previous tag.
 export function applyCompletedTagChanges<T extends { id: string; groupTag: string }>(
