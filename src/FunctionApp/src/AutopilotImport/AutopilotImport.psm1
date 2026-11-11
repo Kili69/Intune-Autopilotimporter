@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261111.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -2344,6 +2344,51 @@ function Set-DevicePolicyState {
         -Body $body -ErrorAction Stop | Out-Null
 }
 
+function Test-AutoPilotDeviceRetagEligibility {
+    <#
+    .SYNOPSIS
+    Checks whether an Autopilot identity has no recorded deployment contact.
+
+    .DESCRIPTION
+    Requires notContacted and the Graph minimum timestamp (0001-01-01 UTC),
+    displayed as Never in Intune. Missing or invalid contact data fails closed.
+    No recorded contact is not proof that Windows has never been installed.
+
+    .PARAMETER Device
+    Registered Windows Autopilot identity returned by Microsoft Graph.
+
+    .OUTPUTS
+    System.Boolean.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object] $Device)
+
+    if (-not $Device.PSObject.Properties['enrollmentState'] -or
+        [string] $Device.enrollmentState -ine 'notContacted' -or
+        -not $Device.PSObject.Properties['lastContactedDateTime']) {
+        return $false
+    }
+
+    $lastContact = $Device.lastContactedDateTime
+    if ($lastContact -is [datetimeoffset]) {
+        return $lastContact -eq [datetimeoffset]::MinValue
+    }
+    if ($lastContact -is [datetime]) {
+        return $lastContact.Ticks -eq [datetime]::MinValue.Ticks
+    }
+    if ($lastContact -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($lastContact)) {
+        return $false
+    }
+
+    $timestamp = [datetimeoffset]::MinValue
+    return [datetimeoffset]::TryParse(
+        $lastContact,
+        [cultureinfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal,
+        [ref] $timestamp) -and $timestamp -eq [datetimeoffset]::MinValue
+}
+
 function Get-AutoPilotDeviceRegistrationId {
     <#
     .SYNOPSIS
@@ -3269,6 +3314,7 @@ Export-ModuleMember -Function @(
     'Resolve-EntraAdministrativeUnit',
     'Add-EntraDeviceToAdministrativeUnit',
     'Sync-EntraDeviceAdministrativeUnits',
+    'Test-AutoPilotDeviceRetagEligibility',
     'Get-AutoPilotDeviceRegistrationId',
     'Compare-TagAuthorizationPolicyGroups',
     'Test-TagPolicyManagerPrincipal',

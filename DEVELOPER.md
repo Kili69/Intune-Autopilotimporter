@@ -460,11 +460,16 @@ The `ManageDeviceTags` Function exposes the retagging contract at
 `/api/devices/tags/assignments`. Easy Auth authenticates the caller, and the
 Function resolves the caller's current Entra group membership before returning
 devices or accepting a new Group Tag. Only Autopilot devices with an
-`enrollmentState` of `notContacted` are eligible.
+`enrollmentState` of `notContacted` and `lastContactedDateTime` equal to the
+Graph minimum timestamp (`0001-01-01T00:00:00Z`, displayed as **Never**) are
+eligible. Missing, empty or invalid contact values are rejected. The shared
+`Test-AutoPilotDeviceRetagEligibility` helper enforces this for listing, POST
+validation and the queue worker immediately before the Graph update. This
+checks recorded contact, not whether Windows has ever been installed.
 
 | Method | Request | Result |
 | --- | --- | --- |
-| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `groups`, and `administrativeUnits`. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
+| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `extensionAttributes`, `groups`, and `administrativeUnits`. `extensionAttributes` contains current values read from the Entra device (not policy targets), or `null` when unavailable. The UI displays populated attribute names and values separately from the Intune tag. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
 | `POST /api/devices/tags/assignments` | JSON `{ "deviceId": "<GUID>", "groupTag": "<authorized-tag>" }` | `202` with `operationId`, `serialNumber`, `groupTag`, `status: "queued"`, and `correlationId`. |
 | `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `previousGroupTag`, `status`, `workflowStatus`, `processingStage` (`queued`, `processing`, `complete`, `error`), `processingError`, `processingErrorStep`, the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 

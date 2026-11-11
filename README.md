@@ -306,8 +306,12 @@ or policy scope.
 
 > [!IMPORTANT]
 > Re-tagging is available only while the Autopilot device has not contacted the
-> deployment service. Devices whose enrollment state is no longer
-> `notContacted` are not displayed and cannot be changed through this workflow.
+> deployment service: enrollment state must be `notContacted` and **Last
+> contacted** must be **Never** (`lastContactedDateTime` is
+> `0001-01-01T00:00:00Z`). Devices with a recorded contact, missing or invalid
+> contact data, or another enrollment state are not displayed and cannot be
+> changed through this workflow. Never means no contact is recorded for the
+> current Autopilot identity; it does not prove Windows was never installed.
 > The service checks eligibility again when the change is submitted and during
 > asynchronous processing.
 
@@ -318,8 +322,11 @@ or policy scope.
 1. Open the web frontend and sign in with your Microsoft Entra account.
 2. Select the **Re-Tagging** tab.
 3. Select one or more eligible devices. The table displays each serial number,
-   current Group Tag or Order ID, Entra group memberships, and administrative
-   units.
+   **Intune Order ID/Tag**, **Entra.ID Extension Attributes**, Entra group
+   memberships, and administrative units. The two tag-related columns show
+   the current Autopilot Group Tag and the populated Entra device extension
+   attributes (`extensionAttribute1` through `extensionAttribute15`, with names
+   and values), respectively. A dash means no attribute values are available.
 4. Select the new Group Tag. Only tags authorized through your Entra group
    memberships are available.
 5. Select **Change tag** and keep the page open while processing continues.
@@ -456,7 +463,8 @@ Only the user who submitted the change can read its status.
 For every selected device, the Function:
 
 1. Confirms that the target Group Tag is authorized for the signed-in user.
-2. Verifies that the device still has the `notContacted` enrollment state.
+2. Verifies that the device still has the `notContacted` enrollment state and
+   **Last contacted = Never**.
 3. Records the previous and requested Group Tags and queues the change.
 4. Updates the Autopilot Group Tag through Microsoft Graph.
 5. Writes the new tag to the configured Entra device extension attribute.
@@ -1364,7 +1372,9 @@ For a standard installation, one installing administrator performs the complete 
 | Importing user or group | Function API | Matching group-to-tag rule | Allows importing devices with only the tags assigned to the caller's Entra security group. |
 
 The web frontend also lists Windows Autopilot devices whose enrollment state is
-`notContacted` when the signed-in user has at least one authorized Group Tag.
+`notContacted` and whose **Last contacted** is **Never**, when the signed-in
+user has at least one authorized Group Tag. Missing or invalid contact data
+is excluded.
 The current Group Tag may be empty or belong to another rule; authorization is
 enforced on the selected target Group Tag. Users can select multiple devices
 and assign an authorized Group Tag. The same queued post-processing used after imports updates

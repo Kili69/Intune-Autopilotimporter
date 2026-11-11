@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261111.1` - 2026-11-11
+
+- Restrict re-tagging across the web frontend, PowerShell client and REST API to Autopilot devices with `notContacted` enrollment state and **Last contacted = Never** (the Graph minimum timestamp). Apply the shared check during listing, submission and queue processing; reject recorded contacts and missing, empty or invalid contact data. Document that no recorded contact does not prove Windows was never installed.
+- Rename the English import selector to **Tagging Policy** and the re-tagging target selector to **New tagging policy**. Split the current-tag display into **Intune Order ID/Tag** and **Entra.ID Extension Attributes**, showing live Entra attribute names and populated values separately from the Intune tag without deriving them from policy targets.
+- Extend API, queue and frontend regression coverage, update the user/developer documentation, and rebuild the versioned frontend and installation package. The code-only live hotfix preserves existing settings, policies, identities, hosting and permissions; installing this release requires no additional Graph permissions.
+
 ## `1.4.20261022.1` - 2026-10-22
 
 - Clarify Microsoft Entra authority and tenant ID validation in the import script without changing runtime behavior. Prepare the existing 1.4 development line for promotion to dev and rebuild the versioned frontend and installation package.
