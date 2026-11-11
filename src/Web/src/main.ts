@@ -10,7 +10,7 @@ import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from '.
 import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, ImportTimelineRecord, removeOperationsInHistory } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
-import { applyCompletedTagChanges, type CompletedTagChange } from './tag-changes';
+import { applyCompletedTagChanges, formatDeviceExtensionAttributes, type CompletedTagChange } from './tag-changes';
 import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
 import type { ManagementHistory } from './management-history';
 import './style.css';
@@ -51,6 +51,7 @@ interface ExistingAutopilotDevice {
   id: string;
   serialNumber: string;
   groupTag: string;
+  extensionAttributes?: Record<string, string | null> | null;
   groups: string[];
   administrativeUnits: string[];
 }
@@ -99,7 +100,7 @@ const translations = {
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
     completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
     changeTagsTitle: 'Group Tags vorhandener Geräte ändern', changeTagsIntro: 'Noch nicht installierte Geräte aus Ihren Vorhaben auswählen und gemeinsam einem neuen Tag zuordnen.',
-    selectAll: 'Alle auswählen', currentTag: 'Aktueller Tag / OrderID', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
+    selectAll: 'Alle auswählen', currentTag: 'Intune Order ID/Tag', currentExtensionAttributes: 'Entra.ID Extension Attributes', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
     noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
     devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
     importTab: 'Import', retagTab: 'Re-Tagging',
@@ -115,7 +116,7 @@ const translations = {
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
     register: 'Register devices in Microsoft Intune',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
-    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
+    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Tagging Policy', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', statusChangedAt: 'Changed at', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusProcessing: 'Processing', statusComplete: 'Complete', statusError: 'Error',
@@ -124,8 +125,8 @@ const translations = {
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
     completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
     changeTagsTitle: 'Change Group Tags for existing devices', changeTagsIntro: 'Select devices that have not been installed from your projects and assign a new tag to them.',
-    selectAll: 'Select all', currentTag: 'Current tag / OrderID', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
-    noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
+    selectAll: 'Select all', currentTag: 'Intune Order ID/Tag', currentExtensionAttributes: 'Entra.ID Extension Attributes', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
+    noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New tagging policy', startTagChange: 'Change tag',
     devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
     importTab: 'Import', retagTab: 'Re-tagging',
     policyTab: 'Tag policies',
@@ -253,6 +254,7 @@ app.innerHTML = `
                   <th class="selection-cell"><input id="select-all-devices" type="checkbox" aria-label="${t('selectAll')}"></th>
                   <th>${t('serialNumber')}</th>
                   <th>${t('currentTag')}</th>
+                  <th>${t('currentExtensionAttributes')}</th>
                   <th>${t('currentGroups')}</th>
                   <th>${t('administrativeUnits')}</th>
                 </tr>
@@ -767,6 +769,7 @@ function renderExistingDevices(): void {
     for (const value of [
       device.serialNumber,
       device.groupTag,
+      formatDeviceExtensionAttributes(device.extensionAttributes) || '—',
       device.groups.join(', ') || '—',
       device.administrativeUnits.join(', ') || '—',
     ]) {

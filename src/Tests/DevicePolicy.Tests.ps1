@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261111.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Import-Module (Join-Path $PSScriptRoot '..\FunctionApp\src\AutopilotImport\AutopilotImport.psm1') -Force
@@ -354,6 +354,7 @@ Describe 'Device policy queue integration' {
                     azureActiveDirectoryDeviceId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
                     serialNumber = 'TEST-POLICY'
                     enrollmentState = 'notContacted'
+                    lastContactedDateTime = '0001-01-01T00:00:00Z'
                     groupTag = 'Sales'
                 }
             } elseif ($Method -eq 'Get') { [pscustomobject]@{ id = 'dddddddd-dddd-dddd-dddd-dddddddddddd' } }
@@ -406,6 +407,31 @@ Describe 'Device policy queue integration' {
         Should -Invoke Sync-DevicePolicyGroups -Times 1 -Exactly
         Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Uri -match 'managedDevices|roleScopeTags' }
         Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter { $Properties.graphImportCompletedAtUtc }
+    }
+    It 'blocks a queued tag change after contact or when contact data is unknown' -ForEach @(
+        @{ Contact = '2026-11-11T12:00:00Z' }
+        @{ Contact = $null }
+        @{ Contact = 'invalid' }
+    ) {
+        $message.registeredDeviceId = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+        $message.operationId = $message.importId
+        Mock Invoke-RestMethod -ParameterFilter {
+            $Uri -like '*windowsAutopilotDeviceIdentities/*' -and $Method -eq 'Get'
+        } {
+            [pscustomobject]@{ enrollmentState = 'notContacted'; lastContactedDateTime = $Contact }
+        }
+        { & $worker -QueueItem $message -TagPolicyBlob $policy } |
+            Should -Throw '*Last contacted must be Never*'
+        Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { $Method -ne 'Get' }
+        Should -Invoke Sync-DevicePolicyGroups -Times 0
+        Should -Invoke Sync-EntraDeviceAdministrativeUnits -Times 0
+        Should -Invoke Set-ImportAuditRecord -Times 0 -ParameterFilter {
+            $Properties.autopilotGroupTagUpdatedAtUtc -or $Properties.processingCompletedAtUtc
+        }
+        Should -Invoke Set-ImportAuditRecord -Times 1 -Exactly -ParameterFilter {
+            $Properties.processingErrorStep -eq 'autopilotGroupTag' -and
+            $Properties.processingError -like '*Last contacted must be Never*'
+        }
     }
     It 'skips attribute patches when a named rule has no configured attributes' {
         Mock Get-DevicePolicyActions {
@@ -1003,6 +1029,175 @@ Describe 'Empty policy authorization' {
     }
 }
 
+Describe 'Retagging contact eligibility' {
+    It 'accepts Never as <Name>' -ForEach @(
+        @{ Name = 'Graph UTC text'; Contact = '0001-01-01T00:00:00Z' }
+        @{ Name = 'Graph fractional offset text'; Contact = '0001-01-01T00:00:00.0000000+00:00' }
+        @{ Name = 'a deserialized DateTime'; Contact = [datetime]::MinValue }
+        @{ Name = 'a DateTimeOffset'; Contact = [datetimeoffset]::MinValue }
+    ) {
+        Test-AutoPilotDeviceRetagEligibility -Device ([pscustomobject]@{
+            enrollmentState = 'notContacted'; lastContactedDateTime = $Contact
+        }) | Should -BeTrue
+    }
+    It 'rejects <Name>' -ForEach @(
+        @{ Name = 'a real contact despite notContacted'; Device = [pscustomobject]@{
+            enrollmentState = 'notContacted'; lastContactedDateTime = '2026-11-11T12:00:00Z'
+        } }
+        @{ Name = 'an enrolled device despite Never'; Device = [pscustomobject]@{
+            enrollmentState = 'enrolled'; lastContactedDateTime = '0001-01-01T00:00:00Z'
+        } }
+        @{ Name = 'a missing contact property'; Device = [pscustomobject]@{ enrollmentState = 'notContacted' } }
+        @{ Name = 'a null contact'; Device = [pscustomobject]@{ enrollmentState = 'notContacted'; lastContactedDateTime = $null } }
+        @{ Name = 'an empty contact'; Device = [pscustomobject]@{ enrollmentState = 'notContacted'; lastContactedDateTime = '' } }
+        @{ Name = 'invalid contact text'; Device = [pscustomobject]@{ enrollmentState = 'notContacted'; lastContactedDateTime = 'invalid' } }
+        @{ Name = 'a display label instead of a Graph timestamp'; Device = [pscustomobject]@{ enrollmentState = 'notContacted'; lastContactedDateTime = 'Never' } }
+        @{ Name = 'a missing enrollment state'; Device = [pscustomobject]@{ lastContactedDateTime = '0001-01-01T00:00:00Z' } }
+    ) {
+        Test-AutoPilotDeviceRetagEligibility -Device $Device | Should -BeFalse
+    }
+}
+
+Describe 'Retagging contact checks at the HTTP boundary' {
+    BeforeAll {
+        Import-Module Az.Accounts
+        function Push-OutputBinding { param($Name, $Value) }
+        $handler = Join-Path $PSScriptRoot '..\FunctionApp\ManageDeviceTags\run.ps1'
+        $policy = '[{"groupId":"11111111-1111-1111-1111-111111111111","tags":["VIP"]}]'
+    }
+    BeforeEach {
+        $device = [pscustomobject]@{
+            id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+            serialNumber = 'NEVER'; groupTag = 'PAW'; enrollmentState = 'notContacted'
+            lastContactedDateTime = '0001-01-01T00:00:00Z'
+        }
+        $request = @{
+            Method = 'GET'; Headers = @{ 'x-ms-client-principal' = 'mock' }; Query = @{}
+            Body = @{ deviceId = $device.id; groupTag = 'VIP' }
+        }
+        Mock Import-Module {}
+        Mock Get-AzAccessToken { [pscustomobject]@{ Token = 'test' } }
+        Mock ConvertFrom-ClientPrincipalHeader { [pscustomobject]@{ claims = @() } }
+        Mock Get-CurrentPolicyPrincipal { $Principal }
+        Mock Get-AuthorizedGroupTags { @('VIP') }
+        Mock Resolve-AuthorizedGroupTag { 'VIP' }
+        Mock Resolve-AdministrativeUnitName { '' }
+        Mock Get-ImportAuditAccessToken { ConvertTo-SecureString 'storage' -AsPlainText -Force }
+        Mock Get-ImportAuditHistory { @() }
+        Mock Set-ImportAuditRecord {}
+        Mock Push-OutputBinding {}
+        Mock Invoke-RestMethod { $device }
+    }
+    It 'lists only Never devices even when all other devices still report notContacted' {
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{ value = @(
+                $device
+                [pscustomobject]@{ serialNumber = 'CONTACTED'; enrollmentState = 'notContacted'; lastContactedDateTime = '2026-11-11T12:00:00Z' }
+                [pscustomobject]@{ serialNumber = 'MISSING'; enrollmentState = 'notContacted' }
+                [pscustomobject]@{ serialNumber = 'NULL'; enrollmentState = 'notContacted'; lastContactedDateTime = $null }
+                [pscustomobject]@{ serialNumber = 'INVALID'; enrollmentState = 'notContacted'; lastContactedDateTime = 'invalid' }
+            ) }
+        }
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $body = $Value.Body | ConvertFrom-Json
+            $Value.StatusCode -eq 200 -and $body.count -eq 1 -and
+            $body.devices -is [array] -and $body.devices.Count -eq 1 -and
+            $body.devices[0].serialNumber -eq 'NEVER'
+        }
+    }
+    It 'returns the live Entra attributes separately from the Intune tag and preserves memberships' {
+        $device | Add-Member -NotePropertyName azureActiveDirectoryDeviceId -NotePropertyValue 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        Mock Invoke-RestMethod {
+            if ($Uri -like '*windowsAutopilotDeviceIdentities*') {
+                return [pscustomobject]@{ value = @($device) }
+            }
+            if ($Uri -like '*memberOf*') {
+                return [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; displayName = 'Device group' }
+                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.administrativeUnit'; displayName = 'Device AU' }
+                ) }
+            }
+            return [pscustomobject]@{
+                id = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+                extensionAttributes = [pscustomobject]@{
+                    extensionAttribute1 = 'Actual Entra value'
+                    extensionAttribute5 = 'Berlin'
+                    extensionAttribute15 = $null
+                }
+            }
+        }
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
+            $Uri -eq "https://graph.microsoft.com/v1.0/devices(deviceId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')?`$select=id,extensionAttributes"
+        }
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Value.StatusCode | Should -Be 200
+            $body = $Value.Body | ConvertFrom-Json
+            $body.devices[0].groupTag | Should -Be 'PAW'
+            $body.devices[0].extensionAttributes.extensionAttribute1 | Should -Be 'Actual Entra value'
+            $body.devices[0].extensionAttributes.extensionAttribute5 | Should -Be 'Berlin'
+            $body.devices[0].extensionAttributes.extensionAttribute15 | Should -BeNullOrEmpty
+            $body.devices[0].groups | Should -Be @('Device group')
+            $body.devices[0].administrativeUnits | Should -Be @('Device AU')
+            $true
+        }
+    }
+    It 'returns null attributes when no Entra identity is available rather than inventing policy values' {
+        Mock Invoke-RestMethod { [pscustomobject]@{ value = @($device) } }
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Value.StatusCode | Should -Be 200
+            $body = $Value.Body | ConvertFrom-Json
+            $body.devices[0].PSObject.Properties.Name | Should -Contain 'extensionAttributes'
+            $body.devices[0].extensionAttributes | Should -BeNullOrEmpty
+            $true
+        }
+    }
+    It 'reports an Entra lookup failure instead of displaying empty current attributes' {
+        $device | Add-Member -NotePropertyName azureActiveDirectoryDeviceId -NotePropertyValue 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        Mock Invoke-RestMethod {
+            if ($Uri -like '*windowsAutopilotDeviceIdentities*') {
+                return [pscustomobject]@{ value = @($device) }
+            }
+            throw 'Entra lookup unavailable'
+        }
+        Mock Write-Error {}
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Value.StatusCode -eq 502 -and ($Value.Body | ConvertFrom-Json).error -eq 'deviceLookupFailed'
+        }
+        Should -Invoke Write-Error -Times 1 -Exactly
+    }
+    It 'rejects direct submissions with a <Name> without queuing work' -ForEach @(
+        @{ Name = 'recorded contact'; Contact = '2026-11-11T12:00:00Z' }
+        @{ Name = 'null contact'; Contact = $null }
+        @{ Name = 'malformed contact'; Contact = 'invalid' }
+    ) {
+        $request.Method = 'POST'
+        $device.lastContactedDateTime = $Contact
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $body = $Value.Body | ConvertFrom-Json
+            $Value.StatusCode -eq 400 -and $body.error -eq 'invalidRequest' -and
+            $body.message -like '*Last contacted must be Never*'
+        }
+        Should -Invoke Push-OutputBinding -Times 0 -ParameterFilter { $Name -eq 'DeviceAttributeUpdate' }
+        Should -Invoke Set-ImportAuditRecord -Times 0
+    }
+    It 'still queues a permitted tag change for a Never device' {
+        $request.Method = 'POST'
+        & $handler -Request $request -TagPolicyBlob $policy
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'Response' -and $Value.StatusCode -eq 202
+        }
+        Should -Invoke Push-OutputBinding -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'DeviceAttributeUpdate' -and
+            ($Value | ConvertFrom-Json).registeredDeviceId -eq $device.id
+        }
+    }
+}
+
 Describe 'Recently completed tag changes in the device list' {
     BeforeAll {
         Import-Module Az.Accounts
@@ -1058,6 +1253,7 @@ Describe 'Recently completed tag changes in the device list' {
             Mock Invoke-RestMethod {
                 [pscustomobject]@{ value = @([pscustomobject]@{
                     id = $deviceId; serialNumber = 'SN1'; groupTag = 'PAW'; enrollmentState = 'notContacted'
+                    lastContactedDateTime = '0001-01-01T00:00:00Z'
                 }) }
             }
             Mock Push-OutputBinding {}
