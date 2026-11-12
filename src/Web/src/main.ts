@@ -13,6 +13,7 @@ import type { GroupSearchResult } from './group-picker';
 import { applyCompletedTagChanges, formatDeviceExtensionAttributes, type CompletedTagChange } from './tag-changes';
 import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
 import type { ManagementHistory } from './management-history';
+import { loadReleaseNotice } from './release-status';
 import './style.css';
 
 interface RuntimeConfig {
@@ -27,6 +28,7 @@ interface RuntimeConfig {
   importHistoryUrl: string;
   tagPolicyUrl: string;
   policyManagersUrl?: string;
+  functionVersion?: string;
 }
 
 interface ApiError {
@@ -138,6 +140,7 @@ const translations = {
 
 type TranslationKey = keyof typeof translations.de;
 declare const __APP_VERSION__: string;
+declare const __APP_BRANCH__: string;
 
 const savedLanguage = localStorage.getItem('autopilot-language');
 const language: Language = savedLanguage === 'de' || savedLanguage === 'en'
@@ -331,7 +334,8 @@ app.innerHTML = `
       <span aria-hidden="true">·</span>
       <a href="https://github.com/Kili69/Intune-Autopilotimporter/blob/dev/LICENSE" target="_blank" rel="noopener noreferrer">${t('license')}</a>
       <span aria-hidden="true">·</span>
-      <span>v${__APP_VERSION__}</span>
+      <span id="app-version"></span>
+      <span id="release-notice" role="status" aria-live="polite"></span>
     </footer>
   </div>
 `;
@@ -341,6 +345,10 @@ function element<T extends HTMLElement>(id: string): T {
   if (!value) throw new Error(`Element #${id} was not found.`);
   return value;
 }
+
+element<HTMLElement>('app-version').textContent = __APP_BRANCH__ === 'main'
+  ? `v${__APP_VERSION__}`
+  : `v${__APP_VERSION__} (${__APP_BRANCH__})`;
 
 const signinView = element<HTMLElement>('signin-view');
 const workspace = element<HTMLElement>('workspace');
@@ -1223,11 +1231,34 @@ tagChangeButton.addEventListener('click', async () => {
   updateTagChangeButton();
 });
 
+async function updateReleaseNotice(): Promise<void> {
+  const notice = await loadReleaseNotice(config.functionVersion ?? __APP_VERSION__);
+  const container = element<HTMLElement>('release-notice');
+  container.replaceChildren();
+  if (notice.kind === 'update') {
+    const link = document.createElement('a');
+    link.href = notice.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = language === 'de'
+      ? `Update verfügbar: ${notice.version}` : `Update available: ${notice.version}`;
+    container.append(link);
+  } else if (notice.kind === 'unavailable') {
+    container.textContent = language === 'de'
+      ? 'Updateprüfung derzeit nicht möglich' : 'Update check currently unavailable';
+  } else if (notice.kind === 'pending') {
+    container.textContent = language === 'de'
+      ? 'Erste tägliche Updateprüfung steht noch aus' : 'First daily update check pending';
+  }
+}
+
 async function initialize(): Promise<void> {
   try {
     const configResponse = await fetch('./config', { cache: 'no-store' });
     if (!configResponse.ok) throw new Error(t('frontendNotConfigured'));
     config = await configResponse.json() as RuntimeConfig;
+    void updateReleaseNotice();
+    window.setInterval(() => void updateReleaseNotice(), 24 * 60 * 60 * 1000);
     msal = new PublicClientApplication({
       auth: {
         clientId: config.clientId,

@@ -880,6 +880,18 @@ assets such as PNG files with their correct MIME type, and it supplies the
 runtime configuration that the single-page application needs to sign in and
 call the API.
 
+The public `GET /api/ui/release-status` endpoint serves only centrally cached
+release metadata (`status`, `checkedAtUtc`, `version`, `releaseUrl`) with
+`Cache-Control: no-store`; it never queries GitHub. `CheckRelease` uses an
+Azure-monitored daily timer (`0 0 0 * * *`, UTC, no startup execution) and writes
+`configuration/release-status.json` using the existing Storage identity.
+Only stable GitHub releases with the expected uploaded, nonempty
+`Intune-autopilotImporter-main<VERSION>.zip` qualify. Failures are logged and
+persisted as `unavailable`; an absent result is `pending`. The footer compares
+four numeric version components against `functionVersion` and treats results
+older than 26 hours as unavailable. No additional Graph permissions, GitHub
+credentials or browser connections to GitHub are needed.
+
 ### 6.8. Asynchronous Processing Interfaces
 
 The Functions communicate through Azure Storage. All bindings use the
@@ -1739,6 +1751,13 @@ src/FunctionApp/WebFrontend/wwwroot
 The package generator requires `index.html` and all assets referenced by it.
 The version shown by the web frontend is updated only when the frontend is
 rebuilt.
+
+The build also embeds the source branch, resolved from `GITHUB_HEAD_REF`,
+`GITHUB_REF_NAME`, `BUILD_SOURCEBRANCHNAME`, or the local Git checkout, in that
+order. The footer appends `(branch)` to the version except for `main`.
+For detached builds without CI metadata, set `GITHUB_REF_NAME` explicitly;
+an unknown branch fails the build instead of being presented as `main`.
+Rebuild after changing branches to update the displayed branch.
 
 ### 10.2. Run the PowerShell Tests
 

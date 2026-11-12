@@ -2,6 +2,12 @@
 
 This file describes the development of the project by released or recorded project version. Changes made by multiple commits with the same project version are consolidated into a single section.
 
+## `1.4.20261112.1` - 2026-11-12
+
+- Add a central daily check at 00:00 UTC for newer published GitHub releases with a completed main installation ZIP. Share cached results across the installation, show the update link in the footer, and explicitly report pending, failed or stale checks without blocking imports.
+- Show the frontend build's source branch beside its version except for `main`. Resolve CI source branches and local checkouts, reject unknown detached builds, and render branch names as text.
+- Include the release-check timer and cached public endpoint in runtime and installation packages, reuse existing private Storage and identity permissions, extend regression tests and documentation, and rebuild versioned frontend and installation artifacts.
+
 ## `1.4.20261111.1` - 2026-11-11
 
 - Restrict re-tagging across the web frontend, PowerShell client and REST API to Autopilot devices with `notContacted` enrollment state and **Last contacted = Never** (the Graph minimum timestamp). Apply the shared check during listing, submission and queue processing; reject recorded contacts and missing, empty or invalid contact data. Document that no recorded contact does not prove Windows was never installed.

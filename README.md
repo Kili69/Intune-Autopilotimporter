@@ -297,6 +297,23 @@ Get-AutoPilotImportStatus `
 
 The default timeout is 30 minutes with a 15-second polling interval. Override these values with `-TimeoutSeconds` and `-PollIntervalSeconds`. Only `workflowStatus: complete` confirms that both the Intune import and the Entra extension-attribute update succeeded.
 
+## Update Availability
+
+The footer shows the frontend build's source branch next to the version
+for non-`main` builds, for example `v1.4.20261111.1 (dev)`. Builds from `main`
+show only the version.
+
+The footer checks for a newer **published GitHub Release with an uploaded main
+installation ZIP**, not an unreleased `main` commit. A monitored server timer
+checks GitHub centrally once daily at **00:00 UTC** and stores the result in
+private configuration Storage for every user and browser. Opening the page
+does not query GitHub. An **Update available** link appears only when the
+published package version is newer than the running Function version.
+Before the first scheduled check, the footer reports that it is pending.
+Failures or results older than 26 hours show **Update check currently
+unavailable** without interrupting imports. An open page refreshes its stored
+status once every 24 hours; reloading also reads the central result.
+
 ## Re-Tag Existing Autopilot Devices
 
 The web frontend can assign a new Group Tag to existing Windows Autopilot

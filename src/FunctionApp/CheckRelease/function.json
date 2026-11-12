@@ -1,0 +1,20 @@
+{
+  "bindings": [
+    {
+      "name": "Timer",
+      "type": "timerTrigger",
+      "direction": "in",
+      "schedule": "0 0 0 * * *",
+      "runOnStartup": false,
+      "useMonitor": true
+    },
+    {
+      "name": "ReleaseStatus",
+      "type": "blob",
+      "direction": "out",
+      "dataType": "string",
+      "path": "configuration/release-status.json",
+      "connection": "AzureWebJobsStorage"
+    }
+  ]
+}
