@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261112.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 Set-StrictMode -Version Latest
@@ -155,7 +155,7 @@ function New-AutopilotFunctionPackage {
             'host.json', 'requirements.psd1', 'profile.ps1', 'ImportDevice',
             'ProcessDeviceAttribute', 'ManageTagPolicy', 'ManagePolicyManagers',
             'GetAuthorizedTags', 'ManageDeviceTags', 'GetImportHistory',
-            'RemoveExpiredImportHistory', 'WebFrontend', 'src'
+            'RemoveExpiredImportHistory', 'CheckRelease', 'GetReleaseStatus', 'WebFrontend', 'src'
         )
         # Include additional entries based on the hosting mode.
         $entries += if ($HostingMode -eq 'FlexConsumption') { 'RootRedirect' } else { 'proxies.json' }

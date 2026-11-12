@@ -1,5 +1,5 @@
 #Requires -Version 7.2
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261112.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 # Copyright 2026 Andreas Lucas
@@ -334,6 +334,8 @@ $packageEntries = @(
     @{ Source = 'src\FunctionApp\ManagePolicyManagers'; Destination = 'ManagePolicyManagers' }
     @{ Source = 'src\FunctionApp\ProcessDeviceAttribute'; Destination = 'ProcessDeviceAttribute' }
     @{ Source = 'src\FunctionApp\RemoveExpiredImportHistory'; Destination = 'RemoveExpiredImportHistory' }
+    @{ Source = 'src\FunctionApp\CheckRelease'; Destination = 'CheckRelease' }
+    @{ Source = 'src\FunctionApp\GetReleaseStatus'; Destination = 'GetReleaseStatus' }
     @{ Source = 'src\FunctionApp\WebFrontend'; Destination = 'WebFrontend' }
     @{ Source = 'src\FunctionApp\RootRedirect'; Destination = 'RootRedirect' }
     @{ Source = 'src\Infrastructure'; Destination = 'infra' }

@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261112.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -5905,7 +5905,7 @@ Describe 'Web frontend response types' {
                 'src\FunctionApp\WebFrontend\run.ps1') `
             -Raw
 
-        $deviceTagFunction | Should -Match "enrollmentState -ieq 'notContacted'"
+        $deviceTagFunction | Should -Match 'Test-AutoPilotDeviceRetagEligibility'
         $deviceTagFunction | Should -Match '\$authorizedTags\.Count -gt 0'
         $deviceTagFunction | Should -Not -Match `
             'groupTag -iin \$authorizedTags'

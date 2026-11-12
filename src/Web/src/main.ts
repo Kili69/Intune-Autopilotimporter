@@ -10,9 +10,10 @@ import { ApiRequestError, buildApiRequestOptions, canManageTagPolicies } from '.
 import { getHistoryStatus, getImportError, getImportTimeline, getOperationProgress, ImportTimelineRecord, removeOperationsInHistory } from './import-status';
 import { getPolicyTagLabel, mountPolicyEditor } from './policy';
 import type { GroupSearchResult } from './group-picker';
-import { applyCompletedTagChanges, type CompletedTagChange } from './tag-changes';
+import { applyCompletedTagChanges, formatDeviceExtensionAttributes, type CompletedTagChange } from './tag-changes';
 import { getManagerAdministrationAccess, mountManagerEditor, type ManagerAccessResponse, type ManagerPolicyResponse } from './managers';
 import type { ManagementHistory } from './management-history';
+import { loadReleaseNotice } from './release-status';
 import './style.css';
 
 interface RuntimeConfig {
@@ -27,6 +28,7 @@ interface RuntimeConfig {
   importHistoryUrl: string;
   tagPolicyUrl: string;
   policyManagersUrl?: string;
+  functionVersion?: string;
 }
 
 interface ApiError {
@@ -51,6 +53,7 @@ interface ExistingAutopilotDevice {
   id: string;
   serialNumber: string;
   groupTag: string;
+  extensionAttributes?: Record<string, string | null> | null;
   groups: string[];
   administrativeUnits: string[];
 }
@@ -99,7 +102,7 @@ const translations = {
     importFailed: 'Import fehlgeschlagen.', completedDetail: 'Intune-Import und Geräteattribut abgeschlossen', statusFailed: 'Statusabfrage fehlgeschlagen.',
     completedOf: 'abgeschlossen', frontendNotConfigured: 'Web-Frontend ist nicht vollständig konfiguriert.', initializationFailed: 'Anwendung konnte nicht initialisiert werden.',
     changeTagsTitle: 'Group Tags vorhandener Geräte ändern', changeTagsIntro: 'Noch nicht installierte Geräte aus Ihren Vorhaben auswählen und gemeinsam einem neuen Tag zuordnen.',
-    selectAll: 'Alle auswählen', currentTag: 'Aktueller Tag / OrderID', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
+    selectAll: 'Alle auswählen', currentTag: 'Intune Order ID/Tag', currentExtensionAttributes: 'Entra.ID Extension Attributes', currentGroups: 'Aktuelle Gruppen', administrativeUnits: 'Administrative Unit',
     noEligibleDevices: 'Keine noch nicht installierten Geräte in Ihren Vorhaben gefunden.', targetTag: 'Neuer autorisierter Tag', startTagChange: 'Tag ändern',
     devicesLoadFailed: 'Geräte konnten nicht geladen werden.', tagChangeFailed: 'Tag konnte nicht geändert werden.',
     importTab: 'Import', retagTab: 'Re-Tagging',
@@ -115,7 +118,7 @@ const translations = {
     hashStep4: 'Run Get-WindowsAutopilotInfo -OutputFile D:\\AutopilotHWID.csv', hashNote: 'Change the drive letter to match the USB drive if necessary.',
     register: 'Register devices in Microsoft Intune',
     csvHelp: 'The file remains in the browser and is validated before import.', csvSelect: 'Select a CSV or drop it here', csvRequirements: 'Device Serial Number and Hardware Hash are required',
-    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Device and Intune Group Tag', loadingTags: 'Loading tags …', startImport: 'Start import',
+    tagHelp: 'Only tags authorized for your Entra groups are displayed.', authorizedTag: 'Tagging Policy', loadingTags: 'Loading tags …', startImport: 'Start import',
     importStatus: 'Processing status', devicesZero: '0 devices', serialNumber: 'Serial number', operationId: 'Operation ID', status: 'Status', statusChangedAt: 'Changed at', details: 'Details',
     historyTitle: 'Import history', historyScopeSelf: 'My imports only', historyScopeAll: 'All visible imports', requestedBy: 'Requested by',
     footer: 'Intune Autopilot Import · Protected by Microsoft Entra ID', author: 'Author: Andreas Lucas (Kili)', license: 'Apache License 2.0', statusReady: 'Ready', statusSending: 'Sending', statusPending: 'Pending', statusProcessing: 'Processing', statusComplete: 'Complete', statusError: 'Error',
@@ -124,8 +127,8 @@ const translations = {
     importFailed: 'Import failed.', completedDetail: 'Intune import and device attribute completed', statusFailed: 'Status request failed.',
     completedOf: 'complete', frontendNotConfigured: 'The web frontend is not fully configured.', initializationFailed: 'The application could not be initialized.',
     changeTagsTitle: 'Change Group Tags for existing devices', changeTagsIntro: 'Select devices that have not been installed from your projects and assign a new tag to them.',
-    selectAll: 'Select all', currentTag: 'Current tag / OrderID', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
-    noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New authorized tag', startTagChange: 'Change tag',
+    selectAll: 'Select all', currentTag: 'Intune Order ID/Tag', currentExtensionAttributes: 'Entra.ID Extension Attributes', currentGroups: 'Current groups', administrativeUnits: 'Administrative unit',
+    noEligibleDevices: 'No uninstalled devices were found in your projects.', targetTag: 'New tagging policy', startTagChange: 'Change tag',
     devicesLoadFailed: 'Devices could not be loaded.', tagChangeFailed: 'The tag could not be changed.',
     importTab: 'Import', retagTab: 'Re-tagging',
     policyTab: 'Tag policies',
@@ -137,6 +140,7 @@ const translations = {
 
 type TranslationKey = keyof typeof translations.de;
 declare const __APP_VERSION__: string;
+declare const __APP_BRANCH__: string;
 
 const savedLanguage = localStorage.getItem('autopilot-language');
 const language: Language = savedLanguage === 'de' || savedLanguage === 'en'
@@ -253,6 +257,7 @@ app.innerHTML = `
                   <th class="selection-cell"><input id="select-all-devices" type="checkbox" aria-label="${t('selectAll')}"></th>
                   <th>${t('serialNumber')}</th>
                   <th>${t('currentTag')}</th>
+                  <th>${t('currentExtensionAttributes')}</th>
                   <th>${t('currentGroups')}</th>
                   <th>${t('administrativeUnits')}</th>
                 </tr>
@@ -329,7 +334,8 @@ app.innerHTML = `
       <span aria-hidden="true">·</span>
       <a href="https://github.com/Kili69/Intune-Autopilotimporter/blob/dev/LICENSE" target="_blank" rel="noopener noreferrer">${t('license')}</a>
       <span aria-hidden="true">·</span>
-      <span>v${__APP_VERSION__}</span>
+      <span id="app-version"></span>
+      <span id="release-notice" role="status" aria-live="polite"></span>
     </footer>
   </div>
 `;
@@ -339,6 +345,10 @@ function element<T extends HTMLElement>(id: string): T {
   if (!value) throw new Error(`Element #${id} was not found.`);
   return value;
 }
+
+element<HTMLElement>('app-version').textContent = __APP_BRANCH__ === 'main'
+  ? `v${__APP_VERSION__}`
+  : `v${__APP_VERSION__} (${__APP_BRANCH__})`;
 
 const signinView = element<HTMLElement>('signin-view');
 const workspace = element<HTMLElement>('workspace');
@@ -767,6 +777,7 @@ function renderExistingDevices(): void {
     for (const value of [
       device.serialNumber,
       device.groupTag,
+      formatDeviceExtensionAttributes(device.extensionAttributes) || '—',
       device.groups.join(', ') || '—',
       device.administrativeUnits.join(', ') || '—',
     ]) {
@@ -1220,11 +1231,34 @@ tagChangeButton.addEventListener('click', async () => {
   updateTagChangeButton();
 });
 
+async function updateReleaseNotice(): Promise<void> {
+  const notice = await loadReleaseNotice(config.functionVersion ?? __APP_VERSION__);
+  const container = element<HTMLElement>('release-notice');
+  container.replaceChildren();
+  if (notice.kind === 'update') {
+    const link = document.createElement('a');
+    link.href = notice.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = language === 'de'
+      ? `Update verfügbar: ${notice.version}` : `Update available: ${notice.version}`;
+    container.append(link);
+  } else if (notice.kind === 'unavailable') {
+    container.textContent = language === 'de'
+      ? 'Updateprüfung derzeit nicht möglich' : 'Update check currently unavailable';
+  } else if (notice.kind === 'pending') {
+    container.textContent = language === 'de'
+      ? 'Erste tägliche Updateprüfung steht noch aus' : 'First daily update check pending';
+  }
+}
+
 async function initialize(): Promise<void> {
   try {
     const configResponse = await fetch('./config', { cache: 'no-store' });
     if (!configResponse.ok) throw new Error(t('frontendNotConfigured'));
     config = await configResponse.json() as RuntimeConfig;
+    void updateReleaseNotice();
+    window.setInterval(() => void updateReleaseNotice(), 24 * 60 * 60 * 1000);
     msal = new PublicClientApplication({
       auth: {
         clientId: config.clientId,

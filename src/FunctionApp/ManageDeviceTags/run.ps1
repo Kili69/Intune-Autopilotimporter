@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261112.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -9,17 +9,20 @@ Lists eligible Autopilot devices and queues authorized Group Tag changes.
 HTTP entry point for GET and POST /api/devices/tags/assignments.
 
 GET without operationId returns registered Autopilot devices whose
-enrollmentState is notContacted, provided the caller has at least one
+enrollmentState is notContacted and lastContactedDateTime is the Graph minimum
+timestamp (Never), provided the caller has at least one
 authorized tag. It does not restrict devices by their current Group Tag.
-Results include device ID, serial number, current tag, and available Entra
-group/administrative-unit display names, sorted by serial number. Because
+Results include device ID, serial number, current tag, current Entra extension
+attributes, and available group/administrative-unit display names, sorted by
+serial number. Because
 Intune reports a changed Autopilot groupTag only after a propagation delay,
 tag changes completed within the last 60 minutes are applied from their
 audit records while Autopilot still returns the previous tag.
 
 POST requires deviceId (registered Autopilot identity GUID) and groupTag in
 the JSON body. The destination tag must be authorized for the caller's current
-policy-group memberships. The device must still be notContacted and its
+policy-group memberships. The device must still be notContacted with a Never
+lastContactedDateTime (missing or invalid values are rejected), and its
 current tag must differ from the destination. The administrative-unit target
 is resolved from policy, not supplied by the caller.
 
@@ -468,15 +471,16 @@ if ([string] $Request.Method -eq 'GET') {
         $autopilotDevices = @(Get-GraphCollection `
             -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?$top=100' `
             -AccessToken $graphToken)
-        # Any assignable tag enables listing of notContacted devices. The
+        # Any assignable tag enables listing of never-contacted devices. The
         # device's current tag need not be among the caller's authorized tags.
         $visibleDevices = @($autopilotDevices | Where-Object {
             $authorizedTags.Count -gt 0 -and
-            [string] $_.enrollmentState -ieq 'notContacted'
+            (Test-AutoPilotDeviceRetagEligibility -Device $_)
         } | ForEach-Object {
             $autopilotDevice = $_
             $groups = @()
             $administrativeUnits = @()
+            $extensionAttributes = $null
             $entraDeviceId = [guid]::Empty
             if ([guid]::TryParse(
                     [string] $autopilotDevice.azureActiveDirectoryDeviceId,
@@ -486,10 +490,11 @@ if ([string] $Request.Method -eq 'GET') {
                 # key. Resolve it to the directory object ID used by memberOf.
                 $entraDevice = Invoke-RestMethod `
                     -Method Get `
-                    -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id" `
+                    -Uri "https://graph.microsoft.com/v1.0/devices(deviceId='$entraDeviceId')?`$select=id,extensionAttributes" `
                     -Authentication Bearer `
                     -Token $graphToken `
                     -ErrorAction Stop
+                $extensionAttributes = $entraDevice.extensionAttributes
                 $memberships = @(Get-GraphCollection `
                     -Uri "https://graph.microsoft.com/v1.0/devices/$($entraDevice.id)/memberOf?`$select=id,displayName" `
                     -AccessToken $graphToken)
@@ -517,6 +522,7 @@ if ([string] $Request.Method -eq 'GET') {
                 id                  = [string] $autopilotDevice.id
                 serialNumber        = [string] $autopilotDevice.serialNumber
                 groupTag            = [string] $autopilotDevice.groupTag
+                extensionAttributes = $extensionAttributes
                 groups              = $groups
                 administrativeUnits = $administrativeUnits
             }
@@ -589,9 +595,9 @@ try {
         -ErrorAction Stop
     # Re-read eligibility at submission time: the device may have enrolled
     # since the list was displayed. Also reject a case-insensitive no-op.
-    if ([string] $device.enrollmentState -ine 'notContacted') {
+    if (-not (Test-AutoPilotDeviceRetagEligibility -Device $device)) {
         throw [InvalidOperationException]::new(
-            'The device is no longer eligible for a Group Tag change.')
+            'The device is not eligible for a Group Tag change. Enrollment state must be notContacted and Last contacted must be Never; missing or invalid contact data is not allowed.')
     }
     if ([string] $device.groupTag -ieq $groupTag) {
         throw [ArgumentException]::new(

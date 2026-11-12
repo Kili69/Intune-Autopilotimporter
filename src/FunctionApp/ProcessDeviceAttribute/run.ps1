@@ -1,4 +1,4 @@
-# Project-Version: 1.4.20261022.1
+# Project-Version: 1.4.20261112.1
 # Author: andreas.lucas@outlook.com (aka Kili)
 
 <#
@@ -210,8 +210,8 @@ if ($isTagChange) {
         -Authentication Bearer `
         -Token $secureToken `
         -ErrorAction Stop
-    if ([string] $registeredDevice.enrollmentState -ine 'notContacted') {
-        throw "Autopilot device '$registeredDeviceId' is no longer eligible for a Group Tag change."
+    if (-not (Test-AutoPilotDeviceRetagEligibility -Device $registeredDevice)) {
+        throw "Autopilot device '$registeredDeviceId' is no longer eligible for a Group Tag change. Enrollment state must be notContacted and Last contacted must be Never; missing or invalid contact data is not allowed."
     }
     Invoke-RestMethod `
         -Method Post `

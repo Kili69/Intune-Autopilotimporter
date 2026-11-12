@@ -460,11 +460,16 @@ The `ManageDeviceTags` Function exposes the retagging contract at
 `/api/devices/tags/assignments`. Easy Auth authenticates the caller, and the
 Function resolves the caller's current Entra group membership before returning
 devices or accepting a new Group Tag. Only Autopilot devices with an
-`enrollmentState` of `notContacted` are eligible.
+`enrollmentState` of `notContacted` and `lastContactedDateTime` equal to the
+Graph minimum timestamp (`0001-01-01T00:00:00Z`, displayed as **Never**) are
+eligible. Missing, empty or invalid contact values are rejected. The shared
+`Test-AutoPilotDeviceRetagEligibility` helper enforces this for listing, POST
+validation and the queue worker immediately before the Graph update. This
+checks recorded contact, not whether Windows has ever been installed.
 
 | Method | Request | Result |
 | --- | --- | --- |
-| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `groups`, and `administrativeUnits`. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
+| `GET /api/devices/tags/assignments` | Authenticated request | `200` with `{ devices, count, correlationId }`; each device contains `id`, `serialNumber`, `groupTag`, `extensionAttributes`, `groups`, and `administrativeUnits`. `extensionAttributes` contains current values read from the Entra device (not policy targets), or `null` when unavailable. The UI displays populated attribute names and values separately from the Intune tag. Intune reports a changed Autopilot `groupTag` only after a short propagation delay; while Autopilot still returns the previous tag, `groupTag` contains the destination of a tag change completed within the last 60 minutes (from its audit record). |
 | `POST /api/devices/tags/assignments` | JSON `{ "deviceId": "<GUID>", "groupTag": "<authorized-tag>" }` | `202` with `operationId`, `serialNumber`, `groupTag`, `status: "queued"`, and `correlationId`. |
 | `GET /api/devices/tags/assignments?operationId=<GUID>` | Authenticated request by the operation owner | `200` with `operationId`, `serialNumber`, `groupTag`, `previousGroupTag`, `status`, `workflowStatus`, `processingStage` (`queued`, `processing`, `complete`, `error`), `processingError`, `processingErrorStep`, the worker step timestamps (`requestReceivedAtUtc` … `processingCompletedAtUtc`, ISO 8601 UTC or `null`), `processingAttempt`, and `correlationId`. |
 
@@ -874,6 +879,18 @@ ARM collection-replacement concurrency limitation.
 assets such as PNG files with their correct MIME type, and it supplies the
 runtime configuration that the single-page application needs to sign in and
 call the API.
+
+The public `GET /api/ui/release-status` endpoint serves only centrally cached
+release metadata (`status`, `checkedAtUtc`, `version`, `releaseUrl`) with
+`Cache-Control: no-store`; it never queries GitHub. `CheckRelease` uses an
+Azure-monitored daily timer (`0 0 0 * * *`, UTC, no startup execution) and writes
+`configuration/release-status.json` using the existing Storage identity.
+Only stable GitHub releases with the expected uploaded, nonempty
+`Intune-autopilotImporter-main<VERSION>.zip` qualify. Failures are logged and
+persisted as `unavailable`; an absent result is `pending`. The footer compares
+four numeric version components against `functionVersion` and treats results
+older than 26 hours as unavailable. No additional Graph permissions, GitHub
+credentials or browser connections to GitHub are needed.
 
 ### 6.8. Asynchronous Processing Interfaces
 
@@ -1734,6 +1751,13 @@ src/FunctionApp/WebFrontend/wwwroot
 The package generator requires `index.html` and all assets referenced by it.
 The version shown by the web frontend is updated only when the frontend is
 rebuilt.
+
+The build also embeds the source branch, resolved from `GITHUB_HEAD_REF`,
+`GITHUB_REF_NAME`, `BUILD_SOURCEBRANCHNAME`, or the local Git checkout, in that
+order. The footer appends `(branch)` to the version except for `main`.
+For detached builds without CI metadata, set `GITHUB_REF_NAME` explicitly;
+an unknown branch fails the build instead of being presented as `main`.
+Rebuild after changing branches to update the displayed branch.
 
 ### 10.2. Run the PowerShell Tests
 
