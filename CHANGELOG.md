@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses a date-based four-part version scheme instead of Semantic Versioning. The detailed development record is available in [History.md](./History.md).
 
+## [1.4.20261112.1] - 2026-11-12
+
+### Added
+
+- Check centrally once daily at 00:00 UTC for newer published releases with a completed main installation ZIP, and show a release link in the footer. Browsers read only the shared cached result; pending, failed or stale checks are reported without blocking imports.
+- Show the frontend source branch beside the version for non-`main` builds, including CI and local builds.
+
+### Changed
+
+- Package the new timer and cached-status endpoint using existing private Storage and managed-identity permissions. Expand regression coverage and documentation, and rebuild versioned frontend and installation artifacts.
+
 ## [1.4.20261111.1] - 2026-11-11
 
 ### Fixed

@@ -1,0 +1,25 @@
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "Request",
+      "methods": ["get"],
+      "route": "api/ui/release-status"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "Response"
+    },
+    {
+      "type": "blob",
+      "direction": "in",
+      "name": "ReleaseStatusBlob",
+      "dataType": "string",
+      "path": "configuration/release-status.json",
+      "connection": "AzureWebJobsStorage"
+    }
+  ]
+}
